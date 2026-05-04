@@ -248,6 +248,19 @@ mod tests {
                 let enc = derive_encryption_key(&mk).unwrap();
                 prop_assert_ne!(auth.as_bytes(), enc.as_bytes());
             }
+
+            #[test]
+            fn different_passwords_produce_different_keys(
+                pw1 in proptest::collection::vec(any::<u8>(), 1..64),
+                pw2 in proptest::collection::vec(any::<u8>(), 1..64),
+                salt in proptest::collection::vec(any::<u8>(), 16..32),
+            ) {
+                prop_assume!(pw1 != pw2);
+                let params = test_params();
+                let mk1 = derive_master_key(&pw1, &salt, &params).unwrap();
+                let mk2 = derive_master_key(&pw2, &salt, &params).unwrap();
+                prop_assert_ne!(mk1.as_bytes(), mk2.as_bytes());
+            }
         }
     }
 }

@@ -415,6 +415,40 @@ mod tests {
                 let unpadded = unpad(&padded).unwrap();
                 prop_assert_eq!(unpadded, &data[..]);
             }
+
+            #[test]
+            fn tamper_any_ciphertext_byte_detected(
+                data in proptest::collection::vec(any::<u8>(), 1..1_024),
+                flip_offset in any::<proptest::sample::Index>(),
+            ) {
+                let vk = VaultKey::generate();
+                let envelope = encrypt_item(&vk, &data).unwrap();
+
+                // Flip a random byte in the ciphertext
+                let mut tampered = envelope.clone();
+                if !tampered.ciphertext.is_empty() {
+                    let idx = flip_offset.index(tampered.ciphertext.len());
+                    tampered.ciphertext[idx] ^= 0xFF;
+                    prop_assert!(decrypt_item(&vk, &tampered).is_err());
+                }
+            }
+
+            #[test]
+            fn each_encryption_produces_unique_ciphertext(
+                data in proptest::collection::vec(any::<u8>(), 0..4_096),
+            ) {
+                let vk = VaultKey::generate();
+                let env1 = encrypt_item(&vk, &data).unwrap();
+                let env2 = encrypt_item(&vk, &data).unwrap();
+                // Different random nonces → different ciphertext
+                prop_assert_ne!(env1.nonce, env2.nonce);
+                prop_assert!(env1.ciphertext != env2.ciphertext);
+                // Both still decrypt correctly
+                let d1 = decrypt_item(&vk, &env1).unwrap();
+                let d2 = decrypt_item(&vk, &env2).unwrap();
+                prop_assert_eq!(d1, data.clone());
+                prop_assert_eq!(d2, data);
+            }
         }
     }
 }

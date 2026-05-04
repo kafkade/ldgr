@@ -994,4 +994,107 @@ mod tests {
         bytes[43..47].copy_from_slice(&huge_iter);
         assert!(open_vault(&bytes, b"p").is_err());
     }
+
+    // --- Property-based tests ---
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_password() -> impl Strategy<Value = Vec<u8>> {
+            proptest::collection::vec(any::<u8>(), 1..64)
+        }
+
+        fn arb_vault_name() -> impl Strategy<Value = String> {
+            "[a-zA-Z0-9 _-]{1,32}"
+        }
+
+        proptest! {
+            #[test]
+            fn vault_create_save_open_round_trip(
+                password in arb_password(),
+                name in arb_vault_name(),
+            ) {
+                let (vault, _rk) = create_vault(&password, &name, &test_params()).unwrap();
+                let bytes = serialize_vault(&vault).unwrap();
+                let opened = open_vault(&bytes, &password).unwrap();
+
+                prop_assert_eq!(opened.metadata().name.as_str(), name.as_str());
+                prop_assert_eq!(opened.item_count(), 0);
+            }
+
+            #[test]
+            fn vault_round_trip_preserves_items(
+                password in arb_password(),
+                items in proptest::collection::vec(
+                    proptest::collection::vec(any::<u8>(), 0..512),
+                    0..5,
+                ),
+            ) {
+                let (mut vault, _rk) = create_vault(&password, "test", &test_params()).unwrap();
+                for item in &items {
+                    vault.add_item(item).unwrap();
+                }
+
+                let bytes = serialize_vault(&vault).unwrap();
+                let opened = open_vault(&bytes, &password).unwrap();
+
+                prop_assert_eq!(opened.item_count(), items.len());
+                for (i, expected) in items.iter().enumerate() {
+                    prop_assert_eq!(&opened.get_item(i).unwrap(), expected);
+                }
+            }
+
+            #[test]
+            fn recovery_flow_preserves_vault_contents(
+                old_password in arb_password(),
+                new_password in arb_password(),
+                items in proptest::collection::vec(
+                    proptest::collection::vec(any::<u8>(), 1..256),
+                    1..4,
+                ),
+            ) {
+                let (mut vault, rk) = create_vault(&old_password, "recovery", &test_params()).unwrap();
+                for item in &items {
+                    vault.add_item(item).unwrap();
+                }
+
+                let bytes = serialize_vault(&vault).unwrap();
+                let recovered = recover_vault(&bytes, &rk, &new_password, &test_params()).unwrap();
+                let recovered_bytes = serialize_vault(&recovered).unwrap();
+
+                // Old password must fail
+                prop_assert!(open_vault(&recovered_bytes, &old_password).is_err());
+
+                // New password must work and preserve all items
+                let opened = open_vault(&recovered_bytes, &new_password).unwrap();
+                prop_assert_eq!(opened.metadata().name.as_str(), "recovery");
+                prop_assert_eq!(opened.item_count(), items.len());
+                for (i, expected) in items.iter().enumerate() {
+                    prop_assert_eq!(&opened.get_item(i).unwrap(), expected);
+                }
+            }
+
+            #[test]
+            fn wrong_password_always_fails(
+                correct in arb_password(),
+                wrong in arb_password(),
+            ) {
+                prop_assume!(correct != wrong);
+                let (vault, _rk) = create_vault(&correct, "V", &test_params()).unwrap();
+                let bytes = serialize_vault(&vault).unwrap();
+                prop_assert!(open_vault(&bytes, &wrong).is_err());
+            }
+
+            #[test]
+            fn session_key_round_trip(password in arb_password()) {
+                let (vault, _rk) = create_vault(&password, "session", &test_params()).unwrap();
+                let session_key = vault.export_session_key();
+                let bytes = serialize_vault(&vault).unwrap();
+
+                let restored = restore_vault_from_session(&bytes, &session_key).unwrap();
+                prop_assert_eq!(restored.metadata().name.as_str(), "session");
+            }
+        }
+    }
 }
