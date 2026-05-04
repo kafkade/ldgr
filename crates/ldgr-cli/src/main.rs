@@ -136,6 +136,12 @@ enum Commands {
         #[arg(long, short, default_value = "table")]
         output: String,
     },
+
+    /// Validate a journal file for importability
+    Validate {
+        /// Path to the journal file
+        file: String,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -285,6 +291,7 @@ fn main() {
         Some(Commands::Balancesheet { query, output }) => {
             commands::balancesheet::run(&vault_path, &query, &output)
         }
+        Some(Commands::Validate { file }) => commands::validate::run(&file),
         None => {
             eprintln!("ldgr — Zero-knowledge bookkeeping");
             eprintln!("Run `ldgr --help` for usage.");

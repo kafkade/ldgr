@@ -1,0 +1,9 @@
+; Conformance test: transaction codes
+
+2024-01-15 * (1001) Check payment
+    Expenses:Utilities  150 USD
+    Assets:Checking    -150 USD
+
+2024-01-16 * (1002) Another check
+    Expenses:Insurance  200 USD
+    Assets:Checking    -200 USD

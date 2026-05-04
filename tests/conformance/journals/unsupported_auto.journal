@@ -1,0 +1,5 @@
+; Conformance test: unsupported automated transaction
+
+= expenses:food
+    budget:food  *-1
+    budget:savings  *1
