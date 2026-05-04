@@ -56,3 +56,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Investment lot tracking with buy/sell/partial disposal and unrealized gain/loss
 - Cost basis methods: FIFO, LIFO, Average Cost, and Specific Identification for lot disposal
 - Short-term vs long-term holding period classification (365-day threshold)
+- Pluggable market data provider trait (I/O-free: builds URLs and parses responses)
+- Yahoo Finance provider: current quotes and historical OHLCV for stocks, ETFs, crypto, forex

@@ -9,6 +9,7 @@
 pub mod accounting;
 pub mod crypto;
 pub mod import;
+pub mod market;
 pub mod storage;
 
 // Feature-gated modules (uncomment as implemented)
