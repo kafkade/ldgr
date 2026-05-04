@@ -67,6 +67,21 @@ enum Commands {
         #[arg(long, short)]
         force: bool,
     },
+
+    /// Import transactions from a CSV file
+    Import {
+        /// Path to the CSV file
+        file: String,
+        /// Profile name (from ~/.ldgr/profiles/)
+        #[arg(long, short)]
+        profile: Option<String>,
+    },
+
+    /// Manage import auto-categorization rules
+    Rules {
+        #[command(subcommand)]
+        action: Option<RulesAction>,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -93,6 +108,35 @@ enum AccountAction {
     Delete {
         /// Account name
         name: String,
+    },
+}
+
+#[derive(clap::Subcommand)]
+enum RulesAction {
+    /// Add a new rule
+    Add {
+        /// Pattern to match against transaction descriptions
+        #[arg(long, short)]
+        pattern: String,
+        /// Target account to assign
+        #[arg(long, short)]
+        account: String,
+        /// Match type: contains, exact, startswith
+        #[arg(long, short, default_value = "contains")]
+        r#match: String,
+        /// Rule priority (higher = checked first)
+        #[arg(long, default_value_t = 0)]
+        priority: i64,
+    },
+    /// Delete a rule by pattern
+    Delete {
+        /// Pattern of the rule to delete
+        pattern: String,
+    },
+    /// Test which rule matches a description
+    Test {
+        /// Description to test against rules
+        description: String,
     },
 }
 
@@ -137,6 +181,24 @@ fn main() {
             }
         }
         Some(Commands::Delete { id, force }) => commands::delete::run(&vault_path, &id, force),
+        Some(Commands::Import { file, profile }) => {
+            commands::import::run(&vault_path, &file, profile.as_deref())
+        }
+        Some(Commands::Rules { action }) => match action {
+            Some(RulesAction::Add {
+                pattern,
+                account,
+                r#match,
+                priority,
+            }) => commands::rules::run_add(&vault_path, &pattern, &account, &r#match, priority),
+            Some(RulesAction::Delete { pattern }) => {
+                commands::rules::run_delete(&vault_path, &pattern)
+            }
+            Some(RulesAction::Test { description }) => {
+                commands::rules::run_test(&vault_path, &description)
+            }
+            None => commands::rules::run_list(&vault_path),
+        },
         None => {
             eprintln!("ldgr — Zero-knowledge bookkeeping");
             eprintln!("Run `ldgr --help` for usage.");

@@ -38,3 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transaction entry: `ldgr add` (interactive and non-interactive with `--date`, `--description`, `--posting`)
 - Double-entry validation: postings must sum to zero, at most one auto-balance posting
 - Transaction deletion: `ldgr delete <id>` with confirmation prompt (`--force` to skip)
+- CSV import with configurable column mapping profiles (`ldgr import <file.csv> --profile <name>`)
+- Auto-delimiter detection (comma, semicolon, tab) with quoted field and BOM support
+- Import rules engine for auto-categorization (`ldgr rules add --pattern "WHOLE FOODS" --account "Expenses:Food"`)
+- Rule matching: case-insensitive substring, exact, and starts-with modes with priority ordering
