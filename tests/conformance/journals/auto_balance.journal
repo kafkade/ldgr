@@ -1,0 +1,9 @@
+; Conformance test: amount-less postings (auto-balance)
+
+2024-01-15 Salary
+    Assets:Checking     5000 USD
+    Income:Salary
+
+2024-01-16 Rent
+    Expenses:Housing    1500 USD
+    Assets:Checking

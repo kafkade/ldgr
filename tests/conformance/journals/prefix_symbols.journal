@@ -1,0 +1,9 @@
+; Conformance test: prefix currency symbols
+
+2024-01-15 Coffee
+    Expenses:Food:Coffee  $4.50
+    Assets:Cash          -$4.50
+
+2024-01-16 European lunch
+    Expenses:Food:Dining  €25.00
+    Assets:Cash          -€25.00

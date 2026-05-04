@@ -1,0 +1,13 @@
+; Conformance test: multi-currency transactions
+
+2024-01-15 Dinner in Paris
+    Expenses:Food:Dining  45.00 EUR
+    Assets:Checking      -45.00 EUR
+
+2024-01-16 London Transport
+    Expenses:Transport  12.50 GBP
+    Assets:Checking    -12.50 GBP
+
+2024-01-17 US Groceries
+    Expenses:Food       42.50 USD
+    Assets:Checking    -42.50 USD

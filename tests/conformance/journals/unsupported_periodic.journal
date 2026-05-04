@@ -1,0 +1,5 @@
+; Conformance test: unsupported periodic transaction
+
+~ monthly
+    Expenses:Rent    1500 USD
+    Assets:Checking

@@ -1,0 +1,41 @@
+; Conformance test: complete mixed journal
+
+; Declarations
+account Assets:Checking
+account Assets:Savings
+account Expenses:Food
+account Expenses:Housing
+account Income:Salary
+account Equity:Opening
+
+commodity USD
+
+P 2024-01-01 EUR 1.08 USD
+
+; Opening balance
+2024-01-01 * Opening balances
+    Assets:Checking     5000 USD = 5000 USD
+    Equity:Opening     -5000 USD
+
+; Income
+2024-01-15 * Salary  ; type:income
+    Assets:Checking     4000 USD
+    Income:Salary
+
+; Expenses
+2024-01-20 * (1001) Rent
+    Expenses:Housing    1500 USD
+    Assets:Checking
+
+2024-01-22 Groceries  ; store:wholefoods
+    Expenses:Food       85.50 USD
+    Assets:Checking    -85.50 USD
+
+2024-01-25 ! Pending utility
+    Expenses:Housing    120 USD
+    Assets:Checking    -120 USD
+
+; Transfer
+2024-01-30 * Transfer to savings
+    Assets:Savings      500 USD
+    Assets:Checking    -500 USD

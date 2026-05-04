@@ -1,0 +1,13 @@
+; Conformance test: tags and comments
+
+2024-01-15 Business lunch  ; project:alpha, category:meals
+    Expenses:Food:Dining  65.00 USD  ; receipt:yes
+    Assets:Corporate     -65.00 USD
+
+; This is a standalone comment
+
+# Hash comments also work
+
+2024-01-16 Office supplies  ; project:beta
+    Expenses:Office      120.00 USD
+    Assets:Checking     -120.00 USD

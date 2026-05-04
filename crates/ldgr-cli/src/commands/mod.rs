@@ -11,3 +11,4 @@ pub mod register;
 pub mod rules;
 pub mod status;
 pub mod unlock;
+pub mod validate;

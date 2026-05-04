@@ -1,0 +1,9 @@
+; Conformance test: slash date format
+
+2024/01/15 Groceries
+    Expenses:Food       42.50 USD
+    Assets:Checking    -42.50 USD
+
+2024/02/01 Rent
+    Expenses:Housing    1500 USD
+    Assets:Checking    -1500 USD

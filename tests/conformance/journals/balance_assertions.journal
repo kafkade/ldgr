@@ -1,0 +1,9 @@
+; Conformance test: balance assertions
+
+2024-01-15 Opening balance
+    Assets:Checking     1000 USD = 1000 USD
+    Equity:Opening     -1000 USD
+
+2024-01-16 Groceries
+    Expenses:Food         50 USD
+    Assets:Checking      -50 USD = 950 USD

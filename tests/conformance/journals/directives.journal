@@ -1,0 +1,16 @@
+; Conformance test: directives
+
+account Assets:Checking
+account Assets:Savings
+account Expenses:Food
+account Income:Salary
+
+commodity USD
+commodity EUR
+
+P 2024-01-15 EUR 1.08 USD
+P 2024-01-15 GBP 1.27 USD
+
+2024-01-15 Groceries
+    Expenses:Food       42.50 USD
+    Assets:Checking    -42.50 USD
