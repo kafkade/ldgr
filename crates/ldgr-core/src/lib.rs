@@ -6,11 +6,11 @@
 //! **No I/O, no networking, no platform APIs.** All I/O happens in platform-specific
 //! code (CLI, iOS, web). This keeps the core testable and compilable to WASM.
 
+pub mod accounting;
 pub mod crypto;
 pub mod storage;
 
 // Feature-gated modules (uncomment as implemented)
-// pub mod accounting;
 // pub mod sync;
 // pub mod import;
 // pub mod export;

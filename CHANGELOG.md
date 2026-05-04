@@ -31,3 +31,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Recovery key displayed in a bordered box during vault creation
 - SQLite database auto-initialized alongside the vault on `ldgr init`
 - WASM-optimized Argon2id parameter preset (64 MB, 3 iterations, single-threaded)
+- hledger journal parser supporting transactions, postings, amounts, balance assertions, tags, comments, and directives
+- Documented hledger syntax subset specification (`docs/journal-subset.md`)
