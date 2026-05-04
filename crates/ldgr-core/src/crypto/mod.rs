@@ -9,12 +9,19 @@ mod envelope;
 mod errors;
 mod kdf;
 mod keys;
+mod recovery;
+mod vault;
 mod wrap;
 
 pub use envelope::{SealedEnvelope, decrypt_item, encrypt_item};
 pub use errors::CryptoError;
 pub use kdf::{Argon2Params, derive_auth_key, derive_encryption_key, derive_master_key};
 pub use keys::{AuthKey, ItemKey, MasterEncryptionKey, MasterKey, RecoveryKey, VaultKey};
+pub use recovery::{decode_recovery_key, encode_recovery_key};
+pub use vault::{
+    UnlockedVault, VaultHeader, VaultMetadata, create_vault, open_vault, recover_vault,
+    serialize_vault, validate_vault, verify_recovery_key,
+};
 pub use wrap::{
     WrappedKey, unwrap_item_key, unwrap_vault_key, unwrap_vault_key_with_recovery, wrap_item_key,
     wrap_vault_key, wrap_vault_key_with_recovery,

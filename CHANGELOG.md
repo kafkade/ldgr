@@ -17,3 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-item envelope encryption with size-bucket padding (512 B / 2 KB / 8 KB / 32 KB)
 - CI pipeline: build, test, clippy, formatting, and WASM smoke test on every PR
 - Release pipeline: multi-platform binary builds and GitHub Releases on tag push
+- Vault binary file format with `LDGR` magic bytes, versioned header, and encrypted metadata
+- Vault operations: create, open (unlock with password), serialize (save), and validate
+- Recovery key generation at vault creation with Crockford Base32 human-readable display
+- Vault recovery flow: unlock with recovery key and set a new password
+- Password change for unlocked vaults (re-wraps vault key, items untouched)

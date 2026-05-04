@@ -20,4 +20,10 @@ pub enum CryptoError {
 
     #[error("invalid parameters: {0}")]
     InvalidParams(String),
+
+    #[error("invalid vault format: {0}")]
+    InvalidVault(String),
+
+    #[error("unsupported vault version: {0}")]
+    UnsupportedVersion(u16),
 }
