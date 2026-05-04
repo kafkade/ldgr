@@ -132,4 +132,4 @@ Use conventional commits: `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore
 
 ## Reference Documents
 
-The full product roadmap is in `docs/roadmap.md`. The architecture document with all decisions, data model, and platform designs is in `ldgr-architecture.md`.
+The full product roadmap is in `docs/roadmap.md`. The architecture document with all decisions, data model, and platform designs is in `docs/ldgr-architecture.md`.

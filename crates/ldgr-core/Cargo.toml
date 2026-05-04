@@ -10,26 +10,28 @@ repository.workspace = true
 [features]
 default = ["core"]
 core = []
+sqlite = ["dep:rusqlite"]
 sync = []
 import-export = []
 market = []
 loans = []
 budget = []
 goals = []
-full = ["core", "sync", "import-export", "market", "loans", "budget", "goals"]
+full = ["core", "sqlite", "sync", "import-export", "market", "loans", "budget", "goals"]
 
 [dependencies]
 # Crypto
 aes-gcm.workspace = true
 argon2.workspace = true
 hkdf.workspace = true
+rand.workspace = true
 sha2.workspace = true
 x25519-dalek.workspace = true
 zeroize.workspace = true
 
 # Data
 rust_decimal.workspace = true
-rusqlite.workspace = true
+rusqlite = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
@@ -43,3 +45,7 @@ proptest.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+uuid = { workspace = true, features = ["js"] }

@@ -20,6 +20,7 @@ aes-gcm = "0.10"
 argon2 = "0.5"
 hkdf = "0.12"
 sha2 = "0.10"
+rand = "0.8"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 zeroize = { version = "1", features = ["derive"] }
 
@@ -62,3 +63,4 @@ module_name_repetitions = "allow"
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
+similar_names = "allow"
