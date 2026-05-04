@@ -42,3 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Auto-delimiter detection (comma, semicolon, tab) with quoted field and BOM support
 - Import rules engine for auto-categorization (`ldgr rules add --pattern "WHOLE FOODS" --account "Expenses:Food"`)
 - Rule matching: case-insensitive substring, exact, and starts-with modes with priority ordering
+- Balance report: `ldgr balance` with hierarchical account tree, subtotals, and multi-commodity support
+- Register report: `ldgr register` with chronological transaction list and running balance
+- Query filters for reports: `--begin`, `--end`, and account name substring filtering
+- Report output formats: `--output table|json|csv` for balance and register
