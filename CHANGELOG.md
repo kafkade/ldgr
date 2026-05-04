@@ -22,3 +22,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Recovery key generation at vault creation with Crockford Base32 human-readable display
 - Vault recovery flow: unlock with recovery key and set a new password
 - Password change for unlocked vaults (re-wraps vault key, items untouched)
+- SQLite storage layer with schema migration mechanism (`sqlite` feature flag)
+- Account CRUD with hierarchical names, optimistic concurrency, and soft delete
+- Transaction and posting CRUD with atomic writes and version tracking
