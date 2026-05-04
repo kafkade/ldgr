@@ -2,12 +2,14 @@
 //!
 //! The vault is internally a `SQLite` database with versioned rows (soft deletes,
 //! version column). All decimal amounts are stored as TEXT for precision.
+//!
+//! This module is gated behind the `sqlite` feature flag.
 
-// SQLite-backed implementations require the `sqlite` feature.
-// #[cfg(feature = "sqlite")]
-// pub mod schema;    // Table definitions and migrations
-// #[cfg(feature = "sqlite")]
-// pub mod accounts;  // Account CRUD
-// #[cfg(feature = "sqlite")]
-// pub mod transactions; // Transaction + posting CRUD
-// pub mod queries;   // Query engine (platform-independent)
+#[cfg(feature = "sqlite")]
+pub mod accounts;
+#[cfg(feature = "sqlite")]
+pub mod error;
+#[cfg(feature = "sqlite")]
+pub mod schema;
+#[cfg(feature = "sqlite")]
+pub mod transactions;
