@@ -120,6 +120,7 @@ mod tests {
             source_account: "Assets:Checking".into(),
             target_account: None,
             source_row: 1,
+            fitid: None,
         }
     }
 

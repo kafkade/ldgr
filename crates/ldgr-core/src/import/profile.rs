@@ -63,6 +63,8 @@ pub struct ImportCandidate {
     pub target_account: Option<String>,
     /// 1-based row number in the CSV file.
     pub source_row: usize,
+    /// Financial institution transaction ID (OFX FITID) for exact dedup.
+    pub fitid: Option<String>,
 }
 
 /// Apply a profile to parsed CSV rows, producing import candidates.
@@ -122,6 +124,7 @@ pub fn apply_profile(
             source_account: profile.default_account.clone(),
             target_account: None,
             source_row: row_num,
+            fitid: None,
         });
     }
 

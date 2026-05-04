@@ -50,3 +50,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Balance sheet report: `ldgr balancesheet` (alias `bs`) showing Assets, Liabilities, and Equity
 - Query language for filtering: `acct:`, `desc:`, `date:`, `amt:>`, `amt:<`, `tag:`, `not:` with AND composition
 - Journal validation tool: `ldgr validate <file>` checks importability, reports errors with line numbers, shows statistics on success
+- OFX/QFX import parser extracting date, amount, payee, memo, and FITID from bank exports
+- Import deduplication with three match levels: exact (FITID), strong (date + amount + payee similarity), weak (nearby date + amount)
