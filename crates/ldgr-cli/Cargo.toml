@@ -31,6 +31,7 @@ rust_decimal.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true
