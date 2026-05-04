@@ -24,7 +24,8 @@ pub enum TransactionStatus {
 }
 
 impl TransactionStatus {
-    fn as_str(self) -> &'static str {
+    /// Convert to the string stored in `SQLite`.
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Unmarked => "unmarked",
             Self::Pending => "pending",
@@ -306,7 +307,72 @@ pub fn soft_delete_transaction(conn: &Connection, id: &str) -> Result<(), Storag
     Ok(())
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
+/// Update just the status of a transaction (e.g., mark as cleared during reconciliation).
+pub fn set_transaction_status(
+    conn: &Connection,
+    id: &str,
+    status: TransactionStatus,
+) -> Result<(), StorageError> {
+    let rows = conn.execute(
+        "UPDATE transactions SET status = ?1, version = version + 1, modified_at = ?2
+         WHERE id = ?3 AND deleted = 0",
+        rusqlite::params![status.as_str(), now_iso8601(), id],
+    )?;
+
+    if rows == 0 {
+        return Err(StorageError::NotFound(format!("transaction '{id}'")));
+    }
+    Ok(())
+}
+
+/// List transactions that have postings referencing a specific account.
+///
+/// Ordered by date ascending. Filters by status if provided.
+pub fn list_transactions_for_account(
+    conn: &Connection,
+    account_id: &str,
+    status_filter: Option<TransactionStatus>,
+    before_date: Option<&str>,
+) -> Result<Vec<Transaction>, StorageError> {
+    let mut sql = String::from(
+        "SELECT DISTINCT t.id, t.date, t.status, t.code, t.description, t.comment,
+                t.created_at, t.modified_at, t.version, t.deleted
+         FROM transactions t
+         JOIN postings p ON t.id = p.transaction_id
+         WHERE t.deleted = 0 AND p.account_id = ?1",
+    );
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(account_id.to_string())];
+
+    if let Some(status) = status_filter {
+        sql.push_str(" AND t.status = ?2");
+        params.push(Box::new(status.as_str().to_string()));
+
+        if let Some(date) = before_date {
+            sql.push_str(" AND t.date <= ?3");
+            params.push(Box::new(date.to_string()));
+        }
+    } else if let Some(date) = before_date {
+        sql.push_str(" AND t.date <= ?2");
+        params.push(Box::new(date.to_string()));
+    }
+
+    sql.push_str(" ORDER BY t.date ASC, t.created_at ASC");
+
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+        params.iter().map(std::convert::AsRef::as_ref).collect();
+    let mut stmt = conn.prepare(&sql)?;
+    let headers: Vec<Transaction> = stmt
+        .query_map(param_refs.as_slice(), row_to_transaction_header)?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut result = Vec::with_capacity(headers.len());
+    for txn in headers {
+        let postings = fetch_postings(conn, &txn.id)?;
+        result.push(Transaction { postings, ..txn });
+    }
+
+    Ok(result)
+}
 
 fn now_iso8601() -> String {
     chrono::Utc::now().to_rfc3339()
