@@ -33,3 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - WASM-optimized Argon2id parameter preset (64 MB, 3 iterations, single-threaded)
 - hledger journal parser supporting transactions, postings, amounts, balance assertions, tags, comments, and directives
 - Documented hledger syntax subset specification (`docs/journal-subset.md`)
+- Account management: `ldgr accounts`, `ldgr accounts add`, `ldgr accounts rename`, `ldgr accounts delete`
+- Auto-detect account type from name prefix (e.g., `Assets:*` → Asset) with auto-parent creation
+- Transaction entry: `ldgr add` (interactive and non-interactive with `--date`, `--description`, `--posting`)
+- Double-entry validation: postings must sum to zero, at most one auto-balance posting
+- Transaction deletion: `ldgr delete <id>` with confirmation prompt (`--force` to skip)
