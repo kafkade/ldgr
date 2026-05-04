@@ -82,6 +82,39 @@ enum Commands {
         #[command(subcommand)]
         action: Option<RulesAction>,
     },
+
+    /// Show account balances
+    Balance {
+        /// Filter by account name (substring match)
+        account: Option<String>,
+        /// Start date (YYYY-MM-DD)
+        #[arg(long)]
+        begin: Option<String>,
+        /// End date (YYYY-MM-DD)
+        #[arg(long)]
+        end: Option<String>,
+        /// Show flat account names (no hierarchy indentation)
+        #[arg(long)]
+        flat: bool,
+        /// Output format: table, json, csv
+        #[arg(long, short, default_value = "table")]
+        output: String,
+    },
+
+    /// Show transaction register with running balance
+    Register {
+        /// Filter by account name (substring match)
+        account: Option<String>,
+        /// Start date (YYYY-MM-DD)
+        #[arg(long)]
+        begin: Option<String>,
+        /// End date (YYYY-MM-DD)
+        #[arg(long)]
+        end: Option<String>,
+        /// Output format: table, json, csv
+        #[arg(long, short, default_value = "table")]
+        output: String,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -199,6 +232,32 @@ fn main() {
             }
             None => commands::rules::run_list(&vault_path),
         },
+        Some(Commands::Balance {
+            account,
+            begin,
+            end,
+            flat,
+            output,
+        }) => commands::balance::run(
+            &vault_path,
+            account.as_deref(),
+            begin.as_deref(),
+            end.as_deref(),
+            flat,
+            &output,
+        ),
+        Some(Commands::Register {
+            account,
+            begin,
+            end,
+            output,
+        }) => commands::register::run(
+            &vault_path,
+            account.as_deref(),
+            begin.as_deref(),
+            end.as_deref(),
+            &output,
+        ),
         None => {
             eprintln!("ldgr — Zero-knowledge bookkeeping");
             eprintln!("Run `ldgr --help` for usage.");
