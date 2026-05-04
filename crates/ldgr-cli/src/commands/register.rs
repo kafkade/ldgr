@@ -9,6 +9,7 @@ use ldgr_core::accounting::reports::compute_register;
 use ldgr_core::storage::accounts::ListOptions;
 use ldgr_core::storage::transactions::list_transactions;
 
+use crate::convert;
 use crate::db;
 
 /// Run the `register` command.
@@ -20,7 +21,8 @@ pub fn run(
     output: &str,
 ) -> Result<()> {
     let conn = db::require_unlocked_db(vault_path)?;
-    let transactions = list_transactions(&conn, &ListOptions::default())?;
+    let store_txns = list_transactions(&conn, &ListOptions::default())?;
+    let transactions = convert::to_accounting_txns(&store_txns);
 
     let report = compute_register(&transactions, account_filter, begin, end);
 

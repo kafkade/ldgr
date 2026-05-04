@@ -4,6 +4,7 @@ use std::process;
 use clap::Parser;
 
 mod commands;
+mod convert;
 mod db;
 mod session;
 
@@ -111,6 +112,26 @@ enum Commands {
         /// End date (YYYY-MM-DD)
         #[arg(long)]
         end: Option<String>,
+        /// Output format: table, json, csv
+        #[arg(long, short, default_value = "table")]
+        output: String,
+    },
+
+    /// Income statement (Revenue - Expenses)
+    #[command(alias = "is")]
+    Incomestatement {
+        /// Query filters (e.g., date:2024, acct:Food)
+        query: Vec<String>,
+        /// Output format: table, json, csv
+        #[arg(long, short, default_value = "table")]
+        output: String,
+    },
+
+    /// Balance sheet (Assets - Liabilities = Equity)
+    #[command(alias = "bs")]
+    Balancesheet {
+        /// Query filters (e.g., date:2024)
+        query: Vec<String>,
         /// Output format: table, json, csv
         #[arg(long, short, default_value = "table")]
         output: String,
@@ -258,6 +279,12 @@ fn main() {
             end.as_deref(),
             &output,
         ),
+        Some(Commands::Incomestatement { query, output }) => {
+            commands::incomestatement::run(&vault_path, &query, &output)
+        }
+        Some(Commands::Balancesheet { query, output }) => {
+            commands::balancesheet::run(&vault_path, &query, &output)
+        }
         None => {
             eprintln!("ldgr — Zero-knowledge bookkeeping");
             eprintln!("Run `ldgr --help` for usage.");

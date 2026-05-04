@@ -1,8 +1,10 @@
 pub mod accounts;
 pub mod add;
 pub mod balance;
+pub mod balancesheet;
 pub mod delete;
 pub mod import;
+pub mod incomestatement;
 pub mod init;
 pub mod lock;
 pub mod register;

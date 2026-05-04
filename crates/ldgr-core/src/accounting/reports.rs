@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use rust_decimal::Decimal;
 
-use crate::storage::transactions::{Posting, Transaction};
+use crate::accounting::types::{Posting, Transaction};
 
 // ── Balance Report ─────────────────────────────────────────────────────────────
 
@@ -47,7 +47,7 @@ pub fn compute_balance(
         for posting in &txn.postings {
             if let Some(filter) = account_filter {
                 if !posting
-                    .account_id
+                    .account
                     .to_lowercase()
                     .contains(&filter.to_lowercase())
                 {
@@ -57,7 +57,7 @@ pub fn compute_balance(
 
             let (qty, commodity) = parse_posting_amount(posting);
             *balances
-                .entry(posting.account_id.clone())
+                .entry(posting.account.clone())
                 .or_default()
                 .entry(commodity)
                 .or_insert(Decimal::ZERO) += qty;
@@ -133,7 +133,7 @@ pub fn compute_register(
         for posting in &txn.postings {
             if let Some(filter) = account_filter {
                 if !posting
-                    .account_id
+                    .account
                     .to_lowercase()
                     .contains(&filter.to_lowercase())
                 {
@@ -148,7 +148,7 @@ pub fn compute_register(
             entries.push(RegisterEntry {
                 date: txn.date.clone(),
                 description: txn.description.clone(),
-                account: posting.account_id.clone(),
+                account: posting.account.clone(),
                 amount: qty,
                 commodity,
                 running_balance: *balance,
@@ -162,19 +162,10 @@ pub fn compute_register(
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 fn parse_posting_amount(posting: &Posting) -> (Decimal, String) {
-    let qty = posting
-        .amount_quantity
-        .as_deref()
-        .and_then(|s| s.parse::<Decimal>().ok())
-        .unwrap_or(Decimal::ZERO);
-
-    let commodity = posting
-        .amount_commodity
-        .as_deref()
-        .unwrap_or("")
-        .to_string();
-
-    (qty, commodity)
+    match &posting.amount {
+        Some(amt) => (amt.quantity, amt.commodity.clone()),
+        None => (Decimal::ZERO, String::new()),
+    }
 }
 
 fn date_in_range(date: &str, begin: Option<&str>, end: Option<&str>) -> bool {
@@ -191,38 +182,212 @@ fn date_in_range(date: &str, begin: Option<&str>, end: Option<&str>) -> bool {
     true
 }
 
+// ── Income Statement ───────────────────────────────────────────────────────────
+
+/// Income statement: Revenue minus Expenses for a period.
+#[derive(Debug, Clone)]
+pub struct IncomeStatement {
+    pub income: Vec<AccountBalance>,
+    pub expenses: Vec<AccountBalance>,
+    pub income_totals: BTreeMap<String, Decimal>,
+    pub expense_totals: BTreeMap<String, Decimal>,
+    pub net_income: BTreeMap<String, Decimal>,
+}
+
+/// Compute an income statement for the given transactions.
+pub fn compute_income_statement(
+    transactions: &[Transaction],
+    query: &super::query::Query,
+) -> IncomeStatement {
+    let income_report = compute_filtered(transactions, query, |acct| {
+        let top = acct.split(':').next().unwrap_or("").to_lowercase();
+        top == "income" || top == "revenue" || top == "revenues"
+    });
+    let expense_report = compute_filtered(transactions, query, |acct| {
+        let top = acct.split(':').next().unwrap_or("").to_lowercase();
+        top == "expenses" || top == "expense"
+    });
+
+    let mut net_income = BTreeMap::new();
+    for (commodity, qty) in &income_report.totals {
+        *net_income.entry(commodity.clone()).or_insert(Decimal::ZERO) += qty;
+    }
+    for (commodity, qty) in &expense_report.totals {
+        *net_income.entry(commodity.clone()).or_insert(Decimal::ZERO) += qty;
+    }
+
+    IncomeStatement {
+        income: income_report.accounts,
+        expenses: expense_report.accounts,
+        income_totals: income_report.totals,
+        expense_totals: expense_report.totals,
+        net_income,
+    }
+}
+
+// ── Balance Sheet ──────────────────────────────────────────────────────────────
+
+/// Balance sheet: Assets - Liabilities = Equity at a point in time.
+#[derive(Debug, Clone)]
+pub struct BalanceSheet {
+    pub assets: Vec<AccountBalance>,
+    pub liabilities: Vec<AccountBalance>,
+    pub equity: Vec<AccountBalance>,
+    pub asset_totals: BTreeMap<String, Decimal>,
+    pub liability_totals: BTreeMap<String, Decimal>,
+    pub equity_totals: BTreeMap<String, Decimal>,
+}
+
+/// Compute a balance sheet from the given transactions.
+pub fn compute_balance_sheet(
+    transactions: &[Transaction],
+    query: &super::query::Query,
+) -> BalanceSheet {
+    let assets = compute_filtered(transactions, query, |acct| {
+        let top = acct.split(':').next().unwrap_or("").to_lowercase();
+        top == "assets" || top == "asset"
+    });
+    let liabilities = compute_filtered(transactions, query, |acct| {
+        let top = acct.split(':').next().unwrap_or("").to_lowercase();
+        top == "liabilities" || top == "liability"
+    });
+    let equity_report = compute_filtered(transactions, query, |acct| {
+        let top = acct.split(':').next().unwrap_or("").to_lowercase();
+        top == "equity"
+    });
+
+    BalanceSheet {
+        assets: assets.accounts,
+        liabilities: liabilities.accounts,
+        equity: equity_report.accounts,
+        asset_totals: assets.totals,
+        liability_totals: liabilities.totals,
+        equity_totals: equity_report.totals,
+    }
+}
+
+// ── Query-aware helpers ────────────────────────────────────────────────────────
+
+fn compute_filtered(
+    transactions: &[Transaction],
+    query: &super::query::Query,
+    account_predicate: impl Fn(&str) -> bool,
+) -> BalanceReport {
+    let mut balances: BTreeMap<String, BTreeMap<String, Decimal>> = BTreeMap::new();
+
+    for txn in transactions {
+        if !query.matches_transaction(txn) {
+            continue;
+        }
+        for posting in &txn.postings {
+            if !account_predicate(&posting.account) {
+                continue;
+            }
+            if !query.matches_posting(posting, txn) {
+                continue;
+            }
+            let (qty, commodity) = parse_posting_amount(posting);
+            *balances
+                .entry(posting.account.clone())
+                .or_default()
+                .entry(commodity)
+                .or_insert(Decimal::ZERO) += qty;
+        }
+    }
+
+    let accounts: Vec<AccountBalance> = balances
+        .into_iter()
+        .map(|(account, bals)| {
+            let depth = account.matches(':').count();
+            AccountBalance {
+                account,
+                balances: bals,
+                depth,
+            }
+        })
+        .collect();
+
+    let mut totals: BTreeMap<String, Decimal> = BTreeMap::new();
+    for ab in &accounts {
+        for (commodity, qty) in &ab.balances {
+            *totals.entry(commodity.clone()).or_insert(Decimal::ZERO) += qty;
+        }
+    }
+
+    BalanceReport { accounts, totals }
+}
+
+/// Compute balances using the query system.
+pub fn compute_balance_with_query(
+    transactions: &[Transaction],
+    query: &super::query::Query,
+) -> BalanceReport {
+    compute_filtered(transactions, query, |_| true)
+}
+
+/// Compute register using the query system.
+pub fn compute_register_with_query(
+    transactions: &[Transaction],
+    query: &super::query::Query,
+) -> RegisterReport {
+    let mut sorted: Vec<&Transaction> = transactions
+        .iter()
+        .filter(|txn| query.matches_transaction(txn))
+        .collect();
+    sorted.sort_by(|a, b| a.date.cmp(&b.date));
+
+    let mut entries = Vec::new();
+    let mut running: BTreeMap<String, Decimal> = BTreeMap::new();
+
+    for txn in &sorted {
+        for posting in &txn.postings {
+            if !query.matches_posting(posting, txn) {
+                continue;
+            }
+            let (qty, commodity) = parse_posting_amount(posting);
+            let balance = running.entry(commodity.clone()).or_insert(Decimal::ZERO);
+            *balance += qty;
+            entries.push(RegisterEntry {
+                date: txn.date.clone(),
+                description: txn.description.clone(),
+                account: posting.account.clone(),
+                amount: qty,
+                commodity,
+                running_balance: *balance,
+            });
+        }
+    }
+
+    RegisterReport { entries }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::transactions::{Posting, Transaction, TransactionStatus};
+    use crate::accounting::types::{Amount, Posting, Status, Transaction};
+    use std::collections::HashMap;
 
     fn make_txn(date: &str, desc: &str, postings: Vec<(&str, &str, &str)>) -> Transaction {
         Transaction {
-            id: String::new(),
             date: date.into(),
-            status: TransactionStatus::Cleared,
+            status: Status::Cleared,
             code: None,
             description: desc.into(),
             comment: None,
-            created_at: String::new(),
-            modified_at: String::new(),
-            version: 1,
-            deleted: false,
+            tags: HashMap::new(),
+            source_line: 0,
             postings: postings
                 .into_iter()
-                .enumerate()
-                .map(|(i, (acct, qty, comm))| Posting {
-                    id: String::new(),
-                    transaction_id: String::new(),
-                    account_id: acct.into(),
-                    amount_quantity: Some(qty.into()),
-                    amount_commodity: Some(comm.into()),
-                    balance_assertion_quantity: None,
-                    balance_assertion_commodity: None,
-                    #[allow(clippy::cast_possible_wrap)]
-                    posting_order: i as i64,
-                    created_at: String::new(),
-                    version: 1,
+                .map(|(acct, qty, comm)| Posting {
+                    account: acct.into(),
+                    amount: Some(Amount {
+                        quantity: qty.parse().unwrap(),
+                        commodity: comm.into(),
+                    }),
+                    balance_assertion: None,
+                    status: Status::Unmarked,
+                    comment: None,
+                    tags: HashMap::new(),
                 })
                 .collect(),
         }
