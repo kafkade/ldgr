@@ -142,6 +142,12 @@ enum Commands {
         /// Path to the journal file
         file: String,
     },
+
+    /// Reconcile an account against a bank statement
+    Reconcile {
+        /// Account name (e.g., Assets:Checking:Chase)
+        account: String,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -200,6 +206,7 @@ enum RulesAction {
     },
 }
 
+#[allow(clippy::too_many_lines)]
 fn main() {
     let cli = Cli::parse();
     let vault_path = session::resolve_vault_path(cli.vault.as_deref());
@@ -292,6 +299,7 @@ fn main() {
             commands::balancesheet::run(&vault_path, &query, &output)
         }
         Some(Commands::Validate { file }) => commands::validate::run(&file),
+        Some(Commands::Reconcile { account }) => commands::reconcile::run(&vault_path, &account),
         None => {
             eprintln!("ldgr — Zero-knowledge bookkeeping");
             eprintln!("Run `ldgr --help` for usage.");

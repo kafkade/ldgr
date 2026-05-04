@@ -7,6 +7,7 @@ pub mod import;
 pub mod incomestatement;
 pub mod init;
 pub mod lock;
+pub mod reconcile;
 pub mod register;
 pub mod rules;
 pub mod status;
