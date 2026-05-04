@@ -1,7 +1,7 @@
 //! Benchmark Argon2id key derivation with different parameter sets.
 //!
 //! Run with:
-//!   cargo run --example bench_argon2 -p ldgr-core --release
+//!   cargo run --example `bench_argon2` -p ldgr-core --release
 //!
 //! This measures wall-clock time for `derive_master_key` with each
 //! preset to help choose the right security/speed tradeoff per platform.
