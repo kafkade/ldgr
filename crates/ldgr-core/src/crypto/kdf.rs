@@ -43,6 +43,19 @@ impl Argon2Params {
         }
     }
 
+    /// WASM defaults: 64 MB memory, 3 iterations, 1 thread.
+    ///
+    /// Single-threaded since WASM has limited threading support.
+    /// Memory matches mobile to keep download/init time reasonable.
+    #[must_use]
+    pub fn wasm() -> Self {
+        Self {
+            memory_cost_kib: 64 * 1024,
+            iterations: 3,
+            parallelism: 1,
+        }
+    }
+
     /// Minimal parameters for testing. NOT suitable for production use.
     #[must_use]
     pub fn test() -> Self {

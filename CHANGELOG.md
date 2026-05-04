@@ -30,3 +30,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Session-based vault unlock with configurable timeout (`--timeout`, default 15 min)
 - Recovery key displayed in a bordered box during vault creation
 - SQLite database auto-initialized alongside the vault on `ldgr init`
+- WASM-optimized Argon2id parameter preset (64 MB, 3 iterations, single-threaded)
