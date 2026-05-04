@@ -46,3 +46,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Register report: `ldgr register` with chronological transaction list and running balance
 - Query filters for reports: `--begin`, `--end`, and account name substring filtering
 - Report output formats: `--output table|json|csv` for balance and register
+- Income statement report: `ldgr incomestatement` (alias `is`) showing Revenue - Expenses = Net Income
+- Balance sheet report: `ldgr balancesheet` (alias `bs`) showing Assets, Liabilities, and Equity
+- Query language for filtering: `acct:`, `desc:`, `date:`, `amt:>`, `amt:<`, `tag:`, `not:` with AND composition
