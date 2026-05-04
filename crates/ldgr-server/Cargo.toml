@@ -8,7 +8,7 @@ license = "AGPL-3.0-only"
 repository.workspace = true
 
 [dependencies]
-ldgr-core = { path = "../ldgr-core", features = ["core", "sync"] }
+ldgr-core = { path = "../ldgr-core", features = ["core", "sqlite", "sync"] }
 
 # Server
 axum.workspace = true

@@ -1,0 +1,10 @@
+{
+  "config": {
+    "line-length": false
+  },
+  "ignores": [
+    "target/**",
+    "node_modules/**",
+    "pkg/**"
+  ]
+}
