@@ -29,7 +29,7 @@ pub fn run_list(vault_path: &Path) -> Result<()> {
     table.set_header(vec!["Priority", "Pattern", "Match", "Account"]);
 
     let mut sorted = rules;
-    sorted.sort_by(|a, b| b.priority.cmp(&a.priority));
+    sorted.sort_by_key(|r| std::cmp::Reverse(r.priority));
 
     for rule in &sorted {
         table.add_row(vec![
