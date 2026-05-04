@@ -1329,6 +1329,7 @@ name = "ldgr-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "comfy-table",
  "crossterm 0.28.1",
@@ -1337,6 +1338,8 @@ dependencies = [
  "ratatui",
  "reqwest",
  "rpassword",
+ "rusqlite",
+ "serde",
  "serde_json",
  "tokio",
 ]

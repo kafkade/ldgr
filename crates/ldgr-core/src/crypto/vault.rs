@@ -181,6 +181,48 @@ impl UnlockedVault {
 
         Ok(())
     }
+
+    /// Export the vault key bytes for session caching.
+    ///
+    /// **Security**: the caller must protect these bytes (restricted file
+    /// permissions, OS keychain, secure enclave, etc.). The vault key gives
+    /// full read/write access to all encrypted items.
+    pub fn export_session_key(&self) -> [u8; 32] {
+        *self.vault_key.as_bytes()
+    }
+
+    /// Access the vault format version.
+    pub fn format_version(&self) -> u16 {
+        self.header.format_version
+    }
+}
+
+/// Restore an unlocked vault from a previously exported session key.
+///
+/// This skips password derivation — the caller provides the vault key
+/// bytes directly (typically loaded from a session file or OS keychain).
+///
+/// # Errors
+///
+/// Returns an error if the vault format is invalid or the session key
+/// cannot decrypt the metadata.
+pub fn restore_vault_from_session(
+    data: &[u8],
+    session_key: &[u8; 32],
+) -> Result<UnlockedVault, CryptoError> {
+    let (header, items) = parse_vault(data)?;
+    let vk = VaultKey::from_bytes(*session_key);
+
+    let metadata_bytes = decrypt_item(&vk, &header.encrypted_metadata)?;
+    let metadata: VaultMetadata = serde_json::from_slice(&metadata_bytes)
+        .map_err(|e| CryptoError::InvalidVault(format!("invalid metadata JSON: {e}")))?;
+
+    Ok(UnlockedVault {
+        header,
+        vault_key: vk,
+        metadata,
+        items,
+    })
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────────

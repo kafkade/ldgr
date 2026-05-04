@@ -25,3 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SQLite storage layer with schema migration mechanism (`sqlite` feature flag)
 - Account CRUD with hierarchical names, optimistic concurrency, and soft delete
 - Transaction and posting CRUD with atomic writes and version tracking
+- CLI commands: `ldgr init`, `ldgr unlock`, `ldgr lock`, `ldgr status`
+- `--vault <PATH>` flag to specify a custom vault file path
+- Session-based vault unlock with configurable timeout (`--timeout`, default 15 min)
+- Recovery key displayed in a bordered box during vault creation
+- SQLite database auto-initialized alongside the vault on `ldgr init`

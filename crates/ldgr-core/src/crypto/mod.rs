@@ -20,7 +20,7 @@ pub use keys::{AuthKey, ItemKey, MasterEncryptionKey, MasterKey, RecoveryKey, Va
 pub use recovery::{decode_recovery_key, encode_recovery_key};
 pub use vault::{
     UnlockedVault, VaultHeader, VaultMetadata, create_vault, open_vault, recover_vault,
-    serialize_vault, validate_vault, verify_recovery_key,
+    restore_vault_from_session, serialize_vault, validate_vault, verify_recovery_key,
 };
 pub use wrap::{
     WrappedKey, unwrap_item_key, unwrap_vault_key, unwrap_vault_key_with_recovery, wrap_item_key,
