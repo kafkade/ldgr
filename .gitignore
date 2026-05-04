@@ -1,0 +1,25 @@
+# target/
+Cargo.lock is intentionally tracked for binary crates
+/target/
+*.swp
+*.swo
+*~
+.DS_Store
+.vscode/
+.idea/
+
+# WASM build output
+/crates/ldgr-core/pkg/
+
+# Node.js (web app)
+/apps/web/node_modules/
+/apps/web/.next/
+/apps/web/out/
+
+# iOS
+/apps/ios/build/
+*.xcuserdata
+
+# Environment
+.env
+.env.local

@@ -1,0 +1,32 @@
+[package]
+name = "ldgr-cli"
+description = "CLI interface for ldgr — zero-knowledge bookkeeping"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "ldgr"
+path = "src/main.rs"
+
+[dependencies]
+ldgr-core = { path = "../ldgr-core", features = ["full"] }
+
+# CLI
+clap.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+reqwest.workspace = true
+rpassword.workspace = true
+comfy-table.workspace = true
+indicatif.workspace = true
+
+# Runtime
+tokio.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
