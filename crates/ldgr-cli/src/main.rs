@@ -4,6 +4,7 @@ use std::process;
 use clap::Parser;
 
 mod commands;
+mod db;
 mod session;
 
 /// ldgr — Zero-knowledge bookkeeping
@@ -32,6 +33,67 @@ enum Commands {
     Lock,
     /// Show vault status
     Status,
+
+    /// Manage accounts
+    Accounts {
+        #[command(subcommand)]
+        action: Option<AccountAction>,
+        /// List accounts as plain names (one per line)
+        #[arg(long)]
+        flat: bool,
+    },
+
+    /// Add a new transaction
+    Add {
+        /// Transaction date (YYYY-MM-DD). Omit for interactive mode.
+        #[arg(long)]
+        date: Option<String>,
+        /// Transaction description
+        #[arg(long, alias = "desc")]
+        description: Option<String>,
+        /// Transaction status: unmarked, pending, cleared
+        #[arg(long, default_value = "unmarked")]
+        status: String,
+        /// Posting in format 'Account  Amount Commodity' (repeat for each posting)
+        #[arg(long = "posting", num_args = 1)]
+        postings: Vec<String>,
+    },
+
+    /// Delete a transaction (soft delete)
+    Delete {
+        /// Transaction ID
+        id: String,
+        /// Skip confirmation prompt
+        #[arg(long, short)]
+        force: bool,
+    },
+}
+
+#[derive(clap::Subcommand)]
+enum AccountAction {
+    /// Create a new account
+    Add {
+        /// Account name (e.g., Assets:Checking:Chase)
+        name: String,
+        /// Account type: asset, liability, income, expense, equity
+        #[arg(long, short = 't')]
+        r#type: Option<String>,
+        /// Default commodity (e.g., USD)
+        #[arg(long, short)]
+        commodity: Option<String>,
+    },
+    /// Rename an account
+    Rename {
+        /// Current account name
+        old: String,
+        /// New account name
+        new: String,
+    },
+    /// Delete an account (soft delete)
+    Delete {
+        /// Account name
+        name: String,
+    },
 }
 
 fn main() {
@@ -43,6 +105,38 @@ fn main() {
         Some(Commands::Unlock { timeout }) => commands::unlock::run(&vault_path, timeout),
         Some(Commands::Lock) => commands::lock::run(&vault_path),
         Some(Commands::Status) => commands::status::run(&vault_path),
+        Some(Commands::Accounts { action, flat }) => match action {
+            Some(AccountAction::Add {
+                name,
+                r#type,
+                commodity,
+            }) => commands::accounts::run_add(
+                &vault_path,
+                &name,
+                r#type.as_deref(),
+                commodity.as_deref(),
+            ),
+            Some(AccountAction::Rename { old, new }) => {
+                commands::accounts::run_rename(&vault_path, &old, &new)
+            }
+            Some(AccountAction::Delete { name }) => {
+                commands::accounts::run_delete(&vault_path, &name)
+            }
+            None => commands::accounts::run_list(&vault_path, flat),
+        },
+        Some(Commands::Add {
+            date,
+            description,
+            status,
+            postings,
+        }) => {
+            if let (Some(date), Some(desc)) = (date.as_deref(), description.as_deref()) {
+                commands::add::run_noninteractive(&vault_path, date, desc, &status, &postings)
+            } else {
+                commands::add::run_interactive(&vault_path)
+            }
+        }
+        Some(Commands::Delete { id, force }) => commands::delete::run(&vault_path, &id, force),
         None => {
             eprintln!("ldgr — Zero-knowledge bookkeeping");
             eprintln!("Run `ldgr --help` for usage.");
