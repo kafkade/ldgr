@@ -3,11 +3,16 @@
 //! This module implements a strict subset of hledger's journal format.
 //! See `docs/journal-subset.md` for the full specification.
 
+pub mod lots;
 pub mod parser;
 pub mod query;
 pub mod reports;
 pub mod types;
 
+pub use lots::{
+    CostBasisMethod, DisposalResult, GainEntry, HoldingTerm, Lot, LotConsumption, classify_term,
+    dispose_average, dispose_fifo, dispose_lifo, dispose_specific, unrealized_gain,
+};
 pub use parser::{ParseError, parse_journal};
 pub use query::{Filter, Query};
 pub use reports::{
