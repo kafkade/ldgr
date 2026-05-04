@@ -42,7 +42,7 @@ pub struct ImportRule {
 pub fn apply_rules(candidates: &mut [ImportCandidate], rules: &[ImportRule]) {
     // Sort rules by priority descending
     let mut sorted_rules: Vec<&ImportRule> = rules.iter().collect();
-    sorted_rules.sort_by(|a, b| b.priority.cmp(&a.priority));
+    sorted_rules.sort_by_key(|r| std::cmp::Reverse(r.priority));
 
     for candidate in candidates.iter_mut() {
         if candidate.target_account.is_some() {
@@ -75,7 +75,7 @@ pub fn matches_rule(description: &str, rule: &ImportRule) -> bool {
 /// Returns the first matching rule in priority order.
 pub fn test_rules<'a>(description: &str, rules: &'a [ImportRule]) -> Option<&'a ImportRule> {
     let mut sorted: Vec<&ImportRule> = rules.iter().collect();
-    sorted.sort_by(|a, b| b.priority.cmp(&a.priority));
+    sorted.sort_by_key(|r| std::cmp::Reverse(r.priority));
 
     sorted
         .into_iter()
