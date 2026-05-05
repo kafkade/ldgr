@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Missing recurring transaction alerts
 - Financial goals tracking with savings, debt payoff, investment, and emergency fund types
 - Goal projections: linear timeline, what-if scenarios, required monthly contribution
+- Sync event generation with Lamport clocks, vector clocks, and batch serialization
+- Conflict detection for concurrent entity modifications across devices with user-review resolution
 
 ## [0.1.0] — 2026-05-04
 
