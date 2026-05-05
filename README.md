@@ -28,12 +28,52 @@ ldgr init
 # Unlock the vault
 ldgr unlock
 
-# Check vault status
-ldgr status
+# Add accounts and transactions
+ldgr accounts add Assets:Checking:Chase
+ldgr accounts add Expenses:Food
+ldgr add --date 2024-01-15 --description "Groceries" \
+  --posting "Expenses:Food  42.50 USD" \
+  --posting "Assets:Checking:Chase  -42.50 USD"
+
+# View reports
+ldgr balance
+ldgr register
+ldgr incomestatement
+ldgr balancesheet
+
+# Import from bank exports
+ldgr import statement.csv --profile chase
+ldgr import statement.ofx
+
+# Export for hledger
+ldgr export --format hledger | hledger balance
 
 # Lock when done
 ldgr lock
 ```
+
+## Commands
+
+| Command | Description |
+| --- | --- |
+| `ldgr init` | Create a new encrypted vault |
+| `ldgr unlock` | Unlock vault with master password |
+| `ldgr lock` | Lock vault (clear session) |
+| `ldgr status` | Show vault path, version, and lock state |
+| `ldgr accounts` | List all accounts |
+| `ldgr accounts add <name>` | Create account (auto-detects type from name) |
+| `ldgr accounts rename <old> <new>` | Rename an account |
+| `ldgr add` | Add a transaction (interactive or with flags) |
+| `ldgr delete <id>` | Soft-delete a transaction |
+| `ldgr balance [query]` | Hierarchical account balances |
+| `ldgr register [query]` | Chronological register with running balance |
+| `ldgr incomestatement [query]` | Income statement (Revenue - Expenses) |
+| `ldgr balancesheet [query]` | Balance sheet (Assets - Liabilities = Equity) |
+| `ldgr import <file>` | Import CSV or OFX/QFX bank exports |
+| `ldgr export --format <fmt>` | Export to hledger, CSV, or JSON |
+| `ldgr validate <file>` | Check journal importability |
+| `ldgr reconcile <account>` | Interactive reconciliation |
+| `ldgr rules` | Manage import auto-categorization rules |
 
 ## Architecture
 
