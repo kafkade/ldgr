@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Budgeting module with envelope (rollover) and zero-based methods
+- Budget vs actual comparison with over-budget detection and percentage tracking
+- Recurring transaction detection: subscriptions, variable recurring, and income patterns
+- Missing recurring transaction alerts
+- Financial goals tracking with savings, debt payoff, investment, and emergency fund types
+- Goal projections: linear timeline, what-if scenarios, required monthly contribution
+
 ## [0.1.0] — 2026-05-04
 
 ### Added
