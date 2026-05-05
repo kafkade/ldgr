@@ -3,6 +3,7 @@ pub mod add;
 pub mod balance;
 pub mod balancesheet;
 pub mod delete;
+pub mod export;
 pub mod import;
 pub mod incomestatement;
 pub mod init;
