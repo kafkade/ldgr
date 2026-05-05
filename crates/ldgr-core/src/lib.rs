@@ -7,17 +7,14 @@
 //! code (CLI, iOS, web). This keeps the core testable and compilable to WASM.
 
 pub mod accounting;
+pub mod budget;
 pub mod crypto;
 pub mod export;
+pub mod goals;
 pub mod import;
 pub mod market;
 pub mod storage;
 
 // Feature-gated modules (uncomment as implemented)
 // pub mod sync;
-// pub mod import;
-// pub mod export;
-// pub mod market;
 // pub mod loans;
-// pub mod budget;
-// pub mod goals;
