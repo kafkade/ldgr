@@ -16,8 +16,9 @@ pub use lots::{
 pub use parser::{ParseError, parse_journal};
 pub use query::{Filter, Query};
 pub use reports::{
-    AccountBalance, BalanceReport, BalanceSheet, IncomeStatement, RegisterEntry, RegisterReport,
-    compute_balance, compute_balance_sheet, compute_balance_with_query, compute_income_statement,
-    compute_register, compute_register_with_query,
+    AccountBalance, BalanceReport, BalanceSheet, CashFlow, IncomeStatement, NetWorth,
+    RegisterEntry, RegisterReport, TrialBalance, TrialBalanceEntry, compute_balance,
+    compute_balance_sheet, compute_balance_with_query, compute_cash_flow, compute_income_statement,
+    compute_net_worth, compute_register, compute_register_with_query, compute_trial_balance,
 };
 pub use types::*;
