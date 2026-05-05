@@ -14,7 +14,7 @@ pub mod goals;
 pub mod import;
 pub mod market;
 pub mod storage;
+pub mod sync;
 
 // Feature-gated modules (uncomment as implemented)
-// pub mod sync;
 // pub mod loans;
