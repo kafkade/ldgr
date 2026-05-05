@@ -148,6 +148,15 @@ enum Commands {
         /// Account name (e.g., Assets:Checking:Chase)
         account: String,
     },
+
+    /// Export transactions to CSV, JSON, or hledger journal
+    Export {
+        /// Output format: hledger, csv, json
+        #[arg(long, short, default_value = "hledger")]
+        format: String,
+        /// Query filters (e.g., date:2024, acct:Expenses)
+        query: Vec<String>,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -300,6 +309,9 @@ fn main() {
         }
         Some(Commands::Validate { file }) => commands::validate::run(&file),
         Some(Commands::Reconcile { account }) => commands::reconcile::run(&vault_path, &account),
+        Some(Commands::Export { format, query }) => {
+            commands::export::run(&vault_path, &format, &query)
+        }
         None => {
             eprintln!("ldgr — Zero-knowledge bookkeeping");
             eprintln!("Run `ldgr --help` for usage.");

@@ -61,3 +61,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Net worth tracking with breakdown by liquid assets, investments, and liabilities
 - Cash flow report grouped by operating, investing, and financing activities
 - Trial balance report with debit/credit totals and balance verification
+- Export to hledger journal, CSV, and JSON: `ldgr export --format hledger|csv|json` with query filters
