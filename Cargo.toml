@@ -43,7 +43,7 @@ crossterm = "0.28"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rpassword = "7"
 comfy-table = "7"
-indicatif = "0.17"
+indicatif = "0.18"
 
 # Server
 axum = "0.8"
