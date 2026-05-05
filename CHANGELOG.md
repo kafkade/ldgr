@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Goal projections: linear timeline, what-if scenarios, required monthly contribution
 - Sync event generation with Lamport clocks, vector clocks, and batch serialization
 - Conflict detection for concurrent entity modifications across devices with user-review resolution
+- Snapshot compaction for efficient new-device onboarding with configurable retention policy
+- Device onboarding via X25519 key exchange with QR payload and MITM-prevention verification code
 
 ## [0.1.0] — 2026-05-04
 
