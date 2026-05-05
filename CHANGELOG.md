@@ -58,3 +58,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Short-term vs long-term holding period classification (365-day threshold)
 - Pluggable market data provider trait (I/O-free: builds URLs and parses responses)
 - Yahoo Finance provider: current quotes and historical OHLCV for stocks, ETFs, crypto, forex
+- Net worth tracking with breakdown by liquid assets, investments, and liabilities
+- Cash flow report grouped by operating, investing, and financing activities
+- Trial balance report with debit/credit totals and balance verification

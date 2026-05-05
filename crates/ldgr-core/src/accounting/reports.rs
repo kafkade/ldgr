@@ -361,6 +361,243 @@ pub fn compute_register_with_query(
     RegisterReport { entries }
 }
 
+// ── Net Worth ──────────────────────────────────────────────────────────────────
+
+/// Net worth snapshot with breakdown by category.
+#[derive(Debug, Clone)]
+pub struct NetWorth {
+    pub total: BTreeMap<String, Decimal>,
+    pub assets: BTreeMap<String, Decimal>,
+    pub liabilities: BTreeMap<String, Decimal>,
+    pub liquid: BTreeMap<String, Decimal>,
+    pub investments: BTreeMap<String, Decimal>,
+}
+
+/// Compute current net worth from transactions.
+pub fn compute_net_worth(transactions: &[Transaction], query: &super::query::Query) -> NetWorth {
+    let sheet = compute_balance_sheet(transactions, query);
+
+    let mut total: BTreeMap<String, Decimal> = BTreeMap::new();
+    let mut liquid: BTreeMap<String, Decimal> = BTreeMap::new();
+    let mut investments: BTreeMap<String, Decimal> = BTreeMap::new();
+
+    for ab in &sheet.assets {
+        let is_investment = ab.account.to_lowercase().contains("invest")
+            || ab.account.to_lowercase().contains("brokerage")
+            || ab.account.to_lowercase().contains("retirement");
+
+        for (commodity, qty) in &ab.balances {
+            *total.entry(commodity.clone()).or_insert(Decimal::ZERO) += qty;
+            if is_investment {
+                *investments
+                    .entry(commodity.clone())
+                    .or_insert(Decimal::ZERO) += qty;
+            } else {
+                *liquid.entry(commodity.clone()).or_insert(Decimal::ZERO) += qty;
+            }
+        }
+    }
+
+    for ab in &sheet.liabilities {
+        for (commodity, qty) in &ab.balances {
+            *total.entry(commodity.clone()).or_insert(Decimal::ZERO) += qty;
+        }
+    }
+
+    NetWorth {
+        total,
+        assets: sheet.asset_totals,
+        liabilities: sheet.liability_totals,
+        liquid,
+        investments,
+    }
+}
+
+// ── Cash Flow ──────────────────────────────────────────────────────────────────
+
+/// Cash flow report grouped by operating/investing/financing.
+#[derive(Debug, Clone)]
+pub struct CashFlow {
+    pub operating: BTreeMap<String, Decimal>,
+    pub investing: BTreeMap<String, Decimal>,
+    pub financing: BTreeMap<String, Decimal>,
+    pub operating_total: BTreeMap<String, Decimal>,
+    pub investing_total: BTreeMap<String, Decimal>,
+    pub financing_total: BTreeMap<String, Decimal>,
+    pub net_total: BTreeMap<String, Decimal>,
+}
+
+/// Compute cash flow from transactions.
+pub fn compute_cash_flow(transactions: &[Transaction], query: &super::query::Query) -> CashFlow {
+    let mut operating: BTreeMap<String, BTreeMap<String, Decimal>> = BTreeMap::new();
+    let mut investing: BTreeMap<String, BTreeMap<String, Decimal>> = BTreeMap::new();
+    let mut financing: BTreeMap<String, BTreeMap<String, Decimal>> = BTreeMap::new();
+
+    for txn in transactions {
+        if !query.matches_transaction(txn) {
+            continue;
+        }
+        for posting in &txn.postings {
+            let (qty, commodity) = parse_posting_amount(posting);
+            let map = match classify_cash_flow(&posting.account) {
+                CfCategory::Operating => &mut operating,
+                CfCategory::Investing => &mut investing,
+                CfCategory::Financing => &mut financing,
+            };
+            *map.entry(posting.account.clone())
+                .or_default()
+                .entry(commodity)
+                .or_insert(Decimal::ZERO) += qty;
+        }
+    }
+
+    let operating_total = sum_section(&operating);
+    let investing_total = sum_section(&investing);
+    let financing_total = sum_section(&financing);
+
+    let mut net_total: BTreeMap<String, Decimal> = BTreeMap::new();
+    for totals in [&operating_total, &investing_total, &financing_total] {
+        for (c, q) in totals {
+            *net_total.entry(c.clone()).or_insert(Decimal::ZERO) += q;
+        }
+    }
+
+    CashFlow {
+        operating: flatten_section(&operating),
+        investing: flatten_section(&investing),
+        financing: flatten_section(&financing),
+        operating_total,
+        investing_total,
+        financing_total,
+        net_total,
+    }
+}
+
+enum CfCategory {
+    Operating,
+    Investing,
+    Financing,
+}
+
+fn classify_cash_flow(account: &str) -> CfCategory {
+    let top = account.split(':').next().unwrap_or("").to_lowercase();
+    match top.as_str() {
+        "income" | "revenue" | "revenues" | "expenses" | "expense" => CfCategory::Operating,
+        "equity" => CfCategory::Financing,
+        _ => {
+            let lower = account.to_lowercase();
+            if lower.contains("invest") || lower.contains("brokerage") {
+                CfCategory::Investing
+            } else if lower.contains("loan") || lower.contains("mortgage") {
+                CfCategory::Financing
+            } else {
+                CfCategory::Operating
+            }
+        }
+    }
+}
+
+fn sum_section(section: &BTreeMap<String, BTreeMap<String, Decimal>>) -> BTreeMap<String, Decimal> {
+    let mut totals: BTreeMap<String, Decimal> = BTreeMap::new();
+    for balances in section.values() {
+        for (commodity, qty) in balances {
+            *totals.entry(commodity.clone()).or_insert(Decimal::ZERO) += qty;
+        }
+    }
+    totals
+}
+
+fn flatten_section(
+    section: &BTreeMap<String, BTreeMap<String, Decimal>>,
+) -> BTreeMap<String, Decimal> {
+    let mut flat: BTreeMap<String, Decimal> = BTreeMap::new();
+    for (account, balances) in section {
+        for (commodity, qty) in balances {
+            let key = if commodity.is_empty() {
+                account.clone()
+            } else {
+                format!("{account} ({commodity})")
+            };
+            *flat.entry(key).or_insert(Decimal::ZERO) += qty;
+        }
+    }
+    flat
+}
+
+// ── Trial Balance ──────────────────────────────────────────────────────────────
+
+/// Trial balance entry.
+#[derive(Debug, Clone)]
+pub struct TrialBalanceEntry {
+    pub account: String,
+    pub debit: Decimal,
+    pub credit: Decimal,
+}
+
+/// Trial balance: all accounts with debit/credit totals.
+#[derive(Debug, Clone)]
+pub struct TrialBalance {
+    pub entries: Vec<TrialBalanceEntry>,
+    pub total_debit: Decimal,
+    pub total_credit: Decimal,
+    /// Should be zero if books are balanced.
+    pub difference: Decimal,
+}
+
+/// Compute trial balance from transactions.
+pub fn compute_trial_balance(
+    transactions: &[Transaction],
+    query: &super::query::Query,
+) -> TrialBalance {
+    let mut debits: BTreeMap<String, Decimal> = BTreeMap::new();
+    let mut credits: BTreeMap<String, Decimal> = BTreeMap::new();
+
+    for txn in transactions {
+        if !query.matches_transaction(txn) {
+            continue;
+        }
+        for posting in &txn.postings {
+            let (qty, _) = parse_posting_amount(posting);
+            if qty > Decimal::ZERO {
+                *debits
+                    .entry(posting.account.clone())
+                    .or_insert(Decimal::ZERO) += qty;
+            } else if qty < Decimal::ZERO {
+                *credits
+                    .entry(posting.account.clone())
+                    .or_insert(Decimal::ZERO) += qty.abs();
+            }
+        }
+    }
+
+    let mut all_accounts: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    all_accounts.extend(debits.keys().cloned());
+    all_accounts.extend(credits.keys().cloned());
+
+    let entries: Vec<TrialBalanceEntry> = all_accounts
+        .into_iter()
+        .map(|account| {
+            let debit = debits.get(&account).copied().unwrap_or(Decimal::ZERO);
+            let credit = credits.get(&account).copied().unwrap_or(Decimal::ZERO);
+            TrialBalanceEntry {
+                account,
+                debit,
+                credit,
+            }
+        })
+        .collect();
+
+    let total_debit: Decimal = entries.iter().map(|e| e.debit).sum();
+    let total_credit: Decimal = entries.iter().map(|e| e.credit).sum();
+
+    TrialBalance {
+        entries,
+        total_debit,
+        total_credit,
+        difference: total_debit - total_credit,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -633,5 +870,93 @@ mod tests {
     fn register_empty_transactions() {
         let report = compute_register(&[], None, None, None);
         assert!(report.entries.is_empty());
+    }
+
+    // --- Net Worth ---
+
+    #[test]
+    fn net_worth_assets_minus_liabilities() {
+        let txns = vec![
+            make_txn(
+                "2024-01-15",
+                "Income",
+                vec![
+                    ("Assets:Checking", "5000", "USD"),
+                    ("Income:Salary", "-5000", "USD"),
+                ],
+            ),
+            make_txn(
+                "2024-01-16",
+                "Loan",
+                vec![
+                    ("Assets:Checking", "10000", "USD"),
+                    ("Liabilities:Mortgage", "-10000", "USD"),
+                ],
+            ),
+        ];
+
+        let query = crate::accounting::query::Query::default();
+        let nw = compute_net_worth(&txns, &query);
+        // Assets: 15000, Liabilities: -10000, Net: 5000
+        assert_eq!(nw.total["USD"], Decimal::new(5000, 0));
+        assert_eq!(nw.assets["USD"], Decimal::new(15000, 0));
+    }
+
+    // --- Trial Balance ---
+
+    #[test]
+    fn trial_balance_debits_equal_credits() {
+        let txns = vec![
+            make_txn(
+                "2024-01-15",
+                "Test",
+                vec![
+                    ("Expenses:Food", "42.50", "USD"),
+                    ("Assets:Checking", "-42.50", "USD"),
+                ],
+            ),
+            make_txn(
+                "2024-01-16",
+                "Income",
+                vec![
+                    ("Assets:Checking", "5000", "USD"),
+                    ("Income:Salary", "-5000", "USD"),
+                ],
+            ),
+        ];
+
+        let query = crate::accounting::query::Query::default();
+        let tb = compute_trial_balance(&txns, &query);
+        assert_eq!(tb.difference, Decimal::ZERO, "debits must equal credits");
+        assert!(tb.total_debit > Decimal::ZERO);
+    }
+
+    // --- Cash Flow ---
+
+    #[test]
+    fn cash_flow_categorization() {
+        let txns = vec![
+            make_txn(
+                "2024-01-15",
+                "Salary",
+                vec![
+                    ("Assets:Checking", "5000", "USD"),
+                    ("Income:Salary", "-5000", "USD"),
+                ],
+            ),
+            make_txn(
+                "2024-01-16",
+                "Food",
+                vec![
+                    ("Expenses:Food", "42.50", "USD"),
+                    ("Assets:Checking", "-42.50", "USD"),
+                ],
+            ),
+        ];
+
+        let query = crate::accounting::query::Query::default();
+        let cf = compute_cash_flow(&txns, &query);
+        // Income and expenses are operating
+        assert!(!cf.operating.is_empty());
     }
 }
