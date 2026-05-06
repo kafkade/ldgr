@@ -12,6 +12,12 @@ An open-source, privacy-first personal finance system built on plain-text accoun
 - **Local-first** — SQLite-backed storage with versioned rows. Works fully offline. Sync is optional.
 - **Multi-platform** — Rust core library with CLI (clap + ratatui), iOS/iPadOS (SwiftUI via UniFFI), and web (Next.js + WASM) frontends.
 - **hledger-compatible** — import from and export to hledger journal format. Use `hledger` for reporting if you prefer.
+- **Investment tracking** — value holdings at market prices for net worth calculations. Market data from Yahoo Finance, CoinGecko (crypto), and ECB (forex) — all free, no API keys required.
+
+> **Note**: ldgr is a **net worth tracker**, not a trading platform. Market data
+> is used to value your investment holdings as part of the overall financial
+> picture. For investment decisions, use specialized tools (your brokerage
+> platform, Bloomberg, etc.).
 
 ## Quick Start
 

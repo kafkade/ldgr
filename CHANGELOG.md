@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Conflict detection for concurrent entity modifications across devices with user-review resolution
 - Snapshot compaction for efficient new-device onboarding with configurable retention policy
 - Device onboarding via X25519 key exchange with QR payload and MITM-prevention verification code
+- CoinGecko market data provider for cryptocurrency prices (no API key required)
+- ECB exchange rate provider for EUR-based forex rates (no API key, official government data)
+- Client-side market data cache with configurable TTL (15 min quotes, 24 hr historical)
+- Provider chain with automatic routing by asset class and fallback on failure
 
 ## [0.1.0] — 2026-05-04
 
