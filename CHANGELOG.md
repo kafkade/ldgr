@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-05-06
+
+### Added
+
+- Budgeting module with envelope (rollover) and zero-based methods
+- Budget vs actual comparison with over-budget detection and percentage tracking
+- Recurring transaction detection: subscriptions, variable recurring, and income patterns
+- Missing recurring transaction alerts
+- Financial goals tracking with savings, debt payoff, investment, and emergency fund types
+- Goal projections: linear timeline, what-if scenarios, required monthly contribution
+- Sync event generation with Lamport clocks, vector clocks, and batch serialization
+- Conflict detection for concurrent entity modifications across devices with user-review resolution
+- Snapshot compaction for efficient new-device onboarding with configurable retention policy
+- Device onboarding via X25519 key exchange with QR payload and MITM-prevention verification code
+- CoinGecko market data provider for cryptocurrency prices (no API key required)
+- ECB exchange rate provider for EUR-based forex rates (no API key, official government data)
+- Client-side market data cache with configurable TTL (15 min quotes, 24 hr historical)
+- Provider chain with automatic routing by asset class and fallback on failure
+
+## [0.1.0] — 2026-05-04
+
 ### Added
 
 - Cargo workspace with three crates: `ldgr-core` (library), `ldgr-cli` (binary), `ldgr-server` (sync server)
