@@ -1439,7 +1439,7 @@ dependencies = [
  "getrandom 0.2.17",
  "hkdf",
  "proptest",
- "rand 0.8.6",
+ "rand 0.9.4",
  "rusqlite",
  "rust_decimal",
  "serde",
