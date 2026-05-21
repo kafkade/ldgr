@@ -163,7 +163,7 @@ impl UnlockedVault {
         new_params: &Argon2Params,
     ) -> Result<(), CryptoError> {
         let mut new_salt = [0u8; SALT_LEN];
-        rand::thread_rng().fill_bytes(&mut new_salt);
+        rand::rng().fill_bytes(&mut new_salt);
 
         let mk = derive_master_key(new_password, &new_salt, new_params)?;
         let mek = derive_encryption_key(&mk)?;
@@ -246,7 +246,7 @@ pub fn create_vault(
     params: &Argon2Params,
 ) -> Result<(UnlockedVault, RecoveryKey), CryptoError> {
     let mut salt = [0u8; SALT_LEN];
-    rand::thread_rng().fill_bytes(&mut salt);
+    rand::rng().fill_bytes(&mut salt);
 
     // Derive key hierarchy
     let mk = derive_master_key(password, &salt, params)?;
@@ -404,7 +404,7 @@ pub fn recover_vault(
 
     // Generate new salt and derive new key hierarchy
     let mut new_salt = [0u8; SALT_LEN];
-    rand::thread_rng().fill_bytes(&mut new_salt);
+    rand::rng().fill_bytes(&mut new_salt);
 
     let mk = derive_master_key(new_password, &new_salt, new_params)?;
     let mek = derive_encryption_key(&mk)?;
