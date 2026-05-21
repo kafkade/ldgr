@@ -75,7 +75,7 @@ impl VaultKey {
     #[must_use]
     pub fn generate() -> Self {
         let mut bytes = [0u8; KEY_LEN];
-        rand::thread_rng().fill_bytes(&mut bytes);
+        rand::rng().fill_bytes(&mut bytes);
         Self(bytes)
     }
 }
@@ -85,7 +85,7 @@ impl ItemKey {
     #[must_use]
     pub fn generate() -> Self {
         let mut bytes = [0u8; KEY_LEN];
-        rand::thread_rng().fill_bytes(&mut bytes);
+        rand::rng().fill_bytes(&mut bytes);
         Self(bytes)
     }
 }
@@ -95,7 +95,7 @@ impl RecoveryKey {
     #[must_use]
     pub fn generate() -> Self {
         let mut bytes = [0u8; KEY_LEN];
-        rand::thread_rng().fill_bytes(&mut bytes);
+        rand::rng().fill_bytes(&mut bytes);
         Self(bytes)
     }
 }

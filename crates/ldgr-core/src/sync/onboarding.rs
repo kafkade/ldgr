@@ -40,7 +40,7 @@ pub struct OnboardingInitiation {
 /// The `connection` string should be the LAN address or relay URL
 /// where the new device can connect.
 pub fn initiate_onboarding(connection: &str) -> OnboardingInitiation {
-    let secret = EphemeralSecret::random_from_rng(rand::thread_rng());
+    let secret = EphemeralSecret::random();
     let public = PublicKey::from(&secret);
 
     let verification_code = generate_verification_code(&public);
@@ -75,7 +75,7 @@ pub fn respond_to_onboarding(qr_payload: &QrPayload) -> Result<OnboardingRespons
         .map_err(|_| "invalid public key length")?;
     let their_public = PublicKey::from(their_public);
 
-    let our_secret = EphemeralSecret::random_from_rng(rand::thread_rng());
+    let our_secret = EphemeralSecret::random();
     let our_public = PublicKey::from(&our_secret);
 
     let shared = our_secret.diffie_hellman(&their_public);
@@ -114,7 +114,7 @@ pub fn encrypt_vault_key(
         Aes256Gcm::new_from_slice(shared_secret).map_err(|e| format!("cipher error: {e}"))?;
 
     let mut nonce_bytes = [0u8; 12];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    rand::rng().fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let ciphertext = cipher

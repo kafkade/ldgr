@@ -121,7 +121,7 @@ pub fn encrypt_item(vault_key: &VaultKey, plaintext: &[u8]) -> Result<SealedEnve
         .map_err(|e| CryptoError::EncryptionFailed(e.to_string()))?;
 
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    rand::rng().fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let payload = aes_gcm::aead::Payload {
