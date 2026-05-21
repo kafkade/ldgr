@@ -21,7 +21,7 @@ argon2 = "0.5"
 hkdf = "0.12"
 sha2 = "0.10"
 rand = "0.9"
-x25519-dalek = { version = "2", features = ["static_secrets"] }
+x25519-dalek = { version = "2", features = ["static_secrets", "getrandom"] }
 zeroize = { version = "1", features = ["derive"] }
 
 # Data
