@@ -405,7 +405,7 @@ mod tests {
                 // Must be >= length prefix + payload
                 prop_assert!(size >= LENGTH_PREFIX_LEN + len);
                 // Must be one of the fixed buckets or a 32KB multiple
-                let valid = BUCKETS.contains(&size) || (size > *BUCKETS.last().unwrap() && size % LARGEST_BUCKET == 0);
+                let valid = BUCKETS.contains(&size) || (size > *BUCKETS.last().unwrap() && size.is_multiple_of(LARGEST_BUCKET));
                 prop_assert!(valid, "Invalid bucket size: {}", size);
             }
 

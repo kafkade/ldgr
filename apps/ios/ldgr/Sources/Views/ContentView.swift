@@ -21,7 +21,7 @@ struct ContentView: View {
 
             case .unlocked:
                 if let client {
-                    HomeView(appState: appState, client: client)
+                    MainTabView(appState: appState, client: client)
                 } else {
                     ProgressView("Initializing…")
                 }

@@ -79,15 +79,15 @@ fn parse_filter(term: &str) -> Option<Filter> {
     if let Some(rest) = term.strip_prefix("date:") {
         return Some(parse_date_filter(rest));
     }
-    if let Some(rest) = term.strip_prefix("amt:>") {
-        if let Ok(d) = rest.parse::<Decimal>() {
-            return Some(Filter::AmountGt(d));
-        }
+    if let Some(rest) = term.strip_prefix("amt:>")
+        && let Ok(d) = rest.parse::<Decimal>()
+    {
+        return Some(Filter::AmountGt(d));
     }
-    if let Some(rest) = term.strip_prefix("amt:<") {
-        if let Ok(d) = rest.parse::<Decimal>() {
-            return Some(Filter::AmountLt(d));
-        }
+    if let Some(rest) = term.strip_prefix("amt:<")
+        && let Ok(d) = rest.parse::<Decimal>()
+    {
+        return Some(Filter::AmountLt(d));
     }
     if let Some(rest) = term.strip_prefix("tag:") {
         if let Some((key, value)) = rest.split_once('=') {
@@ -134,15 +134,15 @@ fn filter_matches_txn(filter: &Filter, txn: &Transaction) -> bool {
         Filter::DateYear(y) => txn.date.starts_with(y.as_str()),
         Filter::DateMonth(m) => txn.date.starts_with(m.as_str()),
         Filter::DateRange { begin, end } => {
-            if let Some(b) = begin {
-                if txn.date.as_str() < b.as_str() {
-                    return false;
-                }
+            if let Some(b) = begin
+                && txn.date.as_str() < b.as_str()
+            {
+                return false;
             }
-            if let Some(e) = end {
-                if txn.date.as_str() > e.as_str() {
-                    return false;
-                }
+            if let Some(e) = end
+                && txn.date.as_str() > e.as_str()
+            {
+                return false;
             }
             true
         }

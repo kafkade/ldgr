@@ -580,12 +580,12 @@ fn take_status(rest: &mut &str) -> Status {
 
 /// Consume optional transaction code in parentheses.
 fn take_code(rest: &mut &str) -> Option<String> {
-    if rest.starts_with('(') {
-        if let Some(end) = rest.find(')') {
-            let code = rest[1..end].to_string();
-            *rest = &rest[end + 1..];
-            return Some(code);
-        }
+    if rest.starts_with('(')
+        && let Some(end) = rest.find(')')
+    {
+        let code = rest[1..end].to_string();
+        *rest = &rest[end + 1..];
+        return Some(code);
     }
     None
 }

@@ -47,7 +47,16 @@ The app is a thin SwiftUI layer over `LdgrClient` (from `bindings/swift/`):
 | `Sources/Services/BiometricManager.swift` | Face ID / Touch ID capability detection |
 | `Sources/Views/VaultSetupView.swift` | Create vault flow with recovery key display |
 | `Sources/Views/UnlockView.swift` | Password + biometric unlock |
-| `Sources/Views/HomeView.swift` | Accounts and balances dashboard |
+| `Sources/Views/HomeView.swift` | Legacy single-screen view (superseded by tab views) |
+| `Sources/Views/MainTabView.swift` | Adaptive tab bar (iPhone) / sidebar (iPad) navigation |
+| `Sources/Views/Dashboard/DashboardView.swift` | Net worth, recent transactions, quick stats |
+| `Sources/Views/Transactions/TransactionListView.swift` | Searchable/filterable transaction list |
+| `Sources/Views/Transactions/TransactionFormView.swift` | Add/correct transaction form |
+| `Sources/Views/Accounts/AccountListView.swift` | Accounts grouped by type with balances |
+| `Sources/Views/Accounts/AccountRegisterView.swift` | Transaction register for a single account |
+| `Sources/Views/Investments/InvestmentsView.swift` | Portfolio holdings and allocation chart |
+| `Sources/Views/Budget/BudgetView.swift` | Expense category progress bars (current month) |
+| `Sources/Services/VaultDataStore.swift` | Shared observable store for vault data across tabs |
 | `Sources/Views/SettingsView.swift` | Biometric toggle, auto-lock interval |
 
 ### Security Model

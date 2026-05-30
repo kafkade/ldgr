@@ -357,10 +357,10 @@ impl LdgrVault {
             }
 
             // Validate amount if present
-            if let Some(ref amt) = p.amount {
-                if amt.parse::<rust_decimal::Decimal>().is_err() {
-                    return Err(LdgrError::InvalidInput(format!("invalid amount: {amt}")));
-                }
+            if let Some(ref amt) = p.amount
+                && amt.parse::<rust_decimal::Decimal>().is_err()
+            {
+                return Err(LdgrError::InvalidInput(format!("invalid amount: {amt}")));
             }
 
             new_postings.push(NewPosting {

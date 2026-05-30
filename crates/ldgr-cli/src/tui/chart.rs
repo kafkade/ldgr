@@ -196,12 +196,12 @@ impl ChartApp {
             }
             KeyCode::Char(c) if c.is_ascii_digit() => {
                 let n = c as u8 - b'0';
-                if let Some(tf) = Timeframe::from_key(n) {
-                    if tf != self.timeframe {
-                        self.timeframe = tf;
-                        self.needs_data = true;
-                        self.loading = true;
-                    }
+                if let Some(tf) = Timeframe::from_key(n)
+                    && tf != self.timeframe
+                {
+                    self.timeframe = tf;
+                    self.needs_data = true;
+                    self.loading = true;
                 }
             }
             _ => {}

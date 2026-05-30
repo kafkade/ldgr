@@ -11,6 +11,7 @@ Each phase produces a usable, shippable product increment. Phases are sequential
 **Goal**: Buildable monorepo with crypto module and basic vault operations.
 
 ### Deliverables
+
 - Monorepo structure with Cargo workspace and CI/CD (GitHub Actions)
 - `ldgr-core` crate: crypto module (key hierarchy, Argon2id, AES-256-GCM, vault encrypt/decrypt)
 - Vault file format implementation (create, open, lock, unlock)
@@ -30,6 +31,7 @@ Each phase produces a usable, shippable product increment. Phases are sequential
 **Goal**: Usable single-device ledger. A user can track their finances entirely via CLI.
 
 ### Deliverables
+
 - hledger journal parser (strict subset v1.0, see ADR-002)
 - Document supported hledger syntax spec
 - Account management (create, list, rename)
@@ -52,6 +54,7 @@ Each phase produces a usable, shippable product increment. Phases are sequential
 **Goal**: Full import pipeline and investment tracking.
 
 ### Deliverables
+
 - OFX/QFX import support
 - Import deduplication (fuzzy matching: date ±2 days, exact amount, payee similarity)
 - Reconciliation workflow (`ldgr reconcile`)
@@ -74,6 +77,7 @@ Each phase produces a usable, shippable product increment. Phases are sequential
 **Goal**: Rich market data TUI and budgeting module.
 
 ### Deliverables
+
 - Alpha Vantage and CoinGecko market data providers
 - Market data caching layer with configurable TTL and rate limiting
 - CLI TUI: real-time watchlist with sparklines (ratatui)
@@ -95,6 +99,7 @@ Each phase produces a usable, shippable product increment. Phases are sequential
 **Goal**: Cross-device sync and native Apple apps.
 
 ### Deliverables
+
 - Sync event generation from local mutations
 - Event batch encryption/decryption
 - Conflict detection via vector clocks
@@ -125,6 +130,7 @@ Each phase produces a usable, shippable product increment. Phases are sequential
 **Goal**: Web app and advanced financial tools.
 
 ### Deliverables
+
 - WASM build pipeline (feature-flagged, < 2 MB compressed)
 - WASM bundle size optimization and CI enforcement
 - Next.js app shell with client-side vault operations
@@ -146,6 +152,7 @@ Each phase produces a usable, shippable product increment. Phases are sequential
 **Goal**: Apple Watch, widgets, and community ecosystem.
 
 ### Deliverables
+
 - Apple Watch app: net worth glance, portfolio summary, budget remaining
 - Watch complications: net worth, daily spend, portfolio gain/loss
 - iOS Widgets (WidgetKit): net worth, budget remaining, portfolio value

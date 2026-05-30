@@ -88,16 +88,17 @@ fn parse_ecb_xml(xml: &str) -> Result<Vec<(String, Decimal)>, MarketError> {
 
     for line in xml.lines() {
         let trimmed = line.trim();
-        if trimmed.contains("currency=") && trimmed.contains("rate=") {
-            if let (Some(currency), Some(rate)) = (
+        if trimmed.contains("currency=")
+            && trimmed.contains("rate=")
+            && let (Some(currency), Some(rate)) = (
                 extract_attr(trimmed, "currency"),
                 extract_attr(trimmed, "rate"),
-            ) {
-                let decimal: Decimal = rate
-                    .parse()
-                    .map_err(|e| MarketError::ParseError(format!("invalid rate '{rate}': {e}")))?;
-                rates.push((currency, decimal));
-            }
+            )
+        {
+            let decimal: Decimal = rate
+                .parse()
+                .map_err(|e| MarketError::ParseError(format!("invalid rate '{rate}': {e}")))?;
+            rates.push((currency, decimal));
         }
     }
 
@@ -123,32 +124,32 @@ fn parse_ecb_hist_xml(xml: &str) -> Vec<(String, std::collections::BTreeMap<Stri
         // Date line: <Cube time="2024-01-15">
         if trimmed.contains("time=") && !trimmed.contains("currency=") {
             // Save previous day
-            if let Some(date) = current_date.take() {
-                if !current_rates.is_empty() {
-                    daily.push((date, std::mem::take(&mut current_rates)));
-                }
+            if let Some(date) = current_date.take()
+                && !current_rates.is_empty()
+            {
+                daily.push((date, std::mem::take(&mut current_rates)));
             }
             current_date = extract_attr(trimmed, "time");
         }
 
         // Rate line: <Cube currency="USD" rate="1.0850"/>
-        if trimmed.contains("currency=") && trimmed.contains("rate=") {
-            if let (Some(currency), Some(rate_str)) = (
+        if trimmed.contains("currency=")
+            && trimmed.contains("rate=")
+            && let (Some(currency), Some(rate_str)) = (
                 extract_attr(trimmed, "currency"),
                 extract_attr(trimmed, "rate"),
-            ) {
-                if let Ok(rate) = rate_str.parse::<Decimal>() {
-                    current_rates.insert(currency, rate);
-                }
-            }
+            )
+            && let Ok(rate) = rate_str.parse::<Decimal>()
+        {
+            current_rates.insert(currency, rate);
         }
     }
 
     // Don't forget the last day
-    if let Some(date) = current_date {
-        if !current_rates.is_empty() {
-            daily.push((date, current_rates));
-        }
+    if let Some(date) = current_date
+        && !current_rates.is_empty()
+    {
+        daily.push((date, current_rates));
     }
 
     daily

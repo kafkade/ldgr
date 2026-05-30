@@ -1,6 +1,12 @@
 {
   "config": {
-    "line-length": false
+    "line-length": false,
+    "no-duplicate-heading": { "siblings_only": true },
+    "blanks-around-fences": false,
+    "blanks-around-lists": false,
+    "fenced-code-language": false,
+    "table-column-style": false,
+    "first-line-heading": false
   },
   "ignores": [
     "target/**",

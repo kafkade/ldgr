@@ -45,14 +45,13 @@ pub fn compute_balance(
         }
 
         for posting in &txn.postings {
-            if let Some(filter) = account_filter {
-                if !posting
+            if let Some(filter) = account_filter
+                && !posting
                     .account
                     .to_lowercase()
                     .contains(&filter.to_lowercase())
-                {
-                    continue;
-                }
+            {
+                continue;
             }
 
             let (qty, commodity) = parse_posting_amount(posting);
@@ -131,14 +130,13 @@ pub fn compute_register(
         }
 
         for posting in &txn.postings {
-            if let Some(filter) = account_filter {
-                if !posting
+            if let Some(filter) = account_filter
+                && !posting
                     .account
                     .to_lowercase()
                     .contains(&filter.to_lowercase())
-                {
-                    continue;
-                }
+            {
+                continue;
             }
 
             let (qty, commodity) = parse_posting_amount(posting);
@@ -169,15 +167,15 @@ fn parse_posting_amount(posting: &Posting) -> (Decimal, String) {
 }
 
 fn date_in_range(date: &str, begin: Option<&str>, end: Option<&str>) -> bool {
-    if let Some(b) = begin {
-        if date < b {
-            return false;
-        }
+    if let Some(b) = begin
+        && date < b
+    {
+        return false;
     }
-    if let Some(e) = end {
-        if date > e {
-            return false;
-        }
+    if let Some(e) = end
+        && date > e
+    {
+        return false;
     }
     true
 }

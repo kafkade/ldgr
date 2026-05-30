@@ -38,12 +38,12 @@ pub fn check_duplicate(
     existing: &[ExistingTransaction],
 ) -> DedupResult {
     // 1. Exact FITID match
-    if let Some(fitid) = &candidate.fitid {
-        if !fitid.is_empty() {
-            for (i, ex) in existing.iter().enumerate() {
-                if ex.fitid.as_deref() == Some(fitid.as_str()) {
-                    return DedupResult::ExactDuplicate { existing_index: i };
-                }
+    if let Some(fitid) = &candidate.fitid
+        && !fitid.is_empty()
+    {
+        for (i, ex) in existing.iter().enumerate() {
+            if ex.fitid.as_deref() == Some(fitid.as_str()) {
+                return DedupResult::ExactDuplicate { existing_index: i };
             }
         }
     }
