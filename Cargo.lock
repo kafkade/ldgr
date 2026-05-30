@@ -1577,7 +1577,7 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "ldgr-cli"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1600,7 +1600,7 @@ dependencies = [
 
 [[package]]
 name = "ldgr-core"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -1623,7 +1623,7 @@ dependencies = [
 
 [[package]]
 name = "ldgr-ffi"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "chrono",
  "ldgr-core",
@@ -1636,7 +1636,7 @@ dependencies = [
 
 [[package]]
 name = "ldgr-server"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3366,7 +3366,7 @@ dependencies = [
 
 [[package]]
 name = "uniffi-bindgen"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "uniffi",
 ]

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-05-30
+
 ### Added
 
 - Background sync infrastructure: event outbox, conflict storage, Lamport clock, and device identity
