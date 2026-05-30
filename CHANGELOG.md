@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI sync commands: `ldgr sync setup`, `ldgr sync push`, `ldgr sync pull`, `ldgr sync status`
 - UniFFI bindings with Swift async wrapper for iOS/macOS integration
 - XCFramework build pipeline for cross-compiling to iOS and simulator targets
+- iOS app with vault creation, password unlock, and account/balance dashboard
+- Face ID and Touch ID biometric unlock via Keychain-stored session key
+- Auto-lock on app background with configurable timeout (immediate / 1 min / 5 min / 15 min)
+- Privacy overlay hides vault content in the app switcher
+- Recovery key display with copy and share during vault creation
+- Session key export/import in FFI for biometric unlock without password re-derivation
 
 ## [1.0.0] - 2026-05-06
 
