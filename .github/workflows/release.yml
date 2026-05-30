@@ -53,19 +53,25 @@ jobs:
 
       - name: Build (native)
         if: "!matrix.cross"
-        run: cargo build --release --target ${{ matrix.target }} -p ldgr-cli
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p ldgr-cli
+          cargo build --release --target ${{ matrix.target }} -p ldgr-server
 
       - name: Build (cross)
         if: matrix.cross
-        run: cross build --release --target ${{ matrix.target }} -p ldgr-cli
+        run: |
+          cross build --release --target ${{ matrix.target }} -p ldgr-cli
+          cross build --release --target ${{ matrix.target }} -p ldgr-server
 
       - name: Package (unix)
         if: runner.os != 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
           tar czf ../../../ldgr-${{ matrix.target }}.tar.gz ldgr
+          tar czf ../../../ldgr-server-${{ matrix.target }}.tar.gz ldgr-server
           cd ../../..
           shasum -a 256 ldgr-${{ matrix.target }}.tar.gz > ldgr-${{ matrix.target }}.tar.gz.sha256
+          shasum -a 256 ldgr-server-${{ matrix.target }}.tar.gz > ldgr-server-${{ matrix.target }}.tar.gz.sha256
 
       - name: Package (windows)
         if: runner.os == 'Windows'
@@ -73,6 +79,8 @@ jobs:
         run: |
           Compress-Archive -Path "target/${{ matrix.target }}/release/ldgr.exe" -DestinationPath "ldgr-${{ matrix.target }}.zip"
           (Get-FileHash "ldgr-${{ matrix.target }}.zip" -Algorithm SHA256).Hash.ToLower() + "  ldgr-${{ matrix.target }}.zip" | Out-File -Encoding utf8 "ldgr-${{ matrix.target }}.zip.sha256"
+          Compress-Archive -Path "target/${{ matrix.target }}/release/ldgr-server.exe" -DestinationPath "ldgr-server-${{ matrix.target }}.zip"
+          (Get-FileHash "ldgr-server-${{ matrix.target }}.zip" -Algorithm SHA256).Hash.ToLower() + "  ldgr-server-${{ matrix.target }}.zip" | Out-File -Encoding utf8 "ldgr-server-${{ matrix.target }}.zip.sha256"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -83,6 +91,10 @@ jobs:
             ldgr-*.tar.gz.sha256
             ldgr-*.zip
             ldgr-*.zip.sha256
+            ldgr-server-*.tar.gz
+            ldgr-server-*.tar.gz.sha256
+            ldgr-server-*.zip
+            ldgr-server-*.zip.sha256
 
   release:
     name: Create GitHub Release

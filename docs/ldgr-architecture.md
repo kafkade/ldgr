@@ -587,6 +587,7 @@ struct Amount {
 ```
 
 **Reports**:
+
 | Report | Description |
 |--------|-------------|
 | Balance | Account balances at a point in time, hierarchical |
@@ -680,6 +681,7 @@ trait QuoteProvider: Send + Sync {
 ```
 
 **Built-in providers**:
+
 | Provider | Asset Classes | API Key Required | Rate Limit |
 |----------|--------------|-----------------|------------|
 | Yahoo Finance | Stocks, ETFs, Mutual Funds, Indices | No (TOS caveat) | ~2000/hr |
