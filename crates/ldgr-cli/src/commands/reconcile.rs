@@ -64,12 +64,11 @@ pub fn run(vault_path: &Path, account_name: &str) -> Result<()> {
     let mut cleared_balance = Decimal::ZERO;
     for txn in &cleared {
         for posting in &txn.postings {
-            if posting.account_id == account.id {
-                if let Some(qty) = &posting.amount_quantity {
-                    if let Ok(d) = qty.parse::<Decimal>() {
-                        cleared_balance += d;
-                    }
-                }
+            if posting.account_id == account.id
+                && let Some(qty) = &posting.amount_quantity
+                && let Ok(d) = qty.parse::<Decimal>()
+            {
+                cleared_balance += d;
             }
         }
     }
@@ -97,10 +96,10 @@ pub fn run(vault_path: &Path, account_name: &str) -> Result<()> {
         let mut posting_commodity = String::new();
         for posting in &txn.postings {
             if posting.account_id == account.id {
-                if let Some(qty) = &posting.amount_quantity {
-                    if let Ok(d) = qty.parse::<Decimal>() {
-                        posting_amount = d;
-                    }
+                if let Some(qty) = &posting.amount_quantity
+                    && let Ok(d) = qty.parse::<Decimal>()
+                {
+                    posting_amount = d;
                 }
                 if let Some(c) = &posting.amount_commodity {
                     posting_commodity.clone_from(c);

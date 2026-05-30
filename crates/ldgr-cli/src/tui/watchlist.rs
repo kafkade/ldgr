@@ -271,18 +271,18 @@ impl WatchlistApp {
     /// Remove the currently selected symbol.
     pub fn remove_selected(&mut self) {
         let filtered = self.filtered_symbols();
-        if let Some(idx) = self.table_state.selected() {
-            if let Some(sym) = filtered.get(idx).cloned() {
-                self.symbols.retain(|s| s != &sym);
-                self.states.remove(&sym);
-                self.status_message = Some(format!("Removed {sym}"));
-                // Adjust selection
-                let new_len = self.filtered_symbols().len();
-                if new_len == 0 {
-                    self.table_state.select(None);
-                } else if idx >= new_len {
-                    self.table_state.select(Some(new_len - 1));
-                }
+        if let Some(idx) = self.table_state.selected()
+            && let Some(sym) = filtered.get(idx).cloned()
+        {
+            self.symbols.retain(|s| s != &sym);
+            self.states.remove(&sym);
+            self.status_message = Some(format!("Removed {sym}"));
+            // Adjust selection
+            let new_len = self.filtered_symbols().len();
+            if new_len == 0 {
+                self.table_state.select(None);
+            } else if idx >= new_len {
+                self.table_state.select(Some(new_len - 1));
             }
         }
     }

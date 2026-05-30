@@ -50,10 +50,10 @@ fn print_statistics(journal: &ldgr_core::accounting::Journal) {
     for txn in &journal.transactions {
         for posting in &txn.postings {
             accounts.insert(&posting.account);
-            if let Some(amt) = &posting.amount {
-                if !amt.commodity.is_empty() {
-                    commodities.insert(&amt.commodity);
-                }
+            if let Some(amt) = &posting.amount
+                && !amt.commodity.is_empty()
+            {
+                commodities.insert(&amt.commodity);
             }
         }
         let d = txn.date.as_str();

@@ -246,19 +246,13 @@ async fn run_portfolio_async(holdings: Vec<Holding>) -> Result<()> {
                     }
 
                     // Enter chart mode
-                    if app.mode == PortfolioMode::Chart {
-                        if let Some(sym) = app.selected_symbol().map(String::from) {
-                            let ca = ChartApp::new(sym.clone());
-                            spawn_historical_fetch(
-                                &client,
-                                &provider,
-                                &sym,
-                                ca.timeframe,
-                                &fetch_tx,
-                            );
-                            chart_app = Some(ca);
-                            app.mode = PortfolioMode::Normal;
-                        }
+                    if app.mode == PortfolioMode::Chart
+                        && let Some(sym) = app.selected_symbol().map(String::from)
+                    {
+                        let ca = ChartApp::new(sym.clone());
+                        spawn_historical_fetch(&client, &provider, &sym, ca.timeframe, &fetch_tx);
+                        chart_app = Some(ca);
+                        app.mode = PortfolioMode::Normal;
                     }
 
                     // Manual refresh

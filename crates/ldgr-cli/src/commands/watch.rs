@@ -135,19 +135,13 @@ async fn run_watchlist_async(symbols: Vec<String>, interval_secs: u64) -> Result
                     }
                 } else {
                     // Check for Enter (open chart) before handling
-                    if key.code == crossterm::event::KeyCode::Enter {
-                        if let Some(sym) = app.selected_symbol().map(String::from) {
-                            let ca = ChartApp::new(sym.clone());
-                            spawn_historical_fetch(
-                                &client,
-                                &provider,
-                                &sym,
-                                ca.timeframe,
-                                &fetch_tx,
-                            );
-                            chart_app = Some(ca);
-                            continue;
-                        }
+                    if key.code == crossterm::event::KeyCode::Enter
+                        && let Some(sym) = app.selected_symbol().map(String::from)
+                    {
+                        let ca = ChartApp::new(sym.clone());
+                        spawn_historical_fetch(&client, &provider, &sym, ca.timeframe, &fetch_tx);
+                        chart_app = Some(ca);
+                        continue;
                     }
 
                     let symbols_before: Vec<String> = app.symbols.clone();
