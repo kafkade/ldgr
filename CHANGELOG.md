@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-05-30
+
 ### Added
 
 - iOS app: tab bar (iPhone) and sidebar (iPad) navigation with Dashboard, Transactions, Accounts, Investments, and Budget tabs
