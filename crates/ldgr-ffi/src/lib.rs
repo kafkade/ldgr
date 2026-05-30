@@ -20,6 +20,7 @@ use ldgr_core::crypto::{
 use ldgr_core::storage::accounts::{self, AccountType, ListOptions, NewAccount};
 use ldgr_core::storage::error::StorageError;
 use ldgr_core::storage::schema;
+use ldgr_core::storage::sync as sync_storage;
 use ldgr_core::storage::transactions::{self, NewPosting, NewTransaction, TransactionStatus};
 use rusqlite::Connection;
 
@@ -113,6 +114,34 @@ pub struct FfiBalanceEntry {
     pub account: String,
     pub amount: String,
     pub commodity: String,
+}
+
+// ── Sync FFI Types ─────────────────────────────────────────────────────────────
+
+pub struct FfiSyncEvent {
+    pub id: String,
+    pub device_id: String,
+    pub entity_type: String,
+    pub entity_id: String,
+    pub operation: String,
+    pub lamport_clock: u64,
+    pub synced: bool,
+}
+
+pub struct FfiSyncConflict {
+    pub id: String,
+    pub entity_type: String,
+    pub entity_id: String,
+    pub local_payload: String,
+    pub remote_payload: String,
+    pub detected_at: String,
+}
+
+pub struct FfiSyncStatus {
+    pub pending_event_count: u64,
+    pub unresolved_conflict_count: u64,
+    pub last_sync_at: Option<String>,
+    pub device_id: String,
 }
 
 // ── Vault State ────────────────────────────────────────────────────────────────
@@ -443,6 +472,110 @@ impl LdgrVault {
             })
             .collect())
     }
+
+    // ── Sync Methods ───────────────────────────────────────────────────────────
+
+    /// Get the current sync status (pending events, conflicts, last sync time).
+    pub fn sync_status(&self) -> Result<FfiSyncStatus, LdgrError> {
+        let state = self.state.lock().expect("mutex poisoned");
+        let conn = require_conn(&state)?;
+
+        let pending = u64::from(sync_storage::pending_event_count(conn)?);
+        let conflicts = u64::from(sync_storage::unresolved_conflict_count(conn)?);
+        let last_sync = sync_storage::get_state(conn, "last_sync_at")?;
+        let device_id = sync_storage::device_id(conn)?;
+
+        Ok(FfiSyncStatus {
+            pending_event_count: pending,
+            unresolved_conflict_count: conflicts,
+            last_sync_at: last_sync,
+            device_id,
+        })
+    }
+
+    /// Get all pending (un-synced) sync events.
+    pub fn pending_sync_events(&self) -> Result<Vec<FfiSyncEvent>, LdgrError> {
+        let state = self.state.lock().expect("mutex poisoned");
+        let conn = require_conn(&state)?;
+
+        let events = sync_storage::pending_events(conn)?;
+        Ok(events.into_iter().map(to_ffi_sync_event).collect())
+    }
+
+    /// Mark sync events as synced after successful push to remote.
+    pub fn mark_events_synced(&self, event_ids: Vec<String>) -> Result<(), LdgrError> {
+        let state = self.state.lock().expect("mutex poisoned");
+        let conn = require_conn(&state)?;
+
+        sync_storage::mark_events_synced(conn, &event_ids)?;
+        sync_storage::set_state(conn, "last_sync_at", &chrono::Utc::now().to_rfc3339())?;
+        Ok(())
+    }
+
+    /// Get all unresolved sync conflicts requiring user review.
+    pub fn list_conflicts(&self) -> Result<Vec<FfiSyncConflict>, LdgrError> {
+        let state = self.state.lock().expect("mutex poisoned");
+        let conn = require_conn(&state)?;
+
+        let conflicts = sync_storage::list_unresolved_conflicts(conn)?;
+        Ok(conflicts
+            .into_iter()
+            .map(|c| FfiSyncConflict {
+                id: c.id,
+                entity_type: c.entity_type,
+                entity_id: c.entity_id,
+                local_payload: String::from_utf8_lossy(&c.local_payload).into_owned(),
+                remote_payload: String::from_utf8_lossy(&c.remote_payload).into_owned(),
+                detected_at: c.detected_at,
+            })
+            .collect())
+    }
+
+    /// Resolve a sync conflict by choosing a resolution strategy.
+    ///
+    /// Resolution must be one of: `keep_local`, `keep_remote`.
+    pub fn resolve_conflict(
+        &self,
+        conflict_id: String,
+        resolution: String,
+    ) -> Result<(), LdgrError> {
+        if resolution != "keep_local" && resolution != "keep_remote" {
+            return Err(LdgrError::InvalidInput(format!(
+                "invalid resolution: {resolution} (expected: keep_local, keep_remote)"
+            )));
+        }
+
+        let state = self.state.lock().expect("mutex poisoned");
+        let conn = require_conn(&state)?;
+
+        sync_storage::resolve_conflict(conn, &conflict_id, &resolution)?;
+        Ok(())
+    }
+
+    /// Store sync conflicts detected during merge for later user review.
+    pub fn store_conflicts(&self, conflicts: Vec<FfiSyncConflict>) -> Result<(), LdgrError> {
+        let state = self.state.lock().expect("mutex poisoned");
+        let conn = require_conn(&state)?;
+
+        let stored: Vec<sync_storage::StoredConflict> = conflicts
+            .into_iter()
+            .map(|c| sync_storage::StoredConflict {
+                id: c.id,
+                entity_type: c.entity_type,
+                entity_id: c.entity_id,
+                local_event_id: String::new(),
+                remote_event_id: String::new(),
+                local_payload: c.local_payload.into_bytes(),
+                remote_payload: c.remote_payload.into_bytes(),
+                detected_at: c.detected_at,
+                resolved: false,
+                resolution: None,
+            })
+            .collect();
+
+        sync_storage::store_conflicts(conn, &stored)?;
+        Ok(())
+    }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -554,6 +687,18 @@ fn atomic_write(path: &std::path::Path, data: &[u8]) -> Result<(), LdgrError> {
 
 fn to_accounting_txns(txns: &[transactions::Transaction]) -> Vec<acct::Transaction> {
     txns.iter().map(to_accounting_txn).collect()
+}
+
+fn to_ffi_sync_event(e: sync_storage::StoredSyncEvent) -> FfiSyncEvent {
+    FfiSyncEvent {
+        id: e.id,
+        device_id: e.device_id,
+        entity_type: e.entity_type,
+        entity_id: e.entity_id,
+        operation: e.operation,
+        lamport_clock: e.lamport_clock,
+        synced: e.synced,
+    }
 }
 
 fn to_accounting_txn(txn: &transactions::Transaction) -> acct::Transaction {

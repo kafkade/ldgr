@@ -12,4 +12,6 @@ pub mod error;
 #[cfg(feature = "sqlite")]
 pub mod schema;
 #[cfg(feature = "sqlite")]
+pub mod sync;
+#[cfg(feature = "sqlite")]
 pub mod transactions;

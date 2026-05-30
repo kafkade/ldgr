@@ -9,6 +9,7 @@ struct MainTabView: View {
     @Bindable var appState: AppState
     let client: LdgrClient
     @State private var store = VaultDataStore()
+    @State private var syncManager = SyncManager()
     @State private var selectedTab: Tab = .dashboard
     @State private var showSettings = false
     @Environment(\.horizontalSizeClass) private var sizeClass
@@ -42,10 +43,13 @@ struct MainTabView: View {
             }
         }
         .sheet(isPresented: $showSettings) {
-            SettingsView(appState: appState, client: client)
+            NavigationStack {
+                SyncSettingsView(client: client, syncManager: syncManager)
+            }
         }
         .task {
             await store.reload(client: client)
+            await syncManager.refreshStatus(client: client)
         }
     }
 
@@ -61,7 +65,10 @@ struct MainTabView: View {
                                 lockButton
                             }
                             ToolbarItem(placement: .topBarTrailing) {
-                                settingsButton
+                                HStack(spacing: 12) {
+                                    SyncStatusIndicator(syncManager: syncManager)
+                                    settingsButton
+                                }
                             }
                         }
                 }
@@ -96,6 +103,7 @@ struct MainTabView: View {
                 HStack {
                     lockButton
                     Spacer()
+                    SyncStatusIndicator(syncManager: syncManager)
                     settingsButton
                 }
             }
