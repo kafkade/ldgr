@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- iOS app: tab bar (iPhone) and sidebar (iPad) navigation with Dashboard, Transactions, Accounts, Investments, and Budget tabs
+- Dashboard tab with net worth by commodity, recent transactions, and expense breakdown
+- Transaction list with search, status filter, swipe-to-delete, and add/correct transaction form
+- Accounts tab grouped by type with balances and per-account transaction register
+- Investments tab with portfolio holdings and allocation chart
+- Budget tab with current-month expense category progress bars
+- Pull-to-refresh on all data views to reload from encrypted vault
+- Shared vault data store so mutations in one tab update all tabs instantly
 - Real-time watchlist TUI: `ldgr watch [symbols...]` with auto-refresh, sparklines, sort, and search
 - Interactive charts: line and candlestick views with timeframe selection, zoom, volume bars, and moving averages
 - Portfolio view: `ldgr portfolio` showing holdings, market values, gain/loss, and allocation percentages
