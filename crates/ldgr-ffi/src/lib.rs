@@ -14,7 +14,8 @@ use std::sync::Mutex;
 use ldgr_core::accounting::reports;
 use ldgr_core::accounting::types as acct;
 use ldgr_core::crypto::{
-    self, Argon2Params, UnlockedVault, encode_recovery_key, open_vault, serialize_vault,
+    self, Argon2Params, UnlockedVault, encode_recovery_key, open_vault, restore_vault_from_session,
+    serialize_vault,
 };
 use ldgr_core::storage::accounts::{self, AccountType, ListOptions, NewAccount};
 use ldgr_core::storage::error::StorageError;
@@ -213,6 +214,50 @@ impl LdgrVault {
     pub fn close(&self) {
         let mut state = self.state.lock().expect("mutex poisoned");
         *state = VaultState::Locked;
+    }
+
+    /// Export the session key (vault key bytes) for secure caching.
+    ///
+    /// Returns 32 bytes. The caller MUST protect these bytes — they grant
+    /// full read/write access to all vault data. On iOS, store in the
+    /// Keychain with biometric access control.
+    pub fn export_session_key(&self) -> Result<Vec<u8>, LdgrError> {
+        let state = self.state.lock().expect("mutex poisoned");
+        match &*state {
+            VaultState::Locked => Err(LdgrError::VaultLocked),
+            VaultState::Unlocked { vault, .. } => Ok(vault.export_session_key().to_vec()),
+        }
+    }
+
+    /// Unlock the vault using a previously exported session key.
+    ///
+    /// Skips Argon2id password derivation — used for biometric unlock
+    /// where the session key was stored in the OS keychain.
+    pub fn open_with_session_key(&self, key: Vec<u8>) -> Result<(), LdgrError> {
+        let key_bytes: [u8; 32] = key.try_into().map_err(|v: Vec<u8>| {
+            LdgrError::InvalidInput(format!(
+                "session key must be exactly 32 bytes, got {}",
+                v.len()
+            ))
+        })?;
+
+        if !self.vault_path.exists() {
+            return Err(LdgrError::NotFound(format!(
+                "vault file not found: {}",
+                self.vault_path.display()
+            )));
+        }
+
+        let data = std::fs::read(&self.vault_path)?;
+        let vault = restore_vault_from_session(&data, &key_bytes)?;
+
+        let conn = Connection::open(&self.db_path)?;
+        schema::initialize(&conn)?;
+
+        let mut state = self.state.lock().expect("mutex poisoned");
+        *state = VaultState::Unlocked { vault, conn };
+
+        Ok(())
     }
 
     /// Check whether the vault is currently unlocked.
@@ -690,5 +735,87 @@ mod tests {
         let vault = LdgrVault::new(path).unwrap();
         assert!(vault.list_accounts().is_err());
         assert!(vault.vault_name().is_err());
+    }
+
+    #[test]
+    fn export_session_key_requires_unlocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+
+        let vault = LdgrVault::new(path).unwrap();
+        let err = vault.export_session_key().unwrap_err();
+        assert!(matches!(err, LdgrError::VaultLocked));
+    }
+
+    #[test]
+    fn session_key_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+
+        let vault = LdgrVault::new(path.clone()).unwrap();
+        vault
+            .create_vault("test-pw".to_string(), "Session Test".to_string())
+            .unwrap();
+
+        // Export session key while unlocked
+        let key = vault.export_session_key().unwrap();
+        assert_eq!(key.len(), 32);
+
+        // Add an account so we can verify data survives
+        vault
+            .add_account(
+                "Assets:Cash".to_string(),
+                "asset".to_string(),
+                Some("USD".to_string()),
+            )
+            .unwrap();
+
+        // Close and reopen with session key
+        vault.close();
+        assert!(!vault.is_unlocked());
+
+        vault.open_with_session_key(key).unwrap();
+        assert!(vault.is_unlocked());
+        assert_eq!(vault.vault_name().unwrap(), "Session Test");
+
+        // Data persisted
+        let accts = vault.list_accounts().unwrap();
+        assert_eq!(accts.len(), 1);
+        assert_eq!(accts[0].name, "Assets:Cash");
+    }
+
+    #[test]
+    fn session_key_wrong_length_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+
+        let vault = LdgrVault::new(path).unwrap();
+        vault
+            .create_vault("pw".to_string(), "Test".to_string())
+            .unwrap();
+        vault.close();
+
+        let err = vault.open_with_session_key(vec![0u8; 16]).unwrap_err();
+        assert!(matches!(err, LdgrError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn session_key_wrong_key_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+
+        let vault = LdgrVault::new(path).unwrap();
+        vault
+            .create_vault("pw".to_string(), "Test".to_string())
+            .unwrap();
+        vault.close();
+
+        let err = vault.open_with_session_key(vec![0xAB; 32]).unwrap_err();
+        // Wrong key produces either CryptoError (decryption failed) or
+        // InvalidPassword (unwrap failed) depending on how the core surfaces it.
+        assert!(
+            matches!(err, LdgrError::CryptoError(_) | LdgrError::InvalidPassword),
+            "expected CryptoError or InvalidPassword, got: {err:?}"
+        );
     }
 }

@@ -209,6 +209,38 @@ public final class LdgrClient: @unchecked Sendable {
         vault.close()
     }
 
+    /// Export the session key for secure caching (e.g., iOS Keychain).
+    ///
+    /// Returns exactly 32 bytes. These bytes grant full vault access —
+    /// store them only in a biometric-protected Keychain item.
+    public func exportSessionKey() throws -> Data {
+        do {
+            let bytes = try vault.exportSessionKey()
+            return Data(bytes)
+        } catch let error as LdgrError {
+            throw LdgrClientError(from: error)
+        }
+    }
+
+    /// Unlock the vault using a previously exported session key.
+    ///
+    /// Skips Argon2id derivation — used for biometric unlock where the
+    /// session key was stored in the OS keychain.
+    public func openWithSessionKey(_ key: Data) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            Task.detached { [vault] in
+                do {
+                    try vault.openWithSessionKey(key: Array(key))
+                    continuation.resume()
+                } catch let error as LdgrError {
+                    continuation.resume(throwing: LdgrClientError(from: error))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     // MARK: - Light Operations (sync, still safe from any actor)
 
     /// Get the vault name.

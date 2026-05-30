@@ -58,6 +58,12 @@ interface LdgrVault {
 
     void close();
 
+    [Throws=LdgrError]
+    sequence<u8> export_session_key();
+
+    [Throws=LdgrError]
+    void open_with_session_key(sequence<u8> key);
+
     boolean is_unlocked();
 
     [Throws=LdgrError]
