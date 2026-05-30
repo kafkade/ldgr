@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use super::accounts::ListOptions;
 use super::error::StorageError;
+use super::sync::SyncContext;
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -304,6 +305,119 @@ pub fn soft_delete_transaction(conn: &Connection, id: &str) -> Result<(), Storag
     if rows == 0 {
         return Err(StorageError::NotFound(format!("transaction '{id}'")));
     }
+    Ok(())
+}
+
+// ── Sync-aware variants ────────────────────────────────────────────────────────
+
+/// Create a new transaction with postings and atomic sync event recording.
+pub fn create_transaction_with_sync(
+    conn: &Connection,
+    input: &NewTransaction,
+    ctx: &SyncContext,
+) -> Result<Transaction, StorageError> {
+    if input.postings.is_empty() {
+        return Err(StorageError::InvalidInput(
+            "transaction must have at least one posting".into(),
+        ));
+    }
+
+    let txn_id = Uuid::now_v7().to_string();
+    let now = now_iso8601();
+
+    let db_tx = conn.unchecked_transaction()?;
+
+    db_tx.execute(
+        "INSERT INTO transactions (id, date, status, code, description, comment, created_at, modified_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![
+            txn_id,
+            input.date,
+            input.status.as_str(),
+            input.code,
+            input.description,
+            input.comment,
+            now,
+            now,
+        ],
+    )?;
+
+    let postings = insert_postings(&db_tx, &txn_id, &input.postings, &now)?;
+
+    let payload = serde_json::json!({
+        "id": txn_id,
+        "date": input.date,
+        "description": input.description,
+        "status": input.status.as_str(),
+        "postings": input.postings.iter().map(|p| serde_json::json!({
+            "account_id": p.account_id,
+            "amount_quantity": p.amount_quantity,
+            "amount_commodity": p.amount_commodity,
+        })).collect::<Vec<_>>(),
+    })
+    .to_string()
+    .into_bytes();
+
+    super::sync::record_event(
+        &db_tx,
+        &ctx.device_id,
+        "transaction",
+        &txn_id,
+        "create",
+        &payload,
+        ctx.lamport_clock,
+        1,
+    )?;
+
+    db_tx.commit()?;
+
+    Ok(Transaction {
+        id: txn_id,
+        date: input.date.clone(),
+        status: input.status,
+        code: input.code.clone(),
+        description: input.description.clone(),
+        comment: input.comment.clone(),
+        created_at: now.clone(),
+        modified_at: now,
+        version: 1,
+        deleted: false,
+        postings,
+    })
+}
+
+/// Soft-delete a transaction with atomic sync event recording.
+pub fn soft_delete_transaction_with_sync(
+    conn: &Connection,
+    id: &str,
+    ctx: &SyncContext,
+) -> Result<(), StorageError> {
+    let db_tx = conn.unchecked_transaction()?;
+
+    let rows = db_tx.execute(
+        "UPDATE transactions SET deleted = 1, version = version + 1, modified_at = ?1
+         WHERE id = ?2 AND deleted = 0",
+        rusqlite::params![now_iso8601(), id],
+    )?;
+
+    if rows == 0 {
+        return Err(StorageError::NotFound(format!("transaction '{id}'")));
+    }
+
+    let payload = serde_json::json!({ "id": id }).to_string().into_bytes();
+
+    super::sync::record_event(
+        &db_tx,
+        &ctx.device_id,
+        "transaction",
+        id,
+        "delete",
+        &payload,
+        ctx.lamport_clock,
+        1,
+    )?;
+
+    db_tx.commit()?;
     Ok(())
 }
 

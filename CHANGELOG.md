@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Background sync infrastructure: event outbox, conflict storage, Lamport clock, and device identity
+- Sync-aware account and transaction mutations that record outbox events atomically
+- Sync status dashboard in iOS app showing pending changes, conflicts, and last sync time
+- Conflict resolution UI with side-by-side local vs remote comparison and Keep Local / Keep Remote actions
+- Sync status indicator in toolbar (green checkmark, blue pending, orange conflict warning)
+
 ## [1.1.0] - 2026-05-30
 
 ### Added

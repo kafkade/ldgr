@@ -46,6 +46,32 @@ dictionary FfiBalanceEntry {
     string commodity;
 };
 
+dictionary FfiSyncEvent {
+    string id;
+    string device_id;
+    string entity_type;
+    string entity_id;
+    string operation;
+    u64 lamport_clock;
+    boolean synced;
+};
+
+dictionary FfiSyncConflict {
+    string id;
+    string entity_type;
+    string entity_id;
+    string local_payload;
+    string remote_payload;
+    string detected_at;
+};
+
+dictionary FfiSyncStatus {
+    u64 pending_event_count;
+    u64 unresolved_conflict_count;
+    string? last_sync_at;
+    string device_id;
+};
+
 interface LdgrVault {
     [Throws=LdgrError]
     constructor(string path);
@@ -86,4 +112,22 @@ interface LdgrVault {
 
     [Throws=LdgrError]
     sequence<FfiBalanceEntry> balance(string? account_filter, string? begin_date, string? end_date);
+
+    [Throws=LdgrError]
+    FfiSyncStatus sync_status();
+
+    [Throws=LdgrError]
+    sequence<FfiSyncEvent> pending_sync_events();
+
+    [Throws=LdgrError]
+    void mark_events_synced(sequence<string> event_ids);
+
+    [Throws=LdgrError]
+    sequence<FfiSyncConflict> list_conflicts();
+
+    [Throws=LdgrError]
+    void resolve_conflict(string conflict_id, string resolution);
+
+    [Throws=LdgrError]
+    void store_conflicts(sequence<FfiSyncConflict> conflicts);
 };

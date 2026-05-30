@@ -89,6 +89,41 @@ public struct BalanceEntry: Sendable {
     public let commodity: String
 }
 
+/// A pending sync event in the outbox.
+public struct SyncEvent: Sendable, Identifiable {
+    public let id: String
+    public let deviceId: String
+    public let entityType: String
+    public let entityId: String
+    public let operation: String
+    public let lamportClock: UInt64
+    public let synced: Bool
+}
+
+/// A sync conflict requiring user resolution.
+public struct SyncConflict: Sendable, Identifiable {
+    public let id: String
+    public let entityType: String
+    public let entityId: String
+    public let localPayload: String
+    public let remotePayload: String
+    public let detectedAt: String
+}
+
+/// Resolution strategy for a sync conflict.
+public enum ConflictResolution: String, Sendable {
+    case keepLocal = "keep_local"
+    case keepRemote = "keep_remote"
+}
+
+/// Current sync status summary.
+public struct SyncStatus: Sendable {
+    public let pendingEventCount: UInt64
+    public let unresolvedConflictCount: UInt64
+    public let lastSyncAt: String?
+    public let deviceId: String
+}
+
 /// Errors from the ldgr vault.
 public enum LdgrClientError: Error, LocalizedError, Sendable {
     case vaultLocked
@@ -362,6 +397,78 @@ public final class LdgrClient: @unchecked Sendable {
                     commodity: ffi.commodity
                 )
             }
+        } catch let error as LdgrError {
+            throw LdgrClientError(from: error)
+        }
+    }
+
+    // MARK: - Sync Operations
+
+    /// Get current sync status.
+    public func syncStatus() throws -> SyncStatus {
+        do {
+            let ffi = try vault.syncStatus()
+            return SyncStatus(
+                pendingEventCount: ffi.pendingEventCount,
+                unresolvedConflictCount: ffi.unresolvedConflictCount,
+                lastSyncAt: ffi.lastSyncAt,
+                deviceId: ffi.deviceId
+            )
+        } catch let error as LdgrError {
+            throw LdgrClientError(from: error)
+        }
+    }
+
+    /// Get all pending (un-synced) events.
+    public func pendingSyncEvents() throws -> [SyncEvent] {
+        do {
+            return try vault.pendingSyncEvents().map { ffi in
+                SyncEvent(
+                    id: ffi.id,
+                    deviceId: ffi.deviceId,
+                    entityType: ffi.entityType,
+                    entityId: ffi.entityId,
+                    operation: ffi.operation,
+                    lamportClock: ffi.lamportClock,
+                    synced: ffi.synced
+                )
+            }
+        } catch let error as LdgrError {
+            throw LdgrClientError(from: error)
+        }
+    }
+
+    /// Mark events as synced after successful push.
+    public func markEventsSynced(eventIds: [String]) throws {
+        do {
+            try vault.markEventsSynced(eventIds: eventIds)
+        } catch let error as LdgrError {
+            throw LdgrClientError(from: error)
+        }
+    }
+
+    /// Get all unresolved sync conflicts.
+    public func listConflicts() throws -> [SyncConflict] {
+        do {
+            return try vault.listConflicts().map { ffi in
+                SyncConflict(
+                    id: ffi.id,
+                    entityType: ffi.entityType,
+                    entityId: ffi.entityId,
+                    localPayload: ffi.localPayload,
+                    remotePayload: ffi.remotePayload,
+                    detectedAt: ffi.detectedAt
+                )
+            }
+        } catch let error as LdgrError {
+            throw LdgrClientError(from: error)
+        }
+    }
+
+    /// Resolve a sync conflict.
+    public func resolveConflict(id: String, resolution: ConflictResolution) throws {
+        do {
+            try vault.resolveConflict(conflictId: id, resolution: resolution.rawValue)
         } catch let error as LdgrError {
             throw LdgrClientError(from: error)
         }

@@ -8,6 +8,7 @@ use rusqlite::Connection;
 use uuid::Uuid;
 
 use super::error::StorageError;
+use super::sync::SyncContext;
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -280,6 +281,117 @@ pub fn soft_delete_account(conn: &Connection, id: &str) -> Result<(), StorageErr
     if rows == 0 {
         return Err(StorageError::NotFound(format!("account '{id}'")));
     }
+    Ok(())
+}
+
+// ── Sync-aware variants ────────────────────────────────────────────────────────
+
+/// Create a new account with atomic sync event recording.
+pub fn create_account_with_sync(
+    conn: &Connection,
+    input: &NewAccount,
+    ctx: &SyncContext,
+) -> Result<Account, StorageError> {
+    let db_tx = conn.unchecked_transaction()?;
+
+    let id = Uuid::now_v7().to_string();
+    let now = now_iso8601();
+
+    db_tx
+        .execute(
+            "INSERT INTO accounts (id, name, type, commodity, parent_id, note, created_at, modified_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                id,
+                input.name,
+                input.account_type.as_str(),
+                input.commodity,
+                input.parent_id,
+                input.note,
+                now,
+                now,
+            ],
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::SqliteFailure(err, _)
+                if err.code == rusqlite::ffi::ErrorCode::ConstraintViolation =>
+            {
+                StorageError::ConstraintViolation(format!(
+                    "account name '{}' already exists",
+                    input.name
+                ))
+            }
+            other => StorageError::Database(other),
+        })?;
+
+    let payload = serde_json::json!({
+        "id": id,
+        "name": input.name,
+        "type": input.account_type.as_str(),
+        "commodity": input.commodity,
+    })
+    .to_string()
+    .into_bytes();
+
+    super::sync::record_event(
+        &db_tx,
+        &ctx.device_id,
+        "account",
+        &id,
+        "create",
+        &payload,
+        ctx.lamport_clock,
+        1,
+    )?;
+
+    db_tx.commit()?;
+
+    Ok(Account {
+        id,
+        name: input.name.clone(),
+        account_type: input.account_type,
+        commodity: input.commodity.clone(),
+        parent_id: input.parent_id.clone(),
+        note: input.note.clone(),
+        created_at: now.clone(),
+        modified_at: now,
+        version: 1,
+        deleted: false,
+    })
+}
+
+/// Soft-delete an account with atomic sync event recording.
+pub fn soft_delete_account_with_sync(
+    conn: &Connection,
+    id: &str,
+    ctx: &SyncContext,
+) -> Result<(), StorageError> {
+    let db_tx = conn.unchecked_transaction()?;
+
+    let rows = db_tx.execute(
+        "UPDATE accounts SET deleted = 1, version = version + 1, modified_at = ?1
+         WHERE id = ?2 AND deleted = 0",
+        rusqlite::params![now_iso8601(), id],
+    )?;
+
+    if rows == 0 {
+        return Err(StorageError::NotFound(format!("account '{id}'")));
+    }
+
+    let payload = serde_json::json!({ "id": id }).to_string().into_bytes();
+
+    super::sync::record_event(
+        &db_tx,
+        &ctx.device_id,
+        "account",
+        id,
+        "delete",
+        &payload,
+        ctx.lamport_clock,
+        1,
+    )?;
+
+    db_tx.commit()?;
     Ok(())
 }
 

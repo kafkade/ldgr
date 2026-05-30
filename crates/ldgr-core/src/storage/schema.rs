@@ -9,7 +9,7 @@ use rusqlite::Connection;
 use super::error::StorageError;
 
 /// Current schema version (incremented with each migration).
-const CURRENT_VERSION: u32 = 1;
+const CURRENT_VERSION: u32 = 2;
 
 /// Initialize the database schema, running any pending migrations.
 ///
@@ -64,6 +64,7 @@ pub fn current_version(conn: &Connection) -> Result<u32, StorageError> {
 fn run_migration(conn: &Connection, version: u32) -> Result<(), StorageError> {
     match version {
         1 => migrate_v1(conn),
+        2 => migrate_v2(conn),
         _ => Err(StorageError::Database(rusqlite::Error::QueryReturnedNoRows)),
     }
 }
@@ -164,6 +165,54 @@ fn migrate_v1(conn: &Connection) -> Result<(), StorageError> {
     Ok(())
 }
 
+/// Migration v2: Sync tables — event outbox, conflicts, and state.
+fn migrate_v2(conn: &Connection) -> Result<(), StorageError> {
+    conn.execute_batch(
+        "
+        -- Outbox for local mutations awaiting sync
+        CREATE TABLE sync_events (
+            id TEXT PRIMARY KEY,
+            device_id TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            payload BLOB NOT NULL,
+            lamport_clock INTEGER NOT NULL,
+            version INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            synced INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE INDEX idx_sync_events_synced ON sync_events(synced);
+        CREATE INDEX idx_sync_events_entity ON sync_events(entity_type, entity_id);
+
+        -- Conflicts awaiting user resolution
+        CREATE TABLE sync_conflicts (
+            id TEXT PRIMARY KEY,
+            entity_type TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            local_event_id TEXT NOT NULL,
+            remote_event_id TEXT NOT NULL,
+            local_payload BLOB NOT NULL,
+            remote_payload BLOB NOT NULL,
+            detected_at TEXT NOT NULL,
+            resolved INTEGER NOT NULL DEFAULT 0,
+            resolution TEXT
+        );
+
+        CREATE INDEX idx_sync_conflicts_resolved ON sync_conflicts(resolved);
+
+        -- Key-value store for sync checkpoint, clocks, device ID
+        CREATE TABLE sync_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        ",
+    )?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,6 +240,9 @@ mod tests {
             "postings",
             "prices",
             "schema_version",
+            "sync_conflicts",
+            "sync_events",
+            "sync_state",
             "tags",
             "transactions",
         ] {
