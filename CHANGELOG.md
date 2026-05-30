@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Real-time watchlist TUI: `ldgr watch [symbols...]` with auto-refresh, sparklines, sort, and search
+- Interactive charts: line and candlestick views with timeframe selection, zoom, volume bars, and moving averages
+- Portfolio view: `ldgr portfolio` showing holdings, market values, gain/loss, and allocation percentages
+- Blob store sync transports for Dropbox (OAuth2 PKCE) and WebDAV with retry middleware
+- CLI sync commands: `ldgr sync setup`, `ldgr sync push`, `ldgr sync pull`, `ldgr sync status`
+- UniFFI bindings with Swift async wrapper for iOS/macOS integration
+- XCFramework build pipeline for cross-compiling to iOS and simulator targets
+
 ## [1.0.0] - 2026-05-06
 
 ### Added

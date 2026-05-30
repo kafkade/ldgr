@@ -7,6 +7,8 @@ mod commands;
 mod convert;
 mod db;
 mod session;
+mod sync;
+mod tui;
 
 /// ldgr — Zero-knowledge bookkeeping
 #[derive(Parser)]
@@ -157,6 +159,36 @@ enum Commands {
         /// Query filters (e.g., date:2024, acct:Expenses)
         query: Vec<String>,
     },
+
+    /// Real-time watchlist TUI (standalone, no vault required)
+    Watch {
+        /// Stock/crypto symbols to track (e.g., AAPL MSFT BTC-USD)
+        symbols: Vec<String>,
+        /// Auto-refresh interval in seconds
+        #[arg(long, short, default_value_t = 15)]
+        interval: u64,
+    },
+
+    /// Portfolio view with market values and interactive charts
+    Portfolio,
+
+    /// Cross-device sync via encrypted blob store
+    Sync {
+        #[command(subcommand)]
+        action: SyncAction,
+    },
+}
+
+#[derive(clap::Subcommand)]
+enum SyncAction {
+    /// Configure sync provider (Dropbox or `WebDAV`)
+    Setup,
+    /// Push local changes to the remote store
+    Push,
+    /// Pull remote changes from other devices
+    Pull,
+    /// Show sync status
+    Status,
 }
 
 #[derive(clap::Subcommand)]
@@ -312,6 +344,14 @@ fn main() {
         Some(Commands::Export { format, query }) => {
             commands::export::run(&vault_path, &format, &query)
         }
+        Some(Commands::Watch { symbols, interval }) => commands::watch::run(symbols, interval),
+        Some(Commands::Portfolio) => commands::portfolio::run(&vault_path),
+        Some(Commands::Sync { action }) => match action {
+            SyncAction::Setup => commands::sync::run_setup(&vault_path),
+            SyncAction::Push => commands::sync::run_push(&vault_path),
+            SyncAction::Pull => commands::sync::run_pull(&vault_path),
+            SyncAction::Status => commands::sync::run_status(&vault_path),
+        },
         None => {
             eprintln!("ldgr — Zero-knowledge bookkeeping");
             eprintln!("Run `ldgr --help` for usage.");
