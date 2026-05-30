@@ -111,14 +111,46 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch' && inputs.publish_crates
+    environment: crates-io
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Dry run
+      - name: Verify version matches tag (if triggered from tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "::error::Tag version ($TAG_VERSION) does not match Cargo.toml version ($CARGO_VERSION)"
+            exit 1
+          fi
+
+      - name: Dry run — ldgr-core
         run: cargo publish -p ldgr-core --dry-run
 
       - name: Publish ldgr-core
         run: cargo publish -p ldgr-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Wait for crates.io index
+        run: |
+          echo "Waiting for crates.io to index ldgr-core..."
+          EXPECTED_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          for i in $(seq 1 30); do
+            if cargo search ldgr-core 2>/dev/null | grep -q "ldgr-core = \"$EXPECTED_VERSION\""; then
+              echo "ldgr-core $EXPECTED_VERSION is indexed."
+              break
+            fi
+            echo "Attempt $i/30 — not yet indexed, waiting 10s..."
+            sleep 10
+          done
+
+      - name: Dry run — ldgr-cli
+        run: cargo publish -p ldgr-cli --dry-run
+
+      - name: Publish ldgr-cli
+        run: cargo publish -p ldgr-cli
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

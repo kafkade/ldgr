@@ -6,13 +6,17 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories = ["command-line-utilities", "finance"]
+readme = "../../README.md"
 
 [[bin]]
 name = "ldgr"
 path = "src/main.rs"
 
 [dependencies]
-ldgr-core = { path = "../ldgr-core", features = ["full"] }
+ldgr-core = { path = "../ldgr-core", version = "1.0.0", features = ["full"] }
 
 # CLI
 clap.workspace = true

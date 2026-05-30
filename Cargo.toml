@@ -14,6 +14,8 @@ rust-version = "1.85"
 license = "Apache-2.0"
 repository = "https://github.com/kafkade/ldgr"
 homepage = "https://github.com/kafkade/ldgr"
+keywords = ["personal-finance", "accounting", "encryption", "hledger", "bookkeeping"]
+categories = ["command-line-utilities", "cryptography", "finance"]
 
 [workspace.dependencies]
 # Crypto (RustCrypto)
