@@ -5,6 +5,7 @@ members = [
     "crates/ldgr-cli",
     "crates/ldgr-ffi",
     "crates/ldgr-server",
+    "crates/uniffi-bindgen",
 ]
 
 [workspace.package]

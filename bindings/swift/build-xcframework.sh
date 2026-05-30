@@ -4,7 +4,7 @@
 # Prerequisites:
 #   - Xcode (with iOS SDK)
 #   - Rust targets: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
-#   - cargo-uniffi or uniffi-bindgen-cli: cargo install uniffi_bindgen_cli
+#   - cargo-uniffi or uniffi-bindgen: cargo run -p uniffi-bindgen
 #
 # Usage:
 #   cd bindings/swift
@@ -58,7 +58,7 @@ done
 echo "▸ Generating Swift bindings…"
 mkdir -p "$SWIFT_OUT"
 
-uniffi-bindgen generate "$UDL_PATH" \
+cargo run -p uniffi-bindgen -- generate "$UDL_PATH" \
     --language swift \
     --out-dir "$SWIFT_OUT" \
     --library "$DEVICE_LIB"

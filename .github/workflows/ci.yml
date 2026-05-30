@@ -143,9 +143,7 @@ jobs:
           key: swift-ios
 
       - name: Install tools
-        run: |
-          cargo install uniffi_bindgen_cli --version "^0.29"
-          brew install xcodegen
+        run: brew install xcodegen
 
       - name: Build XCFramework
         run: |
