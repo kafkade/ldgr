@@ -9,7 +9,7 @@ repository.workspace = true
 publish = false
 
 [lib]
-crate-type = ["cdylib", "lib"]
+crate-type = ["cdylib", "staticlib", "lib"]
 name = "ldgr_ffi"
 
 [dependencies]
