@@ -150,6 +150,7 @@ jobs:
       - name: Build XCFramework
         run: |
           cd bindings/swift
+          chmod +x ./build-xcframework.sh
           ./build-xcframework.sh
 
       - name: Generate Xcode project
