@@ -61,7 +61,7 @@ mkdir -p "$SWIFT_OUT"
 cargo run -p uniffi-bindgen -- generate "$UDL_PATH" \
     --language swift \
     --out-dir "$SWIFT_OUT" \
-    --library "$DEVICE_LIB"
+    --lib-file "$DEVICE_LIB"
 
 # Move the generated header and modulemap for the framework
 HEADER="$SWIFT_OUT/ldgr_ffiFFI.h"
