@@ -101,13 +101,13 @@ jobs:
       - run: cargo build -p ldgr-core --target wasm32-unknown-unknown --no-default-features --features core
 
   msrv:
-    name: MSRV (1.85)
+    name: MSRV (1.88)
     needs: changes
     if: github.event_name == 'push' || needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.85
+      - uses: dtolnay/rust-toolchain@1.88
       - uses: Swatinem/rust-cache@v2
         with:
           key: msrv
@@ -144,7 +144,7 @@ jobs:
 
       - name: Install tools
         run: |
-          cargo install uniffi-bindgen-cli --locked || true
+          cargo install uniffi-bindgen-cli@0.29
           brew install xcodegen
 
       - name: Build XCFramework
