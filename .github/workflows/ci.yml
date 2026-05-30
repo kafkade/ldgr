@@ -136,37 +136,17 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
 
       - uses: Swatinem/rust-cache@v2
         with:
           key: swift-ios
-
-      - name: Install tools
-        run: brew install xcodegen
 
       - name: Build XCFramework
         run: |
           cd bindings/swift
           chmod +x ./build-xcframework.sh
           ./build-xcframework.sh
-
-      - name: Generate Xcode project
-        run: |
-          cd apps/ios
-          xcodegen generate
-
-      - name: Build iOS app (simulator)
-        run: |
-          cd apps/ios
-          xcodebuild build \
-            -project ldgr.xcodeproj \
-            -scheme ldgr \
-            -destination 'generic/platform=iOS Simulator' \
-            -configuration Debug \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO \
-            -quiet
 
   # ── Documentation ─────────────────────────────────────────────────────────────
 

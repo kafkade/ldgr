@@ -10,7 +10,7 @@ name: ldgr
 options:
   bundleIdPrefix: com.kafkade
   deploymentTarget:
-    iOS: "16.0"
+    iOS: "17.0"
   xcodeVersion: "16.0"
   generateEmptyDirectories: true
 
