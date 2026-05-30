@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/ldgr-core",
     "crates/ldgr-cli",
+    "crates/ldgr-ffi",
     "crates/ldgr-server",
 ]
 
@@ -44,6 +45,12 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 rpassword = "7"
 comfy-table = "7"
 indicatif = "0.18"
+
+# Async
+async-trait = "0.1"
+
+# FFI
+uniffi = "0.29"
 
 # Server
 axum = "0.8"

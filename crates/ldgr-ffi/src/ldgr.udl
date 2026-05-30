@@ -1,0 +1,83 @@
+namespace ldgr {};
+
+[Error]
+enum LdgrError {
+    "VaultLocked",
+    "InvalidPassword",
+    "CryptoError",
+    "StorageError",
+    "InvalidInput",
+    "NotFound",
+    "Conflict",
+    "IoError",
+};
+
+dictionary FfiAccount {
+    string id;
+    string name;
+    string account_type;
+    string? commodity;
+};
+
+dictionary FfiNewPosting {
+    string account_id;
+    string? amount;
+    string? commodity;
+};
+
+dictionary FfiPosting {
+    string id;
+    string account_id;
+    string? amount;
+    string? commodity;
+};
+
+dictionary FfiTransaction {
+    string id;
+    string date;
+    string description;
+    string status;
+    sequence<FfiPosting> postings;
+};
+
+dictionary FfiBalanceEntry {
+    string account;
+    string amount;
+    string commodity;
+};
+
+interface LdgrVault {
+    [Throws=LdgrError]
+    constructor(string path);
+
+    [Throws=LdgrError]
+    string create_vault(string password, string name);
+
+    [Throws=LdgrError]
+    void open(string password);
+
+    void close();
+
+    boolean is_unlocked();
+
+    [Throws=LdgrError]
+    string vault_name();
+
+    [Throws=LdgrError]
+    string add_account(string name, string account_type, string? commodity);
+
+    [Throws=LdgrError]
+    sequence<FfiAccount> list_accounts();
+
+    [Throws=LdgrError]
+    string add_transaction(string date, string description, string status, sequence<FfiNewPosting> postings);
+
+    [Throws=LdgrError]
+    sequence<FfiTransaction> list_transactions();
+
+    [Throws=LdgrError]
+    void delete_transaction(string id);
+
+    [Throws=LdgrError]
+    sequence<FfiBalanceEntry> balance(string? account_filter, string? begin_date, string? end_date);
+};

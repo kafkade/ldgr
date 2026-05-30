@@ -23,6 +23,9 @@ rpassword.workspace = true
 comfy-table.workspace = true
 indicatif.workspace = true
 
+# Async
+async-trait.workspace = true
+
 # Runtime
 tokio.workspace = true
 anyhow.workspace = true
