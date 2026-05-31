@@ -10,6 +10,7 @@ An open-source, privacy-first personal finance system built on plain-text accoun
 - **Double-entry bookkeeping** — proper accounting with hierarchical accounts, balance assertions, and multi-currency support.
 - **Recovery key** — 24-word Crockford Base32 emergency key generated at vault creation. Lost password + lost recovery key = unrecoverable (by design).
 - **Local-first** — SQLite-backed storage with versioned rows. Works fully offline. Sync is optional.
+- **Self-hosted sync server** — optional Axum-based relay server with SRP-6a zero-knowledge authentication. The server stores only encrypted blobs — it never sees plaintext financial data. Docker image included.
 - **Multi-platform** — Rust core library with CLI (clap + ratatui), iOS/iPadOS (SwiftUI via UniFFI), and web (Next.js + WASM) frontends.
 - **hledger-compatible** — import from and export to hledger journal format. Use `hledger` for reporting if you prefer.
 - **Investment tracking** — value holdings at market prices for net worth calculations. Market data from Yahoo Finance, CoinGecko (crypto), and ECB (forex) — all free, no API keys required.
@@ -80,6 +81,34 @@ ldgr lock
 | `ldgr validate <file>` | Check journal importability |
 | `ldgr reconcile <account>` | Interactive reconciliation |
 | `ldgr rules` | Manage import auto-categorization rules |
+
+## Self-Hosted Sync Server
+
+The optional sync server (`crates/ldgr-server/`) is an encrypted blob relay — it
+stores and serves encrypted blobs but never decrypts them.
+
+```sh
+# Run with Docker
+docker build -t ldgr-server -f crates/ldgr-server/Dockerfile .
+docker run -p 8080:8080 -v ldgr-data:/data ldgr-server
+
+# Or run directly
+cargo run -p ldgr-server
+```
+
+**Configuration** (environment variables):
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `LDGR_BIND_ADDR` | `127.0.0.1:8080` | Listen address |
+| `LDGR_DB_PATH` | `ldgr-server.db` | SQLite database path |
+| `LDGR_SESSION_TTL_HOURS` | `720` | Session lifetime (30 days) |
+| `LDGR_MAX_BLOB_BYTES` | `52428800` | Max blob size (50 MB) |
+| `LDGR_RELAY_TTL_MINUTES` | `10` | Key exchange relay offer TTL |
+
+**API endpoints**: Register, login (SRP-6a), vault management, encrypted batch
+and snapshot CRUD, device registration, and key exchange relay. See the
+[architecture doc](docs/ldgr-architecture.md) for details.
 
 ## Architecture
 
