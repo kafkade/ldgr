@@ -1193,6 +1193,44 @@ VaultDataStore → WatchConnectivityManager → WCSession.updateApplicationConte
 - `apps/ios/ldgrWatch/Widgets/` — WidgetKit complication extension
 - App Group `group.com.kafkade.ldgr.watch` shared between watch app and widget extension
 
+### 7.4 iOS Widgets & Siri Shortcuts
+
+**Home screen widgets** (WidgetKit):
+
+- **Net Worth** — small (primary currency) and medium (multi-currency) families
+- **Monthly Spending** — medium; shows month label, total, top 3 categories, today's spend
+- **Portfolio** — medium; shows holdings by commodity
+- 30-minute timeline refresh (best-effort) with immediate reload on vault data changes
+- All widgets display "Unlock ldgr to view" when the vault is locked
+
+**Siri Shortcuts** (App Intents):
+
+- **Query Net Worth** — returns cached net worth via dialog, no app launch needed
+- **Check Monthly Spending** — returns month total and top categories via dialog
+- **Add Expense** — opens app with pre-filled parameters (amount as String, not Double, for decimal precision)
+
+**Privacy**:
+
+- Widget data is pre-computed and written to App Group `group.com.kafkade.ldgr`
+- `WidgetDataManager` clears cached data and reloads all timelines when the vault locks
+- Intents that read cached data return "Please unlock ldgr first" when cache is cleared
+- `AddExpenseIntent` uses `openAppWhenRun = true` to require interactive vault unlock
+
+**Data flow**:
+
+```
+VaultDataStore → WidgetDataManager → UserDefaults (App Group) → WidgetKit TimelineProvider
+                                   → App Intents (read-only)
+Lock event   → WidgetDataManager.clearOnLock() → removes cache → reloads timelines
+```
+
+**Project structure**:
+
+- `apps/ios/ldgr/Sources/Services/WidgetDataManager.swift` — computes and caches summaries
+- `apps/ios/ldgr/Sources/Intents/` — App Intent definitions and shortcuts provider
+- `apps/ios/ldgrWidgets/Sources/` — Widget extension (bundle, providers, views)
+- App Group `group.com.kafkade.ldgr` shared between iOS app and widget extension
+
 ### 7.4 Web App
 
 **Architecture**: Next.js with app router. Static shell + client-side WASM for all vault operations.
@@ -1294,7 +1332,8 @@ ldgr/
 │   │   ├── ldgr/              # iOS app target
 │   │   │   └── Sources/
 │   │   │       ├── LdgrApp.swift
-│   │   │       ├── Services/  # Keychain, Biometric, Sync, WatchConnectivity
+│   │   │       ├── Services/  # Keychain, Biometric, Sync, WatchConnectivity, WidgetDataManager
+│   │   │       ├── Intents/   # App Intents: QueryNetWorth, CheckBudget, AddExpense, Shortcuts
 │   │   │       └── Views/     # Dashboard, Transactions, Accounts, etc.
 │   │   ├── ldgrWatch/         # watchOS app target
 │   │   │   ├── Sources/
@@ -1304,6 +1343,10 @@ ldgr/
 │   │   │   ├── Widgets/       # WidgetKit complication extension
 │   │   │   │   └── LdgrWidgets.swift
 │   │   │   └── Resources/
+│   │   ├── ldgrWidgets/         # iOS home screen widget extension
+│   │   │   └── Sources/
+│   │   │       ├── LdgrWidgets.swift
+│   │   │       └── Views/    # NetWorthWidget, BudgetWidget, PortfolioWidget
 │   └── web/                   # Next.js web app (Apache-2.0)
 │       ├── package.json
 │       ├── next.config.js
@@ -1528,8 +1571,8 @@ ldgr/
 **Deliverables**:
 - ~~Apple Watch app: net worth glance, portfolio summary, budget remaining~~ ✅
 - ~~Watch complications: net worth, daily spend, portfolio gain/loss~~ ✅
-- iOS Widgets: net worth, budget remaining, portfolio value
-- Siri Shortcuts: quick transaction entry
+- ~~iOS Widgets: net worth, monthly spending, portfolio value~~ ✅
+- ~~Siri Shortcuts: query net worth, check spending, add expense~~ ✅
 - Community market data provider interface + documentation
 - Themes for CLI and web
 - Plugin/extension system for advanced features (jurisdiction-specific tax rules, etc.)

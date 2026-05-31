@@ -44,4 +44,13 @@ struct WatchSummary: Codable, Sendable {
 
     /// UserDefaults key for the cached summary.
     static let defaultsKey = "watchSummary"
+
+    /// App group for iOS app and its home screen widget extension.
+    static let iosAppGroupId = "group.com.kafkade.ldgr"
+
+    /// UserDefaults key for the iOS widget data cache.
+    static let iosDefaultsKey = "widgetData"
+
+    /// UserDefaults key indicating whether the vault is currently unlocked.
+    static let iosUnlockedKey = "vaultUnlocked"
 }

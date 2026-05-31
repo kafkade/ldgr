@@ -36,10 +36,13 @@ targets:
         DEVELOPMENT_TEAM: ""
         SWIFT_VERSION: "6.0"
         CODE_SIGN_STYLE: Automatic
+    entitlements:
+      path: ldgr/ldgr.entitlements
     dependencies:
       - package: LdgrSwift
         product: LdgrSwift
       - target: ldgrWatch
+      - target: ldgrWidgets
     info:
       path: ldgr/Info.plist
       properties:
@@ -96,6 +99,29 @@ targets:
         CODE_SIGN_ENTITLEMENTS: ldgrWatch/Widgets/ldgrWatchWidgets.entitlements
     info:
       path: ldgrWatch/Widgets/Info.plist
+      properties:
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+
+  ldgrWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: ldgrWidgets/Sources
+      - path: ldgrWidgets/Resources
+      - path: LdgrShared/Sources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kafkade.ldgr.widgets
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: 1
+        INFOPLIST_FILE: ldgrWidgets/Info.plist
+        DEVELOPMENT_TEAM: ""
+        SWIFT_VERSION: "6.0"
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: ldgrWidgets/ldgrWidgets.entitlements
+    info:
+      path: ldgrWidgets/Info.plist
       properties:
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
