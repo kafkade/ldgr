@@ -1163,13 +1163,35 @@ GLOBAL FLAGS
 
 ### 7.3 Apple Watch
 
-**Read-only glances** (Phase 6):
-- Net worth complication
-- Portfolio gain/loss today
-- Budget remaining this month
-- Market watchlist (top 5 symbols)
+**Read-only glances** (implemented):
 
-**Data source**: Pre-computed summaries pushed from iPhone companion app via WatchConnectivity. Watch does NOT decrypt the full vault.
+- Net worth glance with multi-currency support
+- Portfolio holdings summary grouped by commodity
+- Monthly spending breakdown with top 5 expense categories
+- Market watchlist (pending market data feature)
+
+**Complications** (WidgetKit):
+
+- **Net Worth** — rectangular, circular, inline families
+- **Daily Spend** — circular and inline families
+- **Portfolio** — rectangular and circular families
+- Hourly timeline refresh with immediate reload on data update
+
+**Data flow**:
+
+```
+VaultDataStore → WatchConnectivityManager → WCSession.updateApplicationContext
+    → PhoneConnectivityManager → UserDefaults (App Group) → WidgetKit TimelineProvider
+```
+
+**Data source**: Pre-computed `WatchSummary` pushed from iPhone companion app via WatchConnectivity. Watch does NOT decrypt the full vault. Summary includes net worth, portfolio, budget, daily spend, and watchlist entries.
+
+**Project structure**:
+
+- `apps/ios/LdgrShared/Sources/` — `WatchSummary` model (compiled into iOS, watchOS, and widget targets)
+- `apps/ios/ldgrWatch/Sources/` — Watch app (SwiftUI views, WCSession delegate)
+- `apps/ios/ldgrWatch/Widgets/` — WidgetKit complication extension
+- App Group `group.com.kafkade.ldgr.watch` shared between watch app and widget extension
 
 ### 7.4 Web App
 
@@ -1264,18 +1286,24 @@ ldgr/
 │           └── LdgrSwift/     # Idiomatic Swift async wrappers
 │
 ├── apps/
-│   ├── ios/                   # iOS/iPadOS app (Apache-2.0)
-│   │   ├── ldgr.xcodeproj
-│   │   └── ldgr/
-│   │       ├── App/
-│   │       ├── Views/
-│   │       ├── ViewModels/
-│   │       ├── Services/      # Keychain, URLSession, CloudKit
-│   │       └── Extensions/
-│   │
-│   ├── watchos/               # watchOS app (Apache-2.0)
-│   │   └── ldgr-watch/
-│   │
+│   ├── ios/                   # iOS/iPadOS/watchOS app (Apache-2.0)
+│   │   ├── project.yml        # XcodeGen spec (iOS + watchOS targets)
+│   │   ├── LdgrShared/        # Shared types (compiled into iOS + watchOS)
+│   │   │   └── Sources/
+│   │   │       └── WatchSummary.swift
+│   │   ├── ldgr/              # iOS app target
+│   │   │   └── Sources/
+│   │   │       ├── LdgrApp.swift
+│   │   │       ├── Services/  # Keychain, Biometric, Sync, WatchConnectivity
+│   │   │       └── Views/     # Dashboard, Transactions, Accounts, etc.
+│   │   ├── ldgrWatch/         # watchOS app target
+│   │   │   ├── Sources/
+│   │   │   │   ├── LdgrWatchApp.swift
+│   │   │   │   ├── PhoneConnectivityManager.swift
+│   │   │   │   └── Views/    # WatchHome, NetWorth, Portfolio, Budget, NoData
+│   │   │   ├── Widgets/       # WidgetKit complication extension
+│   │   │   │   └── LdgrWidgets.swift
+│   │   │   └── Resources/
 │   └── web/                   # Next.js web app (Apache-2.0)
 │       ├── package.json
 │       ├── next.config.js
@@ -1498,8 +1526,8 @@ ldgr/
 **Goal**: Apple Watch, widgets, and community ecosystem.
 
 **Deliverables**:
-- Apple Watch app: net worth glance, portfolio summary, budget remaining
-- Watch complications: net worth, daily spend, portfolio gain/loss
+- ~~Apple Watch app: net worth glance, portfolio summary, budget remaining~~ ✅
+- ~~Watch complications: net worth, daily spend, portfolio gain/loss~~ ✅
 - iOS Widgets: net worth, budget remaining, portfolio value
 - Siri Shortcuts: quick transaction entry
 - Community market data provider interface + documentation

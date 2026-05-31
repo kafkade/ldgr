@@ -153,8 +153,8 @@ Each phase produces a usable, shippable product increment. Phases are sequential
 
 ### Deliverables
 
-- Apple Watch app: net worth glance, portfolio summary, budget remaining
-- Watch complications: net worth, daily spend, portfolio gain/loss
+- ✅ Apple Watch app: net worth glance, portfolio summary, budget remaining
+- ✅ Watch complications: net worth, daily spend, portfolio gain/loss
 - iOS Widgets (WidgetKit): net worth, budget remaining, portfolio value
 - Siri Shortcuts (App Intents): quick transaction entry
 - Community market data provider interface and documentation
