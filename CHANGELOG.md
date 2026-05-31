@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - iOS home screen widgets: net worth (small/medium), monthly spending (medium), and portfolio (medium)
 - Siri Shortcuts: query net worth, check monthly spending, and add expense via App Intents
 - Widget data cache cleared on vault lock to prevent financial data exposure on the lock screen
+- Market data provider registry with metadata, discovery, and community provider support
+- Provider development guide with step-by-step implementation walkthrough and TOS guidance
+- Example provider crate (`examples/ldgr-provider-example/`) as a template for community providers
 - Loan tracking module: fixed and variable rate amortization schedules with month-by-month breakdown
 - Payoff projections with extra payments and biweekly payment scenarios
 - Refinance comparison with break-even analysis and month-by-month cost simulation

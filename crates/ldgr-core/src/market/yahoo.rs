@@ -10,7 +10,9 @@
 
 use rust_decimal::Decimal;
 
-use super::types::{AssetClass, DateRange, MarketError, Ohlcv, Quote, QuoteProvider};
+use super::types::{
+    AssetClass, DateRange, MarketError, Ohlcv, ProviderMetadata, Quote, QuoteProvider,
+};
 
 /// Yahoo Finance provider.
 pub struct YahooFinance;
@@ -186,6 +188,18 @@ impl QuoteProvider for YahooFinance {
         }
 
         Ok(bars)
+    }
+
+    fn metadata(&self) -> ProviderMetadata {
+        ProviderMetadata {
+            id: "yahoo-finance",
+            display_name: "Yahoo Finance",
+            description: "Stocks, ETFs, indices, forex, and crypto via Yahoo Finance API v8",
+            url: "https://finance.yahoo.com",
+            requires_api_key: false,
+            rate_limit_hint: Some("~2000 req/hr (unofficial, subject to change)"),
+            tos_url: Some("https://legal.yahoo.com/us/en/yahoo/terms/otos/index.html"),
+        }
     }
 }
 

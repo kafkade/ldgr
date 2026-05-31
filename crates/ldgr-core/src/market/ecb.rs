@@ -8,7 +8,9 @@
 
 use rust_decimal::Decimal;
 
-use super::types::{AssetClass, DateRange, MarketError, Ohlcv, Quote, QuoteProvider};
+use super::types::{
+    AssetClass, DateRange, MarketError, Ohlcv, ProviderMetadata, Quote, QuoteProvider,
+};
 
 /// ECB exchange rate provider.
 pub struct Ecb;
@@ -77,6 +79,18 @@ impl QuoteProvider for Ecb {
 
         bars.sort_by(|a, b| a.date.cmp(&b.date));
         Ok(bars)
+    }
+
+    fn metadata(&self) -> ProviderMetadata {
+        ProviderMetadata {
+            id: "ecb",
+            display_name: "ECB",
+            description: "Official EUR reference exchange rates from the European Central Bank",
+            url: "https://www.ecb.europa.eu/stats/policy_and_exchange_rates/euro_reference_exchange_rates/html/index.en.html",
+            requires_api_key: false,
+            rate_limit_hint: Some("No limit (daily XML file)"),
+            tos_url: None,
+        }
     }
 }
 

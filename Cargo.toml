@@ -8,6 +8,9 @@ members = [
     "crates/ldgr-wasm",
     "crates/uniffi-bindgen",
 ]
+exclude = [
+    "examples/ldgr-provider-example",
+]
 
 [workspace.package]
 version = "1.2.0"
