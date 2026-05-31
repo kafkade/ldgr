@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- WASM build pipeline with wasm-bindgen API for vault crypto, journal parsing, and balance/register reports in the browser
+- sql.js integration for client-side SQLite storage in the web app
+- CI bundle size enforcement: WASM core module must stay under 2 MB compressed
+- Next.js web app with vault creation, password unlock, and encrypted local storage via IndexedDB
+- Web dashboard with net worth, account stats, recent transactions, and expense breakdown
+- Web transaction management: list with search, month grouping, add/delete transactions
+- Web account management: grouped by type with balances and add form
+- Web investments view: portfolio holdings by commodity with allocation chart
+- Web budget view: expense category breakdown with progress bars
+- Dark/light theme with system preference detection and manual toggle
+- Offline support via service worker caching of WASM and static assets
+- Responsive layout: sidebar navigation on desktop, tab bar on mobile
+- Vault item replacement and clearing in core crypto API for efficient web persistence
+
 ## [1.2.0] - 2026-05-30
 
 ### Added

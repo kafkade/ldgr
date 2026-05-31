@@ -6,7 +6,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 /// A parsed journal containing transactions and declarations.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Journal {
     pub transactions: Vec<Transaction>,
     pub account_declarations: Vec<AccountDeclaration>,
@@ -23,7 +23,7 @@ pub enum Status {
 }
 
 /// A parsed transaction with its postings.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transaction {
     pub date: String,
     pub status: Status,
@@ -37,7 +37,7 @@ pub struct Transaction {
 }
 
 /// A posting within a transaction.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Posting {
     pub account: String,
     pub amount: Option<Amount>,
@@ -48,28 +48,28 @@ pub struct Posting {
 }
 
 /// A monetary amount with quantity and optional commodity.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Amount {
     pub quantity: Decimal,
     pub commodity: String,
 }
 
 /// An account declaration (`account Assets:Checking`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountDeclaration {
     pub name: String,
     pub source_line: usize,
 }
 
 /// A commodity declaration (`commodity USD`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommodityDeclaration {
     pub symbol: String,
     pub source_line: usize,
 }
 
 /// A price directive (`P 2024-01-15 AAPL 185.50 USD`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PriceDirective {
     pub date: String,
     pub commodity: String,

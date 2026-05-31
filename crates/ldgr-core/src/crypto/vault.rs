@@ -152,6 +152,28 @@ impl UnlockedVault {
         Ok(())
     }
 
+    /// Replace an existing item at the given index with new encrypted data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the index is out of bounds or encryption fails.
+    pub fn replace_item(&mut self, index: usize, plaintext: &[u8]) -> Result<(), CryptoError> {
+        if index >= self.items.len() {
+            return Err(CryptoError::InvalidVault(format!(
+                "item index {index} out of bounds (count: {})",
+                self.items.len()
+            )));
+        }
+        let envelope = encrypt_item(&self.vault_key, plaintext)?;
+        self.items[index] = envelope;
+        Ok(())
+    }
+
+    /// Remove all items from the vault.
+    pub fn clear_items(&mut self) {
+        self.items.clear();
+    }
+
     /// Change the vault password, re-wrapping the vault key with a new MEK.
     ///
     /// Generates a new random salt and derives fresh keys from the new password.

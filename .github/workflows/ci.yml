@@ -27,6 +27,7 @@ jobs:
       rust: ${{ steps.filter.outputs.rust }}
       swift: ${{ steps.filter.outputs.swift }}
       docs: ${{ steps.filter.outputs.docs }}
+      web: ${{ steps.filter.outputs.web }}
     steps:
       - uses: actions/checkout@v6
       - uses: dorny/paths-filter@v3
@@ -44,6 +45,9 @@ jobs:
             docs:
               - '**/*.md'
               - '.markdownlint-cli2.jsonc'
+            web:
+              - 'apps/web/**'
+              - 'crates/ldgr-wasm/**'
 
   # ── Rust checks ───────────────────────────────────────────────────────────────
 
@@ -98,7 +102,37 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build -p ldgr-core --target wasm32-unknown-unknown --no-default-features --features core
+        with:
+          key: wasm
+
+      # Verify ldgr-core itself stays WASM-compilable
+      - name: Build ldgr-core for WASM
+        run: cargo build -p ldgr-core --target wasm32-unknown-unknown --no-default-features --features core
+
+      # Build the wasm-bindgen package with optimizations
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - name: Build ldgr-wasm (core)
+        run: wasm-pack build crates/ldgr-wasm --target web --no-default-features --features core --release
+
+      # Enforce 2 MB compressed budget (per ADR-005)
+      - name: Check bundle size
+        run: |
+          WASM_FILE="crates/ldgr-wasm/pkg/ldgr_wasm_bg.wasm"
+          RAW_SIZE=$(stat -c%s "$WASM_FILE")
+          gzip -k "$WASM_FILE"
+          GZ_SIZE=$(stat -c%s "${WASM_FILE}.gz")
+          BUDGET=2097152  # 2 MB
+
+          echo "Raw WASM size:        $(( RAW_SIZE / 1024 )) KB ($RAW_SIZE bytes)"
+          echo "Compressed WASM size: $(( GZ_SIZE / 1024 )) KB ($GZ_SIZE bytes)"
+          echo "Budget:               $(( BUDGET / 1024 )) KB ($BUDGET bytes)"
+
+          if [ "$GZ_SIZE" -gt "$BUDGET" ]; then
+            echo "::error::WASM bundle exceeds 2 MB compressed budget ($GZ_SIZE bytes > $BUDGET bytes)"
+            exit 1
+          fi
+          echo "✅ Bundle is within budget"
 
   msrv:
     name: MSRV (1.88)
@@ -159,13 +193,39 @@ jobs:
       - uses: actions/checkout@v6
       - run: npx markdownlint-cli2 "**/*.md"
 
+  # ── Web ──────────────────────────────────────────────────────────────────────
+
+  web:
+    name: Web (Next.js)
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Install dependencies
+        working-directory: apps/web
+        run: npm ci
+      - name: Copy sql.js WASM binary
+        working-directory: apps/web
+        run: |
+          mkdir -p public/sql.js
+          cp node_modules/sql.js/dist/sql-wasm.wasm public/sql.js/
+      - name: Run tests
+        working-directory: apps/web
+        run: npm test
+
   # ── Summary gate ──────────────────────────────────────────────────────────────
   # Single required status check for branch protection. Downstream jobs may be
   # skipped (path filters) — that is OK; only failures or cancellations block.
   ci:
     name: CI
     if: always()
-    needs: [changes, test, clippy, fmt, wasm, msrv, audit, swift, markdownlint]
+    needs: [changes, test, clippy, fmt, wasm, msrv, audit, swift, markdownlint, web]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any dependency failed
