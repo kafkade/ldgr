@@ -57,7 +57,7 @@ indicatif = "0.18"
 async-trait = "0.1"
 
 # FFI
-uniffi = "0.29"
+uniffi = "0.31"
 
 # Server
 axum = "0.8"
