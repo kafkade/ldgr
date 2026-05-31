@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Loan tracking module: fixed and variable rate amortization schedules with month-by-month breakdown
+- Payoff projections with extra payments and biweekly payment scenarios
+- Refinance comparison with break-even analysis and month-by-month cost simulation
+- Payment auto-split into principal and interest portions for ledger posting
 - Self-hosted sync server with SRP-6a zero-knowledge authentication and encrypted blob storage
 - Server API for vault management, encrypted batch and snapshot sync, device registration, and key exchange relay
 - Docker image for self-hosted deployment with configurable bind address, session TTL, and blob size limits
