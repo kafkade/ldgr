@@ -137,8 +137,8 @@ Each phase produces a usable, shippable product increment. Phases are sequential
 - Web: vault unlock and session management (WebCrypto)
 - Web: dashboard, transactions, accounts, investments, budget, market watchlist
 - Service worker for offline access
-- Self-hosted sync server (Axum, AGPL-3.0)
-- SRP-6a authentication for server sync
+- ~~Self-hosted sync server (Axum, AGPL-3.0)~~ ✅
+- ~~SRP-6a authentication for server sync~~ ✅
 - Loan tracking module: amortization schedules, payoff projections, what-if analysis, refinance comparison
 - Advanced financial goal projections
 - PDF report generation
