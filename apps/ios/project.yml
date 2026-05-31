@@ -1,4 +1,4 @@
-# XcodeGen project spec for the ldgr iOS app.
+# XcodeGen project spec for the ldgr iOS + watchOS app.
 #
 # Generate the Xcode project:
 #   brew install xcodegen
@@ -11,6 +11,7 @@ options:
   bundleIdPrefix: com.kafkade
   deploymentTarget:
     iOS: "17.0"
+    watchOS: "10.0"
   xcodeVersion: "16.0"
   generateEmptyDirectories: true
 
@@ -25,6 +26,7 @@ targets:
     sources:
       - path: ldgr/Sources
       - path: ldgr/Resources
+      - path: LdgrShared/Sources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.kafkade.ldgr
@@ -37,6 +39,7 @@ targets:
     dependencies:
       - package: LdgrSwift
         product: LdgrSwift
+      - target: ldgrWatch
     info:
       path: ldgr/Info.plist
       properties:
@@ -50,3 +53,49 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+
+  ldgrWatch:
+    type: application
+    platform: watchOS
+    sources:
+      - path: ldgrWatch/Sources
+      - path: ldgrWatch/Resources
+      - path: LdgrShared/Sources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kafkade.ldgr.watchkitapp
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: 1
+        INFOPLIST_FILE: ldgrWatch/Info.plist
+        DEVELOPMENT_TEAM: ""
+        SWIFT_VERSION: "6.0"
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: ldgrWatch/ldgrWatch.entitlements
+    dependencies:
+      - target: ldgrWatchWidgets
+    info:
+      path: ldgrWatch/Info.plist
+      properties:
+        WKCompanionAppBundleIdentifier: com.kafkade.ldgr
+
+  ldgrWatchWidgets:
+    type: app-extension
+    platform: watchOS
+    sources:
+      - path: ldgrWatch/Widgets
+      - path: LdgrShared/Sources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kafkade.ldgr.watchkitapp.widgets
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: 1
+        INFOPLIST_FILE: ldgrWatch/Widgets/Info.plist
+        DEVELOPMENT_TEAM: ""
+        SWIFT_VERSION: "6.0"
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: ldgrWatch/Widgets/ldgrWatchWidgets.entitlements
+    info:
+      path: ldgrWatch/Widgets/Info.plist
+      properties:
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension

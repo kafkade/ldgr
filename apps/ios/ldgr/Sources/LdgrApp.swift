@@ -6,6 +6,7 @@ import LdgrSwift
 struct LdgrApp: App {
     @State private var appState = AppState()
     @State private var client: LdgrClient?
+    @State private var watchManager = WatchConnectivityManager()
     @Environment(\.scenePhase) private var scenePhase
 
     /// Overlay to hide sensitive content in the app switcher.
@@ -15,6 +16,7 @@ struct LdgrApp: App {
         WindowGroup {
             ZStack {
                 ContentView(appState: appState, client: $client)
+                    .environment(watchManager)
 
                 if showPrivacyOverlay {
                     PrivacyOverlayView()
