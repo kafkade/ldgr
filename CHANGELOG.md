@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Self-hosted sync server with SRP-6a zero-knowledge authentication and encrypted blob storage
+- Server API for vault management, encrypted batch and snapshot sync, device registration, and key exchange relay
+- Docker image for self-hosted deployment with configurable bind address, session TTL, and blob size limits
 - WASM build pipeline with wasm-bindgen API for vault crypto, journal parsing, and balance/register reports in the browser
 - sql.js integration for client-side SQLite storage in the web app
 - CI bundle size enforcement: WASM core module must stay under 2 MB compressed
