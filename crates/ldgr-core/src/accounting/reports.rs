@@ -6,13 +6,14 @@
 use std::collections::BTreeMap;
 
 use rust_decimal::Decimal;
+use serde::Serialize;
 
 use crate::accounting::types::{Posting, Transaction};
 
 // ── Balance Report ─────────────────────────────────────────────────────────────
 
 /// A single account's balance across one or more commodities.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AccountBalance {
     pub account: String,
     /// Balance per commodity (e.g., {"USD": 1500.00, "EUR": 200.00}).
@@ -22,7 +23,7 @@ pub struct AccountBalance {
 }
 
 /// Computed balance report: account balances with totals.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct BalanceReport {
     pub accounts: Vec<AccountBalance>,
     pub totals: BTreeMap<String, Decimal>,
@@ -90,7 +91,7 @@ pub fn compute_balance(
 // ── Register Report ────────────────────────────────────────────────────────────
 
 /// A single entry in the register report.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RegisterEntry {
     pub date: String,
     pub description: String,
@@ -101,7 +102,7 @@ pub struct RegisterEntry {
 }
 
 /// Computed register report: chronological posting list with running balance.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RegisterReport {
     pub entries: Vec<RegisterEntry>,
 }
@@ -183,7 +184,7 @@ fn date_in_range(date: &str, begin: Option<&str>, end: Option<&str>) -> bool {
 // ── Income Statement ───────────────────────────────────────────────────────────
 
 /// Income statement: Revenue minus Expenses for a period.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct IncomeStatement {
     pub income: Vec<AccountBalance>,
     pub expenses: Vec<AccountBalance>,
@@ -226,7 +227,7 @@ pub fn compute_income_statement(
 // ── Balance Sheet ──────────────────────────────────────────────────────────────
 
 /// Balance sheet: Assets - Liabilities = Equity at a point in time.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct BalanceSheet {
     pub assets: Vec<AccountBalance>,
     pub liabilities: Vec<AccountBalance>,
@@ -362,7 +363,7 @@ pub fn compute_register_with_query(
 // ── Net Worth ──────────────────────────────────────────────────────────────────
 
 /// Net worth snapshot with breakdown by category.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct NetWorth {
     pub total: BTreeMap<String, Decimal>,
     pub assets: BTreeMap<String, Decimal>,
@@ -414,7 +415,7 @@ pub fn compute_net_worth(transactions: &[Transaction], query: &super::query::Que
 // ── Cash Flow ──────────────────────────────────────────────────────────────────
 
 /// Cash flow report grouped by operating/investing/financing.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CashFlow {
     pub operating: BTreeMap<String, Decimal>,
     pub investing: BTreeMap<String, Decimal>,
@@ -525,7 +526,7 @@ fn flatten_section(
 // ── Trial Balance ──────────────────────────────────────────────────────────────
 
 /// Trial balance entry.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TrialBalanceEntry {
     pub account: String,
     pub debit: Decimal,
@@ -533,7 +534,7 @@ pub struct TrialBalanceEntry {
 }
 
 /// Trial balance: all accounts with debit/credit totals.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TrialBalance {
     pub entries: Vec<TrialBalanceEntry>,
     pub total_debit: Decimal,

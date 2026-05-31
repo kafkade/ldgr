@@ -1,0 +1,46 @@
+[package]
+name = "ldgr-wasm"
+description = "WASM bindings for ldgr-core — zero-knowledge bookkeeping in the browser"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["core"]
+core = ["ldgr-core/core"]
+sync = ["ldgr-core/sync"]
+import-export = ["ldgr-core/import-export"]
+market = ["ldgr-core/market"]
+budget = ["ldgr-core/budget"]
+goals = ["ldgr-core/goals"]
+loans = ["ldgr-core/loans"]
+
+[dependencies]
+ldgr-core = { path = "../ldgr-core", default-features = false }
+wasm-bindgen = "0.2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde-wasm-bindgen = "0.6"
+js-sys = "0.3"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[lints.rust]
+# wasm-bindgen requires #[unsafe(no_mangle)] for FFI symbol exports
+unsafe_code = "allow"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+similar_names = "allow"

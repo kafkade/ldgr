@@ -13,8 +13,10 @@ Cargo.lock is intentionally tracked for binary crates
 
 # Node.js (web app)
 /apps/web/node_modules/
+/apps/web/pkg/
 /apps/web/.next/
 /apps/web/out/
+/apps/web/public/sql.js/
 
 # iOS
 /apps/ios/build/
