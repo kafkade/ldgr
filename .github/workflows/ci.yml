@@ -113,7 +113,7 @@ jobs:
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
       - name: Build ldgr-wasm (core)
-        run: wasm-pack build crates/ldgr-wasm --target web --no-default-features --features core --release
+        run: wasm-pack build crates/ldgr-wasm --target web --release -- --no-default-features --features core
 
       # Enforce 2 MB compressed budget (per ADR-005)
       - name: Check bundle size
