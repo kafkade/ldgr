@@ -9,17 +9,28 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-ldgr-core = { path = "../ldgr-core", features = ["core", "sqlite", "sync"] }
+ldgr-core = { path = "../ldgr-core", features = ["core", "sync"] }
 
 # Server
 axum.workspace = true
 tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Data
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+chrono.workspace = true
 
 # Storage
 rusqlite.workspace = true
+
+# Crypto (SRP-6a)
+sha2.workspace = true
+rand.workspace = true
+num-bigint = { version = "0.4", default-features = false }
 
 # Errors
 anyhow.workspace = true
