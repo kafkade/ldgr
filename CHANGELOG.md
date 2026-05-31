@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Apple Watch companion app: read-only glances for net worth, portfolio, and monthly spending
 - Watch complications (WidgetKit): net worth, daily spend, and portfolio widgets for watch faces
 - WatchConnectivity sync: iPhone sends pre-computed financial summaries to Watch without exposing vault data
+- iOS home screen widgets: net worth (small/medium), monthly spending (medium), and portfolio (medium)
+- Siri Shortcuts: query net worth, check monthly spending, and add expense via App Intents
+- Widget data cache cleared on vault lock to prevent financial data exposure on the lock screen
 - Loan tracking module: fixed and variable rate amortization schedules with month-by-month breakdown
 - Payoff projections with extra payments and biweekly payment scenarios
 - Refinance comparison with break-even analysis and month-by-month cost simulation
