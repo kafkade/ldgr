@@ -20,6 +20,7 @@ use ldgr_core::market::{QuoteProvider, YahooFinance};
 use crate::tui::chart::ChartApp;
 use crate::tui::event::{AppEvent, EventHandler};
 use crate::tui::watchlist::WatchlistApp;
+use crate::{config, theme};
 
 /// Terminal RAII guard — restores terminal state on drop.
 struct TerminalGuard;
@@ -75,6 +76,11 @@ async fn run_watchlist_async(symbols: Vec<String>, interval_secs: u64) -> Result
 
     let mut app = WatchlistApp::new(symbols);
     let provider = YahooFinance;
+
+    // Load theme from config (supports live reload via mtime check)
+    let cfg = config::load_config();
+    let mut current_theme = theme::resolve_theme(&cfg);
+    let mut last_config_mtime = config::config_mtime();
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -91,9 +97,9 @@ async fn run_watchlist_async(symbols: Vec<String>, interval_secs: u64) -> Result
     loop {
         // Draw
         if let Some(ref chart) = chart_app {
-            terminal.draw(|f| chart.render(f))?;
+            terminal.draw(|f| chart.render(f, &current_theme))?;
         } else {
-            terminal.draw(|f| app.render(f))?;
+            terminal.draw(|f| app.render(f, &current_theme))?;
         }
 
         // Process fetch results (non-blocking)
@@ -170,6 +176,14 @@ async fn run_watchlist_async(symbols: Vec<String>, interval_secs: u64) -> Result
                 }
             }
             AppEvent::Tick => {
+                // Reload theme if config file changed
+                let mtime = config::config_mtime();
+                if mtime != last_config_mtime {
+                    let cfg = config::load_config();
+                    current_theme = theme::resolve_theme(&cfg);
+                    last_config_mtime = mtime;
+                }
+
                 if chart_app.is_none() {
                     // Auto-refresh quotes
                     spawn_quote_fetch(&client, &provider, &app.symbols, &fetch_tx);

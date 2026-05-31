@@ -23,6 +23,7 @@ use ldgr_core::market::{QuoteProvider, YahooFinance};
 use crate::tui::chart::ChartApp;
 use crate::tui::event::{AppEvent, EventHandler};
 use crate::tui::portfolio::{Holding, PortfolioApp, PortfolioMode};
+use crate::{config, theme};
 
 /// Terminal RAII guard.
 struct TerminalGuard;
@@ -158,7 +159,7 @@ fn is_cash_commodity(commodity: &str) -> bool {
     )
 }
 
-#[allow(clippy::unused_async)]
+#[allow(clippy::unused_async, clippy::too_many_lines)]
 async fn run_portfolio_async(holdings: Vec<Holding>) -> Result<()> {
     enable_raw_mode().context("failed to enable raw mode")?;
     let _guard = TerminalGuard;
@@ -181,6 +182,11 @@ async fn run_portfolio_async(holdings: Vec<Holding>) -> Result<()> {
     let symbols: Vec<String> = holdings.iter().map(|h| h.symbol.clone()).collect();
     let mut app = PortfolioApp::new(holdings);
 
+    // Load theme from config (supports live reload via mtime check)
+    let cfg = config::load_config();
+    let mut current_theme = theme::resolve_theme(&cfg);
+    let mut last_config_mtime = config::config_mtime();
+
     let provider = YahooFinance;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
@@ -197,9 +203,9 @@ async fn run_portfolio_async(holdings: Vec<Holding>) -> Result<()> {
     loop {
         // Draw
         if let Some(ref chart) = chart_app {
-            terminal.draw(|f| chart.render(f))?;
+            terminal.draw(|f| chart.render(f, &current_theme))?;
         } else {
-            terminal.draw(|f| app.render(f))?;
+            terminal.draw(|f| app.render(f, &current_theme))?;
         }
 
         // Process fetch results
@@ -262,6 +268,14 @@ async fn run_portfolio_async(holdings: Vec<Holding>) -> Result<()> {
                 }
             }
             AppEvent::Tick => {
+                // Reload theme if config file changed
+                let mtime = config::config_mtime();
+                if mtime != last_config_mtime {
+                    let cfg = config::load_config();
+                    current_theme = theme::resolve_theme(&cfg);
+                    last_config_mtime = mtime;
+                }
+
                 if chart_app.is_none() {
                     spawn_portfolio_quotes(&client, &provider, &symbols, &fetch_tx);
                 }
