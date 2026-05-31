@@ -42,11 +42,7 @@ impl ProviderChain {
 
     /// Build the default provider chain (Yahoo, `CoinGecko`, ECB).
     pub fn default_chain() -> Self {
-        Self::new(vec![
-            Box::new(super::yahoo::YahooFinance),
-            Box::new(super::coingecko::CoinGecko),
-            Box::new(super::ecb::Ecb),
-        ])
+        Self::new(super::types::builtin_providers())
     }
 }
 

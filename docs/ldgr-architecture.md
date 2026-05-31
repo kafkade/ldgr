@@ -669,27 +669,31 @@ struct Lot {
 
 ### 5.4 Market Data
 
-**Provider trait**:
+**Provider trait** (I/O-free — builds URLs and parses responses):
+
 ```rust
-#[async_trait]
 trait QuoteProvider: Send + Sync {
-    fn name(&self) -> &str;
+    fn name(&self) -> &'static str;
     fn supported_asset_classes(&self) -> Vec<AssetClass>;
-    async fn quote(&self, symbols: &[&str]) -> Result<Vec<Quote>>;
-    async fn historical(&self, symbol: &str, range: DateRange) -> Result<Vec<OHLCV>>;
+    fn quote_url(&self, symbols: &[&str]) -> String;
+    fn parse_quotes(&self, response: &str) -> Result<Vec<Quote>, MarketError>;
+    fn historical_url(&self, symbol: &str, range: &DateRange) -> String;
+    fn parse_historical(&self, response: &str) -> Result<Vec<Ohlcv>, MarketError>;
+    fn metadata(&self) -> ProviderMetadata; // default provided
 }
 ```
 
 **Built-in providers**:
 
-| Provider | Asset Classes | API Key Required | Rate Limit |
-|----------|--------------|-----------------|------------|
-| Yahoo Finance | Stocks, ETFs, Mutual Funds, Indices | No (TOS caveat) | ~2000/hr |
-| Alpha Vantage | Stocks, ETFs, Forex | Yes (free tier) | 25/day free |
-| CoinGecko | Crypto | No (free tier) | 30/min |
-| ECB | Forex (EUR base) | No | Daily update |
+| Provider | ID | Asset Classes | API Key | Rate Limit |
+| --- | --- | --- | --- | --- |
+| Yahoo Finance | `yahoo-finance` | Stocks, ETFs, Mutual Funds, Indices, Forex, Crypto | No (TOS caveat) | ~2000/hr |
+| CoinGecko | `coingecko` | Crypto | No (free tier) | 5–15/min |
+| ECB | `ecb` | Forex (EUR base) | No | Daily update |
 
-**Community provider interface**: Third-party providers as separate crates implementing `QuoteProvider`.
+**Provider registry**: `ProviderRegistry` provides discovery and lookup by ID or asset class. Community providers register via `registry.register(Box::new(MyProvider))`. See `docs/provider-development-guide.md` and `examples/ldgr-provider-example/`.
+
+**Provider chain**: `ProviderChain` routes requests by asset class with fallback on failure. Both use `builtin_providers()` as a single source of truth for the default set.
 
 **Caching**: SQLite-backed cache with configurable TTL (default: 15 min for intraday, 24 hr for daily).
 
@@ -1362,7 +1366,11 @@ ldgr/
 │   ├── journal-subset.md      # Supported hledger syntax spec
 │   ├── vault-format.md        # Vault binary format spec
 │   ├── sync-protocol.md       # Sync protocol spec
-│   └── threat-model.md        # Security threat model
+│   ├── threat-model.md        # Security threat model
+│   └── provider-development-guide.md  # Community provider dev guide
+│
+├── examples/
+│   └── ldgr-provider-example/ # Template for community market data providers
 │
 └── tests/
     ├── fixtures/              # Test journals, CSV files, OFX samples
@@ -1573,7 +1581,7 @@ ldgr/
 - ~~Watch complications: net worth, daily spend, portfolio gain/loss~~ ✅
 - ~~iOS Widgets: net worth, monthly spending, portfolio value~~ ✅
 - ~~Siri Shortcuts: query net worth, check spending, add expense~~ ✅
-- Community market data provider interface + documentation
+- ~~Community market data provider interface + documentation~~ ✅
 - Themes for CLI and web
 - Plugin/extension system for advanced features (jurisdiction-specific tax rules, etc.)
 

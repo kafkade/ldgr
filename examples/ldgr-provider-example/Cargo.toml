@@ -1,0 +1,11 @@
+[package]
+name = "ldgr-provider-example"
+version = "0.1.0"
+edition = "2024"
+description = "Example ldgr market data provider — template for community providers"
+license = "Apache-2.0"
+
+[dependencies]
+ldgr-core = { path = "../../crates/ldgr-core", features = ["market"] }
+rust_decimal = "1"
+serde_json = "1"

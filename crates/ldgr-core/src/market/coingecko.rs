@@ -9,7 +9,9 @@
 
 use rust_decimal::Decimal;
 
-use super::types::{AssetClass, DateRange, MarketError, Ohlcv, Quote, QuoteProvider};
+use super::types::{
+    AssetClass, DateRange, MarketError, Ohlcv, ProviderMetadata, Quote, QuoteProvider,
+};
 
 /// `CoinGecko` cryptocurrency data provider.
 pub struct CoinGecko;
@@ -159,6 +161,18 @@ impl QuoteProvider for CoinGecko {
         }
 
         Ok(bars)
+    }
+
+    fn metadata(&self) -> ProviderMetadata {
+        ProviderMetadata {
+            id: "coingecko",
+            display_name: "CoinGecko",
+            description: "Cryptocurrency prices, market caps, and historical data",
+            url: "https://www.coingecko.com",
+            requires_api_key: false,
+            rate_limit_hint: Some("5-15 req/min (anonymous), 30/min (free Demo key)"),
+            tos_url: Some("https://www.coingecko.com/en/terms"),
+        }
     }
 }
 

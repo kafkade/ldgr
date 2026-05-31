@@ -157,7 +157,7 @@ Each phase produces a usable, shippable product increment. Phases are sequential
 - ✅ Watch complications: net worth, daily spend, portfolio gain/loss
 - ✅ iOS Widgets (WidgetKit): net worth, monthly spending, portfolio value
 - ✅ Siri Shortcuts (App Intents): query net worth, check spending, add expense
-- Community market data provider interface and documentation
+- ✅ Community market data provider interface and documentation
 - CLI and web theming system
 - Plugin/extension architecture for community features
 
