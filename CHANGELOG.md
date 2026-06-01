@@ -38,6 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Offline support via service worker caching of WASM and static assets
 - Responsive layout: sidebar navigation on desktop, tab bar on mobile
 - Vault item replacement and clearing in core crypto API for efficient web persistence
+- CLI theming system with five built-in themes (default, light, solarized, nord, dracula) and custom theme support via config
+- `ldgr config` subcommand: `set`, `get`, and `list-themes` for managing CLI settings
+- Live theme reload in TUI views (watchlist, portfolio, chart) without restarting the application
+- Web theme preference with system/light/dark options and live system preference tracking
 
 ## [1.2.0] - 2026-05-30
 
