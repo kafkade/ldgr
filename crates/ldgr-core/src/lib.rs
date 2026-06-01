@@ -12,9 +12,7 @@ pub mod crypto;
 pub mod export;
 pub mod goals;
 pub mod import;
+pub mod loans;
 pub mod market;
 pub mod storage;
 pub mod sync;
-
-// Feature-gated modules (uncomment as implemented)
-// pub mod loans;

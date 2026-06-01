@@ -137,8 +137,8 @@ Each phase produces a usable, shippable product increment. Phases are sequential
 - Web: vault unlock and session management (WebCrypto)
 - Web: dashboard, transactions, accounts, investments, budget, market watchlist
 - Service worker for offline access
-- Self-hosted sync server (Axum, AGPL-3.0)
-- SRP-6a authentication for server sync
+- ~~Self-hosted sync server (Axum, AGPL-3.0)~~ ✅
+- ~~SRP-6a authentication for server sync~~ ✅
 - Loan tracking module: amortization schedules, payoff projections, what-if analysis, refinance comparison
 - Advanced financial goal projections
 - PDF report generation
@@ -153,11 +153,11 @@ Each phase produces a usable, shippable product increment. Phases are sequential
 
 ### Deliverables
 
-- Apple Watch app: net worth glance, portfolio summary, budget remaining
-- Watch complications: net worth, daily spend, portfolio gain/loss
-- iOS Widgets (WidgetKit): net worth, budget remaining, portfolio value
-- Siri Shortcuts (App Intents): quick transaction entry
-- Community market data provider interface and documentation
+- ✅ Apple Watch app: net worth glance, portfolio summary, budget remaining
+- ✅ Watch complications: net worth, daily spend, portfolio gain/loss
+- ✅ iOS Widgets (WidgetKit): net worth, monthly spending, portfolio value
+- ✅ Siri Shortcuts (App Intents): query net worth, check spending, add expense
+- ✅ Community market data provider interface and documentation
 - CLI and web theming system
 - Plugin/extension architecture for community features
 

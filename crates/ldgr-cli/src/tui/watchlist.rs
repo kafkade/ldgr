@@ -8,13 +8,15 @@ use std::collections::{BTreeMap, VecDeque};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Sparkline, Table, TableState};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 
 use ldgr_core::market::Quote;
+
+use crate::theme::CliTheme;
 
 /// Maximum number of sparkline data points per symbol.
 const SPARKLINE_CAPACITY: usize = 60;
@@ -439,7 +441,7 @@ impl WatchlistApp {
     }
 
     /// Render the watchlist TUI.
-    pub fn render(&mut self, frame: &mut Frame) {
+    pub fn render(&mut self, frame: &mut Frame, theme: &CliTheme) {
         let area = frame.area();
 
         // Main layout: header + table + footer
@@ -453,19 +455,19 @@ impl WatchlistApp {
             .split(area);
 
         self.render_header(frame, chunks[0]);
-        self.render_table(frame, chunks[1]);
-        self.render_status_bar(frame, chunks[2]);
+        self.render_table(frame, chunks[1], theme);
+        self.render_status_bar(frame, chunks[2], theme);
 
         // Overlay for modal dialogs
         match &self.mode {
             WatchlistMode::AddSymbol { input } => {
-                self.render_input_dialog(frame, "Add Symbol", input, area);
+                self.render_input_dialog(frame, "Add Symbol", input, area, theme);
             }
             WatchlistMode::Search { input } => {
-                self.render_input_dialog(frame, "Search", input, area);
+                self.render_input_dialog(frame, "Search", input, area, theme);
             }
             WatchlistMode::SortMenu => {
-                self.render_sort_menu(frame, area);
+                self.render_sort_menu(frame, area, theme);
             }
             WatchlistMode::Normal => {}
         }
@@ -491,7 +493,7 @@ impl WatchlistApp {
         frame.render_widget(Paragraph::new(header), area);
     }
 
-    fn render_table(&mut self, frame: &mut Frame, area: Rect) {
+    fn render_table(&mut self, frame: &mut Frame, area: Rect, theme: &CliTheme) {
         let filtered = self.filtered_symbols();
 
         let header = Row::new(vec![
@@ -509,9 +511,9 @@ impl WatchlistApp {
                 let state = self.states.get(sym);
                 if let Some(q) = state.and_then(|s| s.quote.as_ref()) {
                     let change_color = if q.change >= Decimal::ZERO {
-                        Color::Green
+                        theme.positive
                     } else {
-                        Color::Red
+                        theme.negative
                     };
                     let vol_str = q.volume.map_or_else(|| "—".to_string(), format_volume);
 
@@ -536,7 +538,7 @@ impl WatchlistApp {
                         if let Some(ref e) = s.error {
                             return Row::new(vec![
                                 Cell::from(sym.clone()),
-                                Cell::from(e.as_str()).style(Style::default().fg(Color::Red)),
+                                Cell::from(e.as_str()).style(Style::default().fg(theme.negative)),
                                 Cell::from(""),
                                 Cell::from(""),
                                 Cell::from(""),
@@ -577,27 +579,34 @@ impl WatchlistApp {
         frame.render_stateful_widget(table, area, &mut self.table_state);
     }
 
-    fn render_status_bar(&self, frame: &mut Frame, area: Rect) {
+    fn render_status_bar(&self, frame: &mut Frame, area: Rect, theme: &CliTheme) {
         let status = match &self.status_message {
             Some(msg) => msg.clone(),
             None => "q:Quit  a:Add  d:Delete  s:Sort  /:Search  ↑↓:Navigate  r:Refresh".to_string(),
         };
         let bar = Paragraph::new(Line::from(Span::styled(
             format!(" {status}"),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.muted),
         )));
         frame.render_widget(bar, area);
     }
 
     #[allow(clippy::unused_self)]
-    fn render_input_dialog(&self, frame: &mut Frame, title: &str, input: &str, area: Rect) {
+    fn render_input_dialog(
+        &self,
+        frame: &mut Frame,
+        title: &str,
+        input: &str,
+        area: Rect,
+        theme: &CliTheme,
+    ) {
         let dialog_area = centered_rect(40, 3, area);
         frame.render_widget(Clear, dialog_area);
 
         let block = Block::default()
             .borders(Borders::ALL)
             .title(format!(" {title} "))
-            .style(Style::default().fg(Color::Yellow));
+            .style(Style::default().fg(theme.accent));
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
@@ -607,7 +616,7 @@ impl WatchlistApp {
     }
 
     #[allow(clippy::cast_possible_truncation)]
-    fn render_sort_menu(&self, frame: &mut Frame, area: Rect) {
+    fn render_sort_menu(&self, frame: &mut Frame, area: Rect, theme: &CliTheme) {
         let menu_height = SortField::ALL.len() as u16 + 2;
         let dialog_area = centered_rect(30, menu_height, area);
         frame.render_widget(Clear, dialog_area);
@@ -620,7 +629,7 @@ impl WatchlistApp {
         let block = Block::default()
             .borders(Borders::ALL)
             .title(format!(" Sort ({dir_label}, r:toggle) "))
-            .style(Style::default().fg(Color::Cyan));
+            .style(Style::default().fg(theme.info));
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
@@ -635,7 +644,7 @@ impl WatchlistApp {
                     "  "
                 };
                 let style = if i == self.sort_selection {
-                    Style::default().bold().fg(Color::Cyan)
+                    Style::default().bold().fg(theme.info)
                 } else {
                     Style::default()
                 };
@@ -703,10 +712,16 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 
 /// Sparkline widget rendering for a dedicated area (used in chart view).
 #[allow(dead_code)]
-pub fn render_sparkline_widget(frame: &mut Frame, area: Rect, data: &[u64], title: &str) {
+pub fn render_sparkline_widget(
+    frame: &mut Frame,
+    area: Rect,
+    data: &[u64],
+    title: &str,
+    theme: &CliTheme,
+) {
     let sparkline = Sparkline::default()
         .block(Block::default().borders(Borders::ALL).title(title))
         .data(data)
-        .style(Style::default().fg(Color::Cyan));
+        .style(Style::default().fg(theme.chart_line));
     frame.render_widget(sparkline, area);
 }

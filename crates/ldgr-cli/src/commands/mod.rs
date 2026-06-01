@@ -2,6 +2,7 @@ pub mod accounts;
 pub mod add;
 pub mod balance;
 pub mod balancesheet;
+pub mod config;
 pub mod delete;
 pub mod export;
 pub mod import;
