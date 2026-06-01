@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 
 export default function SettingsPage() {
   const { state, saveVault, lockVault } = useVault();
-  const { theme, toggleTheme } = useTheme();
+  const { preference, setPreference } = useTheme();
   const router = useRouter();
 
   const handleLock = async () => {
@@ -43,12 +43,21 @@ export default function SettingsPage() {
         </h2>
         <div className="flex items-center justify-between">
           <span className="text-sm">Theme</span>
-          <button
-            onClick={toggleTheme}
-            className="rounded-lg border border-[var(--color-border)] px-3 py-1.5 text-sm hover:bg-[var(--color-bg)] transition-colors"
-          >
-            {theme === 'light' ? '🌙 Dark' : '☀️ Light'}
-          </button>
+          <div className="flex gap-1">
+            {(['light', 'dark', 'system'] as const).map((opt) => (
+              <button
+                key={opt}
+                onClick={() => setPreference(opt)}
+                className={`rounded-lg border px-3 py-1.5 text-sm transition-colors ${
+                  preference === opt
+                    ? 'border-[var(--color-accent)] bg-[var(--color-accent-light)] text-[var(--color-accent)] font-medium'
+                    : 'border-[var(--color-border)] hover:bg-[var(--color-bg)]'
+                }`}
+              >
+                {opt === 'light' ? '☀️ Light' : opt === 'dark' ? '🌙 Dark' : '💻 System'}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 

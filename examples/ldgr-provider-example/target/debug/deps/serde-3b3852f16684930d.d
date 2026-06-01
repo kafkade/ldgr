@@ -1,0 +1,14 @@
+C:\kafkade\ldgr\examples\ldgr-provider-example\target\debug\deps\serde-3b3852f16684930d.d: C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs C:\kafkade\ldgr\examples\ldgr-provider-example\target\debug\build\serde-38142dd3d0018dab\out/private.rs
+
+C:\kafkade\ldgr\examples\ldgr-provider-example\target\debug\deps\libserde-3b3852f16684930d.rlib: C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs C:\kafkade\ldgr\examples\ldgr-provider-example\target\debug\build\serde-38142dd3d0018dab\out/private.rs
+
+C:\kafkade\ldgr\examples\ldgr-provider-example\target\debug\deps\libserde-3b3852f16684930d.rmeta: C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs C:\kafkade\ldgr\examples\ldgr-provider-example\target\debug\build\serde-38142dd3d0018dab\out/private.rs
+
+C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs:
+C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs:
+C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs:
+C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs:
+C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs:
+C:\kafkade\ldgr\examples\ldgr-provider-example\target\debug\build\serde-38142dd3d0018dab\out/private.rs:
+
+# env-dep:OUT_DIR=C:\\kafkade\\ldgr\\examples\\ldgr-provider-example\\target\\debug\\build\\serde-38142dd3d0018dab\\out

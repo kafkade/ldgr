@@ -1,0 +1,36 @@
+{
+  "images" : [
+    {
+      "idiom" : "watch",
+      "scale" : "2x",
+      "size" : "40x40",
+      "filename" : "",
+      "role" : "appLauncher"
+    },
+    {
+      "idiom" : "watch",
+      "scale" : "2x",
+      "size" : "44x44",
+      "filename" : "",
+      "role" : "appLauncher"
+    },
+    {
+      "idiom" : "watch",
+      "scale" : "2x",
+      "size" : "50x50",
+      "filename" : "",
+      "role" : "appLauncher"
+    },
+    {
+      "idiom" : "watch",
+      "scale" : "2x",
+      "size" : "46x46",
+      "filename" : "",
+      "role" : "companionSettings"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}

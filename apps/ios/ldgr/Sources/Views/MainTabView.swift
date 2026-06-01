@@ -13,6 +13,8 @@ struct MainTabView: View {
     @State private var selectedTab: Tab = .dashboard
     @State private var showSettings = false
     @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(WatchConnectivityManager.self) private var watchManager
+    @Environment(WidgetDataManager.self) private var widgetManager
 
     enum Tab: String, CaseIterable, Identifiable {
         case dashboard = "Dashboard"
@@ -50,6 +52,16 @@ struct MainTabView: View {
         .task {
             await store.reload(client: client)
             await syncManager.refreshStatus(client: client)
+            await watchManager.sendUpdate(from: store, client: client)
+            await widgetManager.sendUpdate(from: store, client: client)
+        }
+        .onChange(of: store.isLoading) { oldValue, newValue in
+            if oldValue && !newValue {
+                Task {
+                    await watchManager.sendUpdate(from: store, client: client)
+                    await widgetManager.sendUpdate(from: store, client: client)
+                }
+            }
         }
     }
 

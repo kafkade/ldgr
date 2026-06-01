@@ -15,6 +15,9 @@ pub enum MarketError {
 
     #[error("provider error: {0}")]
     ProviderError(String),
+
+    #[error("duplicate provider id: {0}")]
+    DuplicateProvider(String),
 }
 
 /// Asset class for filtering provider capabilities.
@@ -60,6 +63,25 @@ pub struct DateRange {
     pub end: String,
 }
 
+/// Provider metadata for discovery, documentation, and registry listing.
+#[derive(Debug, Clone)]
+pub struct ProviderMetadata {
+    /// Machine-readable identifier (e.g., `"yahoo-finance"`).
+    pub id: &'static str,
+    /// Human-readable name (e.g., `"Yahoo Finance"`).
+    pub display_name: &'static str,
+    /// One-line description of what this provider offers.
+    pub description: &'static str,
+    /// Provider website URL.
+    pub url: &'static str,
+    /// Whether an API key is required.
+    pub requires_api_key: bool,
+    /// Human-readable rate limit hint (e.g., `"2000 req/hr"`).
+    pub rate_limit_hint: Option<&'static str>,
+    /// URL to the provider's Terms of Service.
+    pub tos_url: Option<&'static str>,
+}
+
 /// Pluggable market data provider trait.
 ///
 /// **This trait is I/O-free.** It builds URLs for the platform to fetch
@@ -68,7 +90,12 @@ pub struct DateRange {
 ///
 /// Platform code (CLI via reqwest, iOS via `URLSession`, web via fetch)
 /// handles the actual HTTP requests.
-pub trait QuoteProvider {
+///
+/// # Implementing a Community Provider
+///
+/// See `docs/provider-development-guide.md` for a step-by-step walkthrough
+/// and `examples/ldgr-provider-example/` for a working template.
+pub trait QuoteProvider: Send + Sync {
     /// Provider name (e.g., "Yahoo Finance").
     fn name(&self) -> &'static str;
 
@@ -86,4 +113,33 @@ pub trait QuoteProvider {
 
     /// Parse a historical data response into OHLCV bars.
     fn parse_historical(&self, response: &str) -> Result<Vec<Ohlcv>, MarketError>;
+
+    /// Provider metadata for registry listing and documentation.
+    ///
+    /// The default implementation returns minimal metadata derived from
+    /// [`name()`](QuoteProvider::name). Override this to provide richer
+    /// information (description, TOS URL, rate limits, etc.).
+    fn metadata(&self) -> ProviderMetadata {
+        ProviderMetadata {
+            id: self.name(),
+            display_name: self.name(),
+            description: "",
+            url: "",
+            requires_api_key: false,
+            rate_limit_hint: None,
+            tos_url: None,
+        }
+    }
+}
+
+/// Create the set of built-in providers shipped with ldgr.
+///
+/// Used by both [`super::ProviderChain`] and [`super::ProviderRegistry`]
+/// to ensure a single source of truth for the default provider list.
+pub fn builtin_providers() -> Vec<Box<dyn QuoteProvider>> {
+    vec![
+        Box::new(super::yahoo::YahooFinance),
+        Box::new(super::coingecko::CoinGecko),
+        Box::new(super::ecb::Ecb),
+    ]
 }

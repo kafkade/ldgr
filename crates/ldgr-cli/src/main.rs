@@ -4,10 +4,12 @@ use std::process;
 use clap::Parser;
 
 mod commands;
+mod config;
 mod convert;
 mod db;
 mod session;
 mod sync;
+mod theme;
 mod tui;
 
 /// ldgr — Zero-knowledge bookkeeping
@@ -177,6 +179,12 @@ enum Commands {
         #[command(subcommand)]
         action: SyncAction,
     },
+
+    /// Manage CLI configuration (theme, etc.)
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -189,6 +197,24 @@ enum SyncAction {
     Pull,
     /// Show sync status
     Status,
+}
+
+#[derive(clap::Subcommand)]
+enum ConfigAction {
+    /// Set a config value (e.g., `ldgr config set theme nord`)
+    Set {
+        /// Config key
+        key: String,
+        /// Config value
+        value: String,
+    },
+    /// Get a config value (e.g., `ldgr config get theme`)
+    Get {
+        /// Config key
+        key: String,
+    },
+    /// List available themes
+    ListThemes,
 }
 
 #[derive(clap::Subcommand)]
@@ -351,6 +377,11 @@ fn main() {
             SyncAction::Push => commands::sync::run_push(&vault_path),
             SyncAction::Pull => commands::sync::run_pull(&vault_path),
             SyncAction::Status => commands::sync::run_status(&vault_path),
+        },
+        Some(Commands::Config { action }) => match action {
+            ConfigAction::Set { key, value } => commands::config::run_set(&key, &value),
+            ConfigAction::Get { key } => commands::config::run_get(&key),
+            ConfigAction::ListThemes => commands::config::run_list_themes(),
         },
         None => {
             eprintln!("ldgr — Zero-knowledge bookkeeping");
