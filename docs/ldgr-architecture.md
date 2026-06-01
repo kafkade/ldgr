@@ -420,10 +420,10 @@ This avoids pulling reqwest into WASM (large dependency) and uses platform netwo
 │  │           Sync Layer (transport-agnostic)             │   │
 │  │                                                       │   │
 │  │  ┌──────────┐  ┌──────────┐  ┌───────────────────┐   │   │
-│  │  │ Dropbox  │  │ WebDAV / │  │  ldgr-server      │   │   │
+│  │  │ Dropbox  │  │ WebDAV / │  │  ldgr-server ✅   │   │   │
 │  │  │ API      │  │ S3       │  │  (AGPL-3.0)       │   │   │
 │  │  │          │  │          │  │  Encrypted blob    │   │   │
-│  │  │          │  │          │  │  store + relay     │   │   │
+│  │  │          │  │          │  │  store + SRP auth  │   │   │
 │  │  └──────────┘  └──────────┘  └───────────────────┘   │   │
 │  └──────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
@@ -669,27 +669,31 @@ struct Lot {
 
 ### 5.4 Market Data
 
-**Provider trait**:
+**Provider trait** (I/O-free — builds URLs and parses responses):
+
 ```rust
-#[async_trait]
 trait QuoteProvider: Send + Sync {
-    fn name(&self) -> &str;
+    fn name(&self) -> &'static str;
     fn supported_asset_classes(&self) -> Vec<AssetClass>;
-    async fn quote(&self, symbols: &[&str]) -> Result<Vec<Quote>>;
-    async fn historical(&self, symbol: &str, range: DateRange) -> Result<Vec<OHLCV>>;
+    fn quote_url(&self, symbols: &[&str]) -> String;
+    fn parse_quotes(&self, response: &str) -> Result<Vec<Quote>, MarketError>;
+    fn historical_url(&self, symbol: &str, range: &DateRange) -> String;
+    fn parse_historical(&self, response: &str) -> Result<Vec<Ohlcv>, MarketError>;
+    fn metadata(&self) -> ProviderMetadata; // default provided
 }
 ```
 
 **Built-in providers**:
 
-| Provider | Asset Classes | API Key Required | Rate Limit |
-|----------|--------------|-----------------|------------|
-| Yahoo Finance | Stocks, ETFs, Mutual Funds, Indices | No (TOS caveat) | ~2000/hr |
-| Alpha Vantage | Stocks, ETFs, Forex | Yes (free tier) | 25/day free |
-| CoinGecko | Crypto | No (free tier) | 30/min |
-| ECB | Forex (EUR base) | No | Daily update |
+| Provider | ID | Asset Classes | API Key | Rate Limit |
+| --- | --- | --- | --- | --- |
+| Yahoo Finance | `yahoo-finance` | Stocks, ETFs, Mutual Funds, Indices, Forex, Crypto | No (TOS caveat) | ~2000/hr |
+| CoinGecko | `coingecko` | Crypto | No (free tier) | 5–15/min |
+| ECB | `ecb` | Forex (EUR base) | No | Daily update |
 
-**Community provider interface**: Third-party providers as separate crates implementing `QuoteProvider`.
+**Provider registry**: `ProviderRegistry` provides discovery and lookup by ID or asset class. Community providers register via `registry.register(Box::new(MyProvider))`. See `docs/provider-development-guide.md` and `examples/ldgr-provider-example/`.
+
+**Provider chain**: `ProviderChain` routes requests by asset class with fallback on failure. Both use `builtin_providers()` as a single source of truth for the default set.
 
 **Caching**: SQLite-backed cache with configurable TTL (default: 15 min for intraday, 24 hr for daily).
 
@@ -771,6 +775,46 @@ struct Loan {
 **Unencrypted vault export**: `ldgr export --full --unencrypted` dumps all data as structured JSON. User's right to their own data.
 
 **CLI output modes**: `--output table|json|csv` on all commands for scripting and piping.
+
+### 5.10 Sync Server (`ldgr-server`)
+
+The self-hosted sync server is an encrypted blob relay built with Axum. It never
+decrypts user data — clients authenticate via SRP-6a zero-knowledge proofs and
+all synced data is stored as opaque encrypted blobs.
+
+**Authentication**: SRP-6a (RFC 5054, 2048-bit group, SHA-256). The server stores
+only salt + verifier; passwords never leave the client. Login is a two-step
+handshake (init → verify) that produces a session token. Session tokens are
+SHA-256 hashed before storage — the raw token is returned to the client once and
+never stored.
+
+**API** (17 endpoints under `/api/v1/`):
+
+| Group | Endpoints | Purpose |
+|-------|-----------|---------|
+| Auth | `POST register`, `POST login/init`, `POST login/verify`, `POST logout` | SRP-6a account creation and session management |
+| Vaults | `POST /vaults`, `GET /vaults` | Create and list vaults scoped to authenticated user |
+| Batches | `PUT`, `GET`, `GET list` under `/vaults/:id/batches/` | Encrypted sync batch blob CRUD with `?since`, `?device_id`, `?limit` filters |
+| Snapshots | `PUT`, `GET`, `GET list` under `/vaults/:id/snapshots/` | Encrypted snapshot blob CRUD for new-device onboarding |
+| Devices | `GET list`, `PUT`, `DELETE` under `/vaults/:id/devices/` | Device registration and removal (encrypted device info) |
+| Relay | `POST offer`, `GET offer`, `POST respond`, `GET response` | Ephemeral key exchange relay for device onboarding |
+| Health | `GET /health` | Server health check |
+
+**Storage**: Server-side SQLite with WAL mode, foreign keys, and 5s busy timeout.
+All DB access goes through `tokio::task::spawn_blocking` to avoid blocking the
+async runtime. Six tables: `users`, `sessions`, `vaults`, `blobs`, `devices`,
+`relay_offers`.
+
+**Key design decisions**:
+- Blob writes use put-if-absent semantics (409 Conflict on duplicate path)
+- Content hashes (SHA-256) stored alongside blobs for integrity verification
+- Vault access is ownership-scoped: returns 404 (not 403) to avoid leaking vault existence
+- SRP handshake state is in-memory (HashMap with TTL + cap at 100 pending)
+- Relay offers are ephemeral with configurable TTL (default 10 minutes)
+- Body size limits: 64 KB for JSON endpoints, configurable for blob endpoints (default 50 MB)
+
+**Deployment**: Docker multi-stage build (`rust:1.88-bookworm` → `debian:bookworm-slim`)
+with non-root user and `/data` volume for the SQLite database.
 
 ---
 
@@ -973,6 +1017,60 @@ CREATE TABLE networth_snapshots (
 );
 ```
 
+### SQLite Schema (Sync Server)
+
+The sync server uses its own separate SQLite database. This schema stores
+encrypted blobs and authentication data — no plaintext financial data.
+
+```sql
+CREATE TABLE users (
+    id          TEXT PRIMARY KEY,
+    username    TEXT UNIQUE NOT NULL,
+    salt        BLOB NOT NULL,         -- SRP-6a salt
+    verifier    BLOB NOT NULL,         -- SRP-6a verifier (never stores password)
+    created_at  TEXT NOT NULL
+);
+
+CREATE TABLE sessions (
+    token_hash  TEXT PRIMARY KEY,      -- SHA-256(raw_token); raw token never stored
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at  TEXT NOT NULL,
+    expires_at  TEXT NOT NULL
+);
+
+CREATE TABLE vaults (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at  TEXT NOT NULL
+);
+
+CREATE TABLE blobs (
+    path          TEXT PRIMARY KEY,    -- e.g. "{vault_id}/batches/{device_id}/{batch_id}.enc"
+    vault_id      TEXT NOT NULL REFERENCES vaults(id) ON DELETE CASCADE,
+    data          BLOB NOT NULL,       -- opaque encrypted content
+    size          INTEGER NOT NULL,
+    content_hash  TEXT NOT NULL,       -- SHA-256 for integrity verification
+    created_at    TEXT NOT NULL
+);
+
+CREATE TABLE devices (
+    id              TEXT NOT NULL,
+    vault_id        TEXT NOT NULL REFERENCES vaults(id) ON DELETE CASCADE,
+    encrypted_info  BLOB NOT NULL,     -- opaque encrypted device info
+    updated_at      TEXT NOT NULL,
+    PRIMARY KEY (vault_id, id)
+);
+
+CREATE TABLE relay_offers (
+    id              TEXT PRIMARY KEY,
+    user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    offer_data      BLOB NOT NULL,     -- encrypted key exchange offer
+    response_data   BLOB,              -- encrypted key exchange response
+    created_at      TEXT NOT NULL,
+    expires_at      TEXT NOT NULL       -- ephemeral, default 10 min TTL
+);
+```
+
 ---
 
 ## 7. Platform Design
@@ -1069,13 +1167,73 @@ GLOBAL FLAGS
 
 ### 7.3 Apple Watch
 
-**Read-only glances** (Phase 6):
-- Net worth complication
-- Portfolio gain/loss today
-- Budget remaining this month
-- Market watchlist (top 5 symbols)
+**Read-only glances** (implemented):
 
-**Data source**: Pre-computed summaries pushed from iPhone companion app via WatchConnectivity. Watch does NOT decrypt the full vault.
+- Net worth glance with multi-currency support
+- Portfolio holdings summary grouped by commodity
+- Monthly spending breakdown with top 5 expense categories
+- Market watchlist (pending market data feature)
+
+**Complications** (WidgetKit):
+
+- **Net Worth** — rectangular, circular, inline families
+- **Daily Spend** — circular and inline families
+- **Portfolio** — rectangular and circular families
+- Hourly timeline refresh with immediate reload on data update
+
+**Data flow**:
+
+```
+VaultDataStore → WatchConnectivityManager → WCSession.updateApplicationContext
+    → PhoneConnectivityManager → UserDefaults (App Group) → WidgetKit TimelineProvider
+```
+
+**Data source**: Pre-computed `WatchSummary` pushed from iPhone companion app via WatchConnectivity. Watch does NOT decrypt the full vault. Summary includes net worth, portfolio, budget, daily spend, and watchlist entries.
+
+**Project structure**:
+
+- `apps/ios/LdgrShared/Sources/` — `WatchSummary` model (compiled into iOS, watchOS, and widget targets)
+- `apps/ios/ldgrWatch/Sources/` — Watch app (SwiftUI views, WCSession delegate)
+- `apps/ios/ldgrWatch/Widgets/` — WidgetKit complication extension
+- App Group `group.com.kafkade.ldgr.watch` shared between watch app and widget extension
+
+### 7.4 iOS Widgets & Siri Shortcuts
+
+**Home screen widgets** (WidgetKit):
+
+- **Net Worth** — small (primary currency) and medium (multi-currency) families
+- **Monthly Spending** — medium; shows month label, total, top 3 categories, today's spend
+- **Portfolio** — medium; shows holdings by commodity
+- 30-minute timeline refresh (best-effort) with immediate reload on vault data changes
+- All widgets display "Unlock ldgr to view" when the vault is locked
+
+**Siri Shortcuts** (App Intents):
+
+- **Query Net Worth** — returns cached net worth via dialog, no app launch needed
+- **Check Monthly Spending** — returns month total and top categories via dialog
+- **Add Expense** — opens app with pre-filled parameters (amount as String, not Double, for decimal precision)
+
+**Privacy**:
+
+- Widget data is pre-computed and written to App Group `group.com.kafkade.ldgr`
+- `WidgetDataManager` clears cached data and reloads all timelines when the vault locks
+- Intents that read cached data return "Please unlock ldgr first" when cache is cleared
+- `AddExpenseIntent` uses `openAppWhenRun = true` to require interactive vault unlock
+
+**Data flow**:
+
+```
+VaultDataStore → WidgetDataManager → UserDefaults (App Group) → WidgetKit TimelineProvider
+                                   → App Intents (read-only)
+Lock event   → WidgetDataManager.clearOnLock() → removes cache → reloads timelines
+```
+
+**Project structure**:
+
+- `apps/ios/ldgr/Sources/Services/WidgetDataManager.swift` — computes and caches summaries
+- `apps/ios/ldgr/Sources/Intents/` — App Intent definitions and shortcuts provider
+- `apps/ios/ldgrWidgets/Sources/` — Widget extension (bundle, providers, views)
+- App Group `group.com.kafkade.ldgr` shared between iOS app and widget extension
 
 ### 7.4 Web App
 
@@ -1139,11 +1297,28 @@ ldgr/
 │   └── ldgr-server/           # Sync server (AGPL-3.0)
 │       ├── Cargo.toml
 │       ├── LICENSE             # AGPL-3.0 (overrides workspace)
+│       ├── Dockerfile          # Multi-stage build (rust → debian-slim)
 │       └── src/
-│           ├── main.rs
-│           ├── api/           # Axum routes (blob CRUD, auth)
-│           ├── storage/       # Server-side blob storage
-│           └── auth/          # SRP-6a server implementation
+│           ├── main.rs         # Axum entry point, tracing setup
+│           ├── config.rs       # Env-based configuration
+│           ├── error.rs        # ServerError → HTTP status mapping
+│           ├── state.rs        # AppState (DB + SRP store + config)
+│           ├── api/            # Route handlers
+│           │   ├── mod.rs      # Router assembly, body limits
+│           │   ├── auth.rs     # Register, login (SRP), logout
+│           │   ├── vaults.rs   # Create/list vaults, access checks
+│           │   ├── batches.rs  # Encrypted batch blob CRUD
+│           │   ├── snapshots.rs# Encrypted snapshot blob CRUD
+│           │   ├── devices.rs  # Device registration/removal
+│           │   └── relay.rs    # Key exchange offer/response
+│           ├── auth/           # Authentication layer
+│           │   ├── mod.rs      # Hex encode/decode utilities
+│           │   ├── srp.rs      # SRP-6a (RFC 5054, 2048-bit)
+│           │   ├── session.rs  # Token generation, SHA-256 hashing
+│           │   └── middleware.rs# AuthUser extractor
+│           └── storage/        # Server-side SQLite
+│               ├── mod.rs      # CRUD ops via spawn_blocking
+│               └── schema.rs   # 6 tables (users, sessions, vaults, blobs, devices, relay)
 │
 ├── bindings/
 │   └── swift/                 # UniFFI-generated Swift bindings
@@ -1153,18 +1328,29 @@ ldgr/
 │           └── LdgrSwift/     # Idiomatic Swift async wrappers
 │
 ├── apps/
-│   ├── ios/                   # iOS/iPadOS app (Apache-2.0)
-│   │   ├── ldgr.xcodeproj
-│   │   └── ldgr/
-│   │       ├── App/
-│   │       ├── Views/
-│   │       ├── ViewModels/
-│   │       ├── Services/      # Keychain, URLSession, CloudKit
-│   │       └── Extensions/
-│   │
-│   ├── watchos/               # watchOS app (Apache-2.0)
-│   │   └── ldgr-watch/
-│   │
+│   ├── ios/                   # iOS/iPadOS/watchOS app (Apache-2.0)
+│   │   ├── project.yml        # XcodeGen spec (iOS + watchOS targets)
+│   │   ├── LdgrShared/        # Shared types (compiled into iOS + watchOS)
+│   │   │   └── Sources/
+│   │   │       └── WatchSummary.swift
+│   │   ├── ldgr/              # iOS app target
+│   │   │   └── Sources/
+│   │   │       ├── LdgrApp.swift
+│   │   │       ├── Services/  # Keychain, Biometric, Sync, WatchConnectivity, WidgetDataManager
+│   │   │       ├── Intents/   # App Intents: QueryNetWorth, CheckBudget, AddExpense, Shortcuts
+│   │   │       └── Views/     # Dashboard, Transactions, Accounts, etc.
+│   │   ├── ldgrWatch/         # watchOS app target
+│   │   │   ├── Sources/
+│   │   │   │   ├── LdgrWatchApp.swift
+│   │   │   │   ├── PhoneConnectivityManager.swift
+│   │   │   │   └── Views/    # WatchHome, NetWorth, Portfolio, Budget, NoData
+│   │   │   ├── Widgets/       # WidgetKit complication extension
+│   │   │   │   └── LdgrWidgets.swift
+│   │   │   └── Resources/
+│   │   ├── ldgrWidgets/         # iOS home screen widget extension
+│   │   │   └── Sources/
+│   │   │       ├── LdgrWidgets.swift
+│   │   │       └── Views/    # NetWorthWidget, BudgetWidget, PortfolioWidget
 │   └── web/                   # Next.js web app (Apache-2.0)
 │       ├── package.json
 │       ├── next.config.js
@@ -1180,7 +1366,11 @@ ldgr/
 │   ├── journal-subset.md      # Supported hledger syntax spec
 │   ├── vault-format.md        # Vault binary format spec
 │   ├── sync-protocol.md       # Sync protocol spec
-│   └── threat-model.md        # Security threat model
+│   ├── threat-model.md        # Security threat model
+│   └── provider-development-guide.md  # Community provider dev guide
+│
+├── examples/
+│   └── ldgr-provider-example/ # Template for community market data providers
 │
 └── tests/
     ├── fixtures/              # Test journals, CSV files, OFX samples
@@ -1223,6 +1413,20 @@ ldgr/
 | `rpassword` | Secure password input |
 | `comfy-table` | Table output formatting |
 | `indicatif` | Progress bars |
+
+### Sync Server
+
+| Dependency | Purpose |
+|------------|---------|
+| `axum` | Async HTTP framework |
+| `tokio` | Async runtime |
+| `tower-http` | CORS, tracing middleware |
+| `tracing` + `tracing-subscriber` | Structured logging |
+| `rusqlite` | Server-side SQLite storage |
+| `num-bigint` | SRP-6a big integer arithmetic |
+| `sha2` | SHA-256 for SRP proofs and content hashes |
+| `rand` | Cryptographic random number generation |
+| `chrono` | Timestamps and TTL calculations |
 
 ### iOS/iPadOS
 
@@ -1358,8 +1562,8 @@ ldgr/
 - Next.js web app: dashboard, transactions, investments, budget, market
 - Client-side-only vault operations (no server rendering of user data)
 - Service worker for offline access
-- Self-hosted sync server (AGPL-3.0, Axum-based, encrypted blob store)
-- SRP-6a authentication for server sync
+- ~~Self-hosted sync server (AGPL-3.0, Axum-based, encrypted blob store)~~ ✅
+- ~~SRP-6a authentication for server sync~~ ✅
 - Loan tracking module: amortization, payoff projections, what-if, refinance
 - Advanced goal projections (compound growth, what-if scenarios)
 - PDF report generation
@@ -1373,11 +1577,11 @@ ldgr/
 **Goal**: Apple Watch, widgets, and community ecosystem.
 
 **Deliverables**:
-- Apple Watch app: net worth glance, portfolio summary, budget remaining
-- Watch complications: net worth, daily spend, portfolio gain/loss
-- iOS Widgets: net worth, budget remaining, portfolio value
-- Siri Shortcuts: quick transaction entry
-- Community market data provider interface + documentation
+- ~~Apple Watch app: net worth glance, portfolio summary, budget remaining~~ ✅
+- ~~Watch complications: net worth, daily spend, portfolio gain/loss~~ ✅
+- ~~iOS Widgets: net worth, monthly spending, portfolio value~~ ✅
+- ~~Siri Shortcuts: query net worth, check spending, add expense~~ ✅
+- ~~Community market data provider interface + documentation~~ ✅
 - Themes for CLI and web
 - Plugin/extension system for advanced features (jurisdiction-specific tax rules, etc.)
 

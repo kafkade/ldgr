@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Apple Watch companion app: read-only glances for net worth, portfolio, and monthly spending
+- Watch complications (WidgetKit): net worth, daily spend, and portfolio widgets for watch faces
+- WatchConnectivity sync: iPhone sends pre-computed financial summaries to Watch without exposing vault data
+- iOS home screen widgets: net worth (small/medium), monthly spending (medium), and portfolio (medium)
+- Siri Shortcuts: query net worth, check monthly spending, and add expense via App Intents
+- Widget data cache cleared on vault lock to prevent financial data exposure on the lock screen
+- Market data provider registry with metadata, discovery, and community provider support
+- Provider development guide with step-by-step implementation walkthrough and TOS guidance
+- Example provider crate (`examples/ldgr-provider-example/`) as a template for community providers
+- Loan tracking module: fixed and variable rate amortization schedules with month-by-month breakdown
+- Payoff projections with extra payments and biweekly payment scenarios
+- Refinance comparison with break-even analysis and month-by-month cost simulation
+- Payment auto-split into principal and interest portions for ledger posting
+- Self-hosted sync server with SRP-6a zero-knowledge authentication and encrypted blob storage
+- Server API for vault management, encrypted batch and snapshot sync, device registration, and key exchange relay
+- Docker image for self-hosted deployment with configurable bind address, session TTL, and blob size limits
 - WASM build pipeline with wasm-bindgen API for vault crypto, journal parsing, and balance/register reports in the browser
 - sql.js integration for client-side SQLite storage in the web app
 - CI bundle size enforcement: WASM core module must stay under 2 MB compressed
@@ -22,6 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Offline support via service worker caching of WASM and static assets
 - Responsive layout: sidebar navigation on desktop, tab bar on mobile
 - Vault item replacement and clearing in core crypto API for efficient web persistence
+- CLI theming system with five built-in themes (default, light, solarized, nord, dracula) and custom theme support via config
+- `ldgr config` subcommand: `set`, `get`, and `list-themes` for managing CLI settings
+- Live theme reload in TUI views (watchlist, portfolio, chart) without restarting the application
+- Web theme preference with system/light/dark options and live system preference tracking
 
 ## [1.2.0] - 2026-05-30
 

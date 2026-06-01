@@ -1,0 +1,14 @@
+C:\kafkade\ldgr\examples\ldgr-provider-example\target\debug\deps\thiserror-9c1efda4dbc7b2b7.d: C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\lib.rs C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\aserror.rs C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\display.rs C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\var.rs C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\private.rs C:\kafkade\ldgr\examples\ldgr-provider-example\target\debug\build\thiserror-e196c11b7df54c50\out/private.rs
+
+C:\kafkade\ldgr\examples\ldgr-provider-example\target\debug\deps\libthiserror-9c1efda4dbc7b2b7.rlib: C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\lib.rs C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\aserror.rs C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\display.rs C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\var.rs C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\private.rs C:\kafkade\ldgr\examples\ldgr-provider-example\target\debug\build\thiserror-e196c11b7df54c50\out/private.rs
+
+C:\kafkade\ldgr\examples\ldgr-provider-example\target\debug\deps\libthiserror-9c1efda4dbc7b2b7.rmeta: C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\lib.rs C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\aserror.rs C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\display.rs C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\var.rs C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\private.rs C:\kafkade\ldgr\examples\ldgr-provider-example\target\debug\build\thiserror-e196c11b7df54c50\out/private.rs
+
+C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\lib.rs:
+C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\aserror.rs:
+C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\display.rs:
+C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\var.rs:
+C:\Users\javierfe\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\private.rs:
+C:\kafkade\ldgr\examples\ldgr-provider-example\target\debug\build\thiserror-e196c11b7df54c50\out/private.rs:
+
+# env-dep:OUT_DIR=C:\\kafkade\\ldgr\\examples\\ldgr-provider-example\\target\\debug\\build\\thiserror-e196c11b7df54c50\\out
