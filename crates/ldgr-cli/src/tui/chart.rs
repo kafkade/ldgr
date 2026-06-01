@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::symbols;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
@@ -18,6 +18,8 @@ use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 
 use ldgr_core::market::Ohlcv;
+
+use crate::theme::CliTheme;
 
 /// Chart display mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,7 +211,7 @@ impl ChartApp {
     }
 
     /// Render the chart view.
-    pub fn render(&self, frame: &mut Frame) {
+    pub fn render(&self, frame: &mut Frame, theme: &CliTheme) {
         let area = frame.area();
 
         if self.loading {
@@ -229,7 +231,7 @@ impl ChartApp {
 
         if let Some(ref err) = self.error {
             let msg = Paragraph::new(format!("Error: {err}"))
-                .style(Style::default().fg(Color::Red))
+                .style(Style::default().fg(theme.negative))
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
@@ -266,22 +268,22 @@ impl ChartApp {
             .constraints(constraints)
             .split(area);
 
-        self.render_chart_header(frame, chunks[0]);
+        self.render_chart_header(frame, chunks[0], theme);
 
         let chart_idx = 1;
         match self.chart_type {
-            ChartType::Line => self.render_line_chart(frame, chunks[chart_idx]),
-            ChartType::Candlestick => self.render_candlestick(frame, chunks[chart_idx]),
+            ChartType::Line => self.render_line_chart(frame, chunks[chart_idx], theme),
+            ChartType::Candlestick => self.render_candlestick(frame, chunks[chart_idx], theme),
         }
 
         if self.show_volume {
-            self.render_volume_bars(frame, chunks[chart_idx + 1]);
+            self.render_volume_bars(frame, chunks[chart_idx + 1], theme);
         }
 
-        self.render_chart_footer(frame, *chunks.last().unwrap());
+        self.render_chart_footer(frame, *chunks.last().unwrap(), theme);
     }
 
-    fn render_chart_header(&self, frame: &mut Frame, area: Rect) {
+    fn render_chart_header(&self, frame: &mut Frame, area: Rect, theme: &CliTheme) {
         let visible = self.visible_bars();
         let (latest_price, change_str) = if let Some(last) = visible.last() {
             let first_close = visible.first().map_or(last.close, |b| b.close);
@@ -310,7 +312,7 @@ impl ChartApp {
                 if *tf == self.timeframe {
                     Span::styled(
                         format!(" {} ", tf.label()),
-                        Style::default().bold().fg(Color::Yellow),
+                        Style::default().bold().fg(theme.accent),
                     )
                 } else {
                     Span::raw(format!(" {} ", tf.label()))
@@ -333,14 +335,14 @@ impl ChartApp {
         spans.push(Span::raw(format!(" │ {chart_label}")));
 
         if self.show_ma {
-            spans.push(Span::styled(" MA", Style::default().fg(Color::Magenta)));
+            spans.push(Span::styled(" MA", Style::default().fg(theme.chart_ma)));
         }
 
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
     #[allow(clippy::cast_precision_loss)]
-    fn render_line_chart(&self, frame: &mut Frame, area: Rect) {
+    fn render_line_chart(&self, frame: &mut Frame, area: Rect, theme: &CliTheme) {
         let visible = self.visible_bars();
         if visible.is_empty() {
             return;
@@ -367,7 +369,7 @@ impl ChartApp {
                 .name("Close")
                 .marker(symbols::Marker::Braille)
                 .graph_type(GraphType::Line)
-                .style(Style::default().fg(Color::Cyan))
+                .style(Style::default().fg(theme.chart_line))
                 .data(&close_data),
         ];
 
@@ -380,7 +382,7 @@ impl ChartApp {
                     .name(format!("MA{}", self.ma_period))
                     .marker(symbols::Marker::Braille)
                     .graph_type(GraphType::Line)
-                    .style(Style::default().fg(Color::Magenta))
+                    .style(Style::default().fg(theme.chart_ma))
                     .data(&ma_data),
             );
         }
@@ -413,7 +415,7 @@ impl ChartApp {
         clippy::cast_sign_loss,
         clippy::cast_precision_loss
     )]
-    fn render_candlestick(&self, frame: &mut Frame, area: Rect) {
+    fn render_candlestick(&self, frame: &mut Frame, area: Rect, theme: &CliTheme) {
         let visible = self.visible_bars();
         if visible.is_empty() {
             return;
@@ -466,7 +468,11 @@ impl ChartApp {
             let low = bar.low.to_f64().unwrap_or(0.0);
 
             let is_up = close >= open;
-            let color = if is_up { Color::Green } else { Color::Red };
+            let color = if is_up {
+                theme.positive
+            } else {
+                theme.negative
+            };
 
             // Map price to y coordinate (inverted: top = max price)
             let to_y = |price: f64| -> u16 {
@@ -514,19 +520,19 @@ impl ChartApp {
         for (i, ch) in top_label.chars().enumerate() {
             let lx = inner.x + inner.width.saturating_sub(top_label.len() as u16) + i as u16;
             if lx < inner.x + inner.width {
-                buf[(lx, inner.y)].set_char(ch).set_fg(Color::DarkGray);
+                buf[(lx, inner.y)].set_char(ch).set_fg(theme.muted);
             }
         }
         for (i, ch) in bot_label.chars().enumerate() {
             let lx = inner.x + inner.width.saturating_sub(bot_label.len() as u16) + i as u16;
             let ly = inner.y + inner.height - 1;
             if lx < inner.x + inner.width {
-                buf[(lx, ly)].set_char(ch).set_fg(Color::DarkGray);
+                buf[(lx, ly)].set_char(ch).set_fg(theme.muted);
             }
         }
     }
 
-    fn render_volume_bars(&self, frame: &mut Frame, area: Rect) {
+    fn render_volume_bars(&self, frame: &mut Frame, area: Rect, theme: &CliTheme) {
         let visible = self.visible_bars();
         if visible.is_empty() {
             return;
@@ -536,7 +542,11 @@ impl ChartApp {
             .iter()
             .map(|bar| {
                 let is_up = bar.close >= bar.open;
-                let color = if is_up { Color::Green } else { Color::Red };
+                let color = if is_up {
+                    theme.positive
+                } else {
+                    theme.negative
+                };
                 Bar::default()
                     .value(bar.volume)
                     .style(Style::default().fg(color))
@@ -553,11 +563,11 @@ impl ChartApp {
     }
 
     #[allow(clippy::unused_self)]
-    fn render_chart_footer(&self, frame: &mut Frame, area: Rect) {
+    fn render_chart_footer(&self, frame: &mut Frame, area: Rect, theme: &CliTheme) {
         let help = "q:Back  1-7:Timeframe  l:Line  c:Candle  v:Volume  m:MA  +/-:Zoom  ←→:Scroll";
         let bar = Paragraph::new(Line::from(Span::styled(
             format!(" {help}"),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.muted),
         )));
         frame.render_widget(bar, area);
     }

@@ -16,6 +16,8 @@ use rust_decimal::prelude::ToPrimitive;
 
 use ldgr_core::market::Quote;
 
+use crate::theme::CliTheme;
+
 /// A single holding in the portfolio.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -169,7 +171,7 @@ impl PortfolioApp {
     }
 
     /// Render the portfolio view.
-    pub fn render(&mut self, frame: &mut Frame) {
+    pub fn render(&mut self, frame: &mut Frame, theme: &CliTheme) {
         let area = frame.area();
 
         let chunks = Layout::default()
@@ -181,16 +183,16 @@ impl PortfolioApp {
             ])
             .split(area);
 
-        self.render_summary(frame, chunks[0]);
-        self.render_table(frame, chunks[1]);
-        self.render_status_bar(frame, chunks[2]);
+        self.render_summary(frame, chunks[0], theme);
+        self.render_table(frame, chunks[1], theme);
+        self.render_status_bar(frame, chunks[2], theme);
     }
 
-    fn render_summary(&self, frame: &mut Frame, area: Rect) {
+    fn render_summary(&self, frame: &mut Frame, area: Rect, theme: &CliTheme) {
         let gain_color = if self.total_gain >= Decimal::ZERO {
-            Color::Green
+            theme.positive
         } else {
-            Color::Red
+            theme.negative
         };
 
         let gain_pct = if self.total_cost.is_zero() {
@@ -225,7 +227,7 @@ impl PortfolioApp {
         frame.render_widget(Paragraph::new(line1), inner);
     }
 
-    fn render_table(&mut self, frame: &mut Frame, area: Rect) {
+    fn render_table(&mut self, frame: &mut Frame, area: Rect, theme: &CliTheme) {
         if self.loading {
             let msg = Paragraph::new(" Loading portfolio data…")
                 .block(Block::default().borders(Borders::ALL).title("Holdings"));
@@ -235,7 +237,7 @@ impl PortfolioApp {
 
         if let Some(ref err) = self.error {
             let msg = Paragraph::new(format!(" Error: {err}"))
-                .style(Style::default().fg(Color::Red))
+                .style(Style::default().fg(theme.negative))
                 .block(Block::default().borders(Borders::ALL).title("Holdings"));
             frame.render_widget(msg, area);
             return;
@@ -264,8 +266,8 @@ impl PortfolioApp {
             .iter()
             .map(|h| {
                 let gl_color = match h.gain_loss {
-                    Some(gl) if gl >= Decimal::ZERO => Color::Green,
-                    Some(_) => Color::Red,
+                    Some(gl) if gl >= Decimal::ZERO => theme.positive,
+                    Some(_) => theme.negative,
                     None => Color::default(),
                 };
 
@@ -311,11 +313,11 @@ impl PortfolioApp {
     }
 
     #[allow(clippy::unused_self)]
-    fn render_status_bar(&self, frame: &mut Frame, area: Rect) {
+    fn render_status_bar(&self, frame: &mut Frame, area: Rect, theme: &CliTheme) {
         let help = "q:Quit  ↑↓:Navigate  Enter:Chart  r:Refresh";
         let bar = Paragraph::new(Line::from(Span::styled(
             format!(" {help}"),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.muted),
         )));
         frame.render_widget(bar, area);
     }
