@@ -135,13 +135,27 @@ jobs:
           echo "✅ Bundle is within budget"
 
   msrv:
-    name: MSRV (1.88)
+    name: MSRV
     needs: changes
     if: github.event_name == 'push' || needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.100
+      # Single source of truth: derive the MSRV from the workspace rust-version
+      # so the toolchain pin can never drift from Cargo.toml.
+      - name: Read MSRV from Cargo.toml
+        id: msrv
+        run: |
+          VERSION=$(grep -m1 '^rust-version' Cargo.toml | sed -E 's/.*"([0-9]+\.[0-9]+(\.[0-9]+)?)".*/\1/')
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not parse rust-version from Cargo.toml"
+            exit 1
+          fi
+          echo "Resolved MSRV: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
       - uses: Swatinem/rust-cache@v2
         with:
           key: msrv
