@@ -36,7 +36,7 @@
 //! ```
 
 use chrono::{DateTime, Utc};
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 use super::envelope::{SealedEnvelope, decrypt_item, encrypt_item};

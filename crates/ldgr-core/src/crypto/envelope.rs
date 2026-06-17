@@ -8,7 +8,7 @@
 //! to the nearest bucket boundary.
 
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 use super::errors::CryptoError;
