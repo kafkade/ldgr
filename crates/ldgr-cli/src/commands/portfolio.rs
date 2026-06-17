@@ -176,7 +176,7 @@ async fn run_portfolio_async(holdings: Vec<Holding>) -> Result<()> {
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend).context("failed to create terminal")?;
 
-    let tick_rate = Duration::from_secs(60); // Refresh every 60s for portfolio
+    let tick_rate = Duration::from_mins(1); // Refresh every 60s for portfolio
     let event_handler = EventHandler::new(tick_rate);
 
     let symbols: Vec<String> = holdings.iter().map(|h| h.symbol.clone()).collect();
