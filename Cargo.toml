@@ -15,7 +15,7 @@ exclude = [
 [workspace.package]
 version = "1.2.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.95"
 license = "Apache-2.0"
 repository = "https://github.com/kafkade/ldgr"
 homepage = "https://github.com/kafkade/ldgr"
