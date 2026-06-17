@@ -1,6 +1,6 @@
 use std::fmt;
 
-use rand::RngCore;
+use rand::Rng;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 const KEY_LEN: usize = 32; // 256-bit

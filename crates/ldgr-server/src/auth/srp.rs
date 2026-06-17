@@ -8,7 +8,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use num_bigint::BigUint;
-use rand::RngCore;
+use rand::Rng;
 use sha2::{Digest, Sha256};
 
 // ── RFC 5054 2048-bit Group Parameters ────────────────────────────────────────

@@ -12,7 +12,7 @@
 //! 6. New device decrypts vault key → onboarding complete
 
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use x25519_dalek::{EphemeralSecret, PublicKey};
 

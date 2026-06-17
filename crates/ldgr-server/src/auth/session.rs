@@ -3,7 +3,7 @@
 //! Tokens are random 256-bit values. The server stores only the SHA-256
 //! hash of the token, so a database leak does not compromise sessions.
 
-use rand::RngCore;
+use rand::Rng;
 use sha2::{Digest, Sha256};
 
 use super::{hex_decode, hex_encode};
