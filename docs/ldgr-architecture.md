@@ -813,7 +813,7 @@ async runtime. Six tables: `users`, `sessions`, `vaults`, `blobs`, `devices`,
 - Relay offers are ephemeral with configurable TTL (default 10 minutes)
 - Body size limits: 64 KB for JSON endpoints, configurable for blob endpoints (default 50 MB)
 
-**Deployment**: Docker multi-stage build (`rust:1.88-bookworm` → `debian:bookworm-slim`)
+**Deployment**: Docker multi-stage build (`rust:1.95-bookworm` → `debian:bookworm-slim`)
 with non-root user and `/data` volume for the SQLite database.
 
 ---

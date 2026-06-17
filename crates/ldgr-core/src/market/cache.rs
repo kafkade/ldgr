@@ -9,9 +9,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 /// Default TTLs for different data types (per ADR-007).
-pub const QUOTE_TTL: Duration = Duration::from_secs(15 * 60); // 15 minutes
-pub const HISTORICAL_TTL: Duration = Duration::from_secs(24 * 60 * 60); // 24 hours
-pub const FOREX_TTL: Duration = Duration::from_secs(24 * 60 * 60); // 24 hours
+pub const QUOTE_TTL: Duration = Duration::from_mins(15); // 15 minutes
+pub const HISTORICAL_TTL: Duration = Duration::from_hours(24); // 24 hours
+pub const FOREX_TTL: Duration = Duration::from_hours(24); // 24 hours
 
 /// A cached market data entry with expiration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn rate_limiter_allows_within_limit() {
-        let mut rl = RateLimiter::new(3, Duration::from_secs(60));
+        let mut rl = RateLimiter::new(3, Duration::from_mins(1));
         assert!(rl.try_request(100));
         assert!(rl.try_request(110));
         assert!(rl.try_request(120));
@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn rate_limiter_window_slides() {
-        let mut rl = RateLimiter::new(2, Duration::from_secs(60));
+        let mut rl = RateLimiter::new(2, Duration::from_mins(1));
         assert!(rl.try_request(100));
         assert!(rl.try_request(110));
         assert!(!rl.try_request(120)); // denied

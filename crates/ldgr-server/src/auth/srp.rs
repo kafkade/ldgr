@@ -293,7 +293,7 @@ mod tests {
 
     #[test]
     fn reject_zero_client_public() {
-        let store = SrpHandshakeStore::new(Duration::from_secs(60));
+        let store = SrpHandshakeStore::new(Duration::from_mins(1));
         let n = get_n();
         // A = N, which is ≡ 0 mod N
         let result = store.initiate(
@@ -311,7 +311,7 @@ mod tests {
     fn handshake_store_caps_pending() {
         let store = SrpHandshakeStore {
             handshakes: Mutex::new(HashMap::new()),
-            ttl: Duration::from_secs(60),
+            ttl: Duration::from_mins(1),
             max_pending: 2,
         };
         let v = BigUint::from(42u32);

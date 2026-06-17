@@ -1,5 +1,5 @@
 # ── Builder ────────────────────────────────────────────────────────────────────
-FROM rust:1.88-bookworm AS builder
+FROM rust:1.95-bookworm AS builder
 
 WORKDIR /usr/src/ldgr
 COPY . .

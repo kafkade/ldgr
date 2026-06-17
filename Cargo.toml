@@ -15,7 +15,7 @@ exclude = [
 [workspace.package]
 version = "1.2.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.95"
 license = "Apache-2.0"
 repository = "https://github.com/kafkade/ldgr"
 homepage = "https://github.com/kafkade/ldgr"
@@ -34,7 +34,7 @@ zeroize = { version = "1", features = ["derive"] }
 
 # Data
 rust_decimal = { version = "1", features = ["serde-with-str"] }
-rusqlite = { version = "0.39", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v7", "serde"] }
