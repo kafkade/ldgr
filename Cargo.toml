@@ -28,7 +28,7 @@ aes-gcm = "0.10"
 argon2 = "0.5"
 hkdf = "0.13"
 sha2 = "0.11"
-rand = "0.9"
+rand = "0.10"
 x25519-dalek = { version = "2", features = ["static_secrets", "getrandom"] }
 zeroize = { version = "1", features = ["derive"] }
 
@@ -62,7 +62,7 @@ uniffi = "0.31"
 # Server
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower-http = { version = "0.7", features = ["cors", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
