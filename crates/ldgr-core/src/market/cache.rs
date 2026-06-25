@@ -66,6 +66,13 @@ impl MarketCache {
         );
     }
 
+    /// Insert a pre-built entry, preserving its stored timestamp and TTL.
+    ///
+    /// Used to hydrate the in-memory layer from persistent storage.
+    pub fn restore(&mut self, key: String, entry: CacheEntry) {
+        self.entries.insert(key, entry);
+    }
+
     /// Remove expired entries.
     pub fn evict_expired(&mut self, now: i64) {
         self.entries.retain(|_, e| e.is_fresh(now));

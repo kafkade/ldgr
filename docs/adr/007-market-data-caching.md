@@ -44,6 +44,13 @@ Every ldgr client caches market data locally with a TTL:
 
 On cache hit within TTL → return cached data, no network request. This alone eliminates most repeat requests from a single device.
 
+**Implementation note:** The client cache is a standalone `SQLite` database
+(`~/.ldgr/market_cache.db`, table `market_cache(key, data, stored_at, ttl_secs)`),
+kept separate from the encrypted `vault.db`. It holds only public market data, so it
+needs no encryption and remains usable by standalone commands (e.g. `ldgr watch`) that
+never unlock a vault. Entries are hydrated on startup, evicted when expired, and
+written through on every fetch. `ldgr cache status` / `ldgr cache clear` manage it.
+
 ### Layer 2: Shared proxy (Cloudflare Workers + KV)
 
 A Cloudflare Worker at `api.ldgr.dev/market/` acts as a caching proxy:
