@@ -163,6 +163,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow details.
 
 ## Documentation
 
+- [How is my data protected?](docs/security/vault-overview.md) — plain-language overview of ldgr's encryption, no technical background needed
 - [Architecture & Roadmap](docs/ldgr-architecture.md) — full system design, ADRs, data model
 - [Roadmap](docs/roadmap.md) — phased development plan
 - [ADRs](docs/adr/) — architecture decision records
