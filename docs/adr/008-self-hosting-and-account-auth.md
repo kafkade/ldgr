@@ -58,7 +58,7 @@ password (and the vault recovery key for emergencies).
 The SRP private exponent `x` is derived from **both** the master password and the account Secret
 Key. Neither secret alone yields `x`; the server stores only `salt` and `v = g^x mod N`.
 
-**Inputs**
+#### Inputs
 
 | Symbol | Definition |
 | --- | --- |
@@ -69,7 +69,7 @@ Key. Neither secret alone yields `x`; the server stores only `salt` and `v = g^x
 | `account_id` | Server-assigned UUIDv7 for the account; binds derivation to one identity. |
 | `srp_salt` | Per-account random salt (≥16 bytes), stored server-side as today. |
 
-**Combine → SRP secret**
+#### Combine → SRP secret
 
 ```
 ver_byte = 0x01
