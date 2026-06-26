@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Persistent client-side market price cache (SQLite) with per-type TTLs (quotes 15 min, historical 24 hr) so cached prices survive CLI restarts and avoid repeat network requests within TTL
+- `ldgr cache status` and `ldgr cache clear` commands to inspect hit rate / entry count and flush cached prices
 - Apple Watch companion app: read-only glances for net worth, portfolio, and monthly spending
 - Watch complications (WidgetKit): net worth, daily spend, and portfolio widgets for watch faces
 - WatchConnectivity sync: iPhone sends pre-computed financial summaries to Watch without exposing vault data

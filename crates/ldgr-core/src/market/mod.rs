@@ -14,6 +14,8 @@ pub mod cache;
 pub mod chain;
 pub mod coingecko;
 pub mod ecb;
+#[cfg(feature = "sqlite")]
+pub mod persist;
 pub mod registry;
 pub mod types;
 pub mod yahoo;
@@ -22,6 +24,8 @@ pub use cache::{MarketCache, RateLimiter};
 pub use chain::ProviderChain;
 pub use coingecko::CoinGecko;
 pub use ecb::Ecb;
+#[cfg(feature = "sqlite")]
+pub use persist::{CacheStats, CacheStatus, CacheStoreError, PersistentCache};
 pub use registry::ProviderRegistry;
 pub use types::*;
 pub use yahoo::YahooFinance;
