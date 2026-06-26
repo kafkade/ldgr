@@ -36,5 +36,11 @@ num-bigint = { version = "0.4", default-features = false }
 anyhow.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+# In-process integration testing: drive the router via tower's oneshot and the
+# core SRP-6a client (no sockets, no real HTTP).
+ldgr-core = { path = "../ldgr-core", features = ["core", "sync"] }
+tower = { version = "0.5", features = ["util"] }
+
 [lints]
 workspace = true
