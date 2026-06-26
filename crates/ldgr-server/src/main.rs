@@ -1,13 +1,8 @@
-mod api;
-mod auth;
-mod config;
-mod error;
-mod state;
-mod storage;
-
 use std::sync::Arc;
 
 use tower_http::trace::TraceLayer;
+
+use ldgr_server::{api, auth, config, state, storage};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

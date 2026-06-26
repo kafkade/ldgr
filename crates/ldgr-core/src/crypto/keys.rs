@@ -22,6 +22,25 @@ macro_rules! define_key {
             pub(crate) fn as_bytes(&self) -> &[u8; KEY_LEN] {
                 &self.0
             }
+
+            /// TEST ONLY — construct a key from known bytes for test-vector
+            /// generation. Available only with the `test-vectors` feature.
+            #[cfg(feature = "test-vectors")]
+            #[doc(hidden)]
+            #[must_use]
+            pub fn from_test_bytes(bytes: [u8; KEY_LEN]) -> Self {
+                Self(bytes)
+            }
+
+            /// TEST ONLY — expose the raw key bytes so intermediate values can
+            /// be recorded in test vectors. Available only with the
+            /// `test-vectors` feature.
+            #[cfg(feature = "test-vectors")]
+            #[doc(hidden)]
+            #[must_use]
+            pub fn to_test_bytes(&self) -> [u8; KEY_LEN] {
+                self.0
+            }
         }
 
         impl fmt::Debug for $name {

@@ -15,12 +15,16 @@ readme = "../../README.md"
 default = ["core"]
 core = []
 sqlite = ["dep:rusqlite"]
-sync = []
+sync = ["dep:num-bigint"]
 import-export = []
 market = []
 loans = []
 budget = []
 goals = []
+# Test-only: exposes deterministic-nonce crypto helpers used to generate and
+# verify the published vault-format test vectors (see docs/security/test-vectors.md).
+# NEVER enable in production builds — it allows caller-supplied nonces/keys.
+test-vectors = []
 full = ["core", "sqlite", "sync", "import-export", "market", "loans", "budget", "goals"]
 
 [dependencies]
@@ -32,6 +36,10 @@ rand.workspace = true
 sha2.workspace = true
 x25519-dalek.workspace = true
 zeroize.workspace = true
+
+# SRP-6a big-integer arithmetic (pure compute, no I/O; sync feature only).
+# Mirrors the version used by ldgr-server's SRP implementation.
+num-bigint = { version = "0.4", default-features = false, optional = true }
 
 # Data
 rust_decimal.workspace = true
@@ -46,6 +54,8 @@ thiserror.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
 
 [lints]
 workspace = true

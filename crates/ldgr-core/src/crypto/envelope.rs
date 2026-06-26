@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 use super::errors::CryptoError;
 use super::keys::{ItemKey, VaultKey};
 use super::wrap::{WrappedKey, unwrap_item_key, wrap_item_key};
-
 /// AAD for item data encryption (distinct from key wrapping AAD).
 const ITEM_SEAL_AAD: &[u8] = b"ldgr-item-seal-v1";
 
@@ -183,6 +182,46 @@ pub fn decrypt_item(
 
     let plaintext = unpad(&padded)?;
     Ok(plaintext.to_vec())
+}
+
+/// TEST ONLY — encrypt an item with an explicit item key and explicit nonces.
+///
+/// Produces byte-for-byte reproducible [`SealedEnvelope`] output for the
+/// published vault-format test vectors. `seal_nonce` is used for the payload
+/// encryption and `ik_wrap_nonce` for wrapping the item key. Never reuse a
+/// `(key, nonce)` pair in production — it breaks AES-GCM security.
+#[cfg(feature = "test-vectors")]
+#[doc(hidden)]
+pub fn encrypt_item_with(
+    vault_key: &VaultKey,
+    item_key: &ItemKey,
+    plaintext: &[u8],
+    seal_nonce: &[u8; NONCE_LEN],
+    ik_wrap_nonce: &[u8; NONCE_LEN],
+) -> Result<SealedEnvelope, CryptoError> {
+    let padded = pad_to_bucket(plaintext);
+
+    let cipher = Aes256Gcm::new_from_slice(item_key.as_bytes())
+        .map_err(|e| CryptoError::EncryptionFailed(e.to_string()))?;
+    let nonce = Nonce::from_slice(seal_nonce);
+
+    let payload = aes_gcm::aead::Payload {
+        msg: &padded,
+        aad: ITEM_SEAL_AAD,
+    };
+
+    let ciphertext = cipher
+        .encrypt(nonce, payload)
+        .map_err(|_| CryptoError::EncryptionFailed("AES-GCM encryption failed".into()))?;
+
+    let wrapped_ik = super::wrap::wrap_item_key_with_nonce(vault_key, item_key, ik_wrap_nonce)?;
+
+    Ok(SealedEnvelope {
+        version: ENVELOPE_VERSION,
+        wrapped_ik,
+        nonce: *seal_nonce,
+        ciphertext,
+    })
 }
 
 #[cfg(test)]
