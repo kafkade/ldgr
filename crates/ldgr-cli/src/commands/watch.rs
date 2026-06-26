@@ -15,7 +15,8 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
 
-use ldgr_core::market::{QuoteProvider, YahooFinance};
+use ldgr_core::market::cache::{HISTORICAL_TTL, QUOTE_TTL};
+use ldgr_core::market::{MarketCache, PersistentCache, QuoteProvider, YahooFinance};
 
 use crate::tui::chart::ChartApp;
 use crate::tui::event::{AppEvent, EventHandler};
@@ -34,26 +35,48 @@ impl Drop for TerminalGuard {
 
 /// Messages from background fetch tasks to the TUI.
 enum FetchResult {
-    Quotes(Vec<ldgr_core::market::Quote>),
+    /// Parsed quotes. `cache_key` is `Some` when the result came from the network
+    /// and should be written through to the persistent cache.
+    Quotes {
+        quotes: Vec<ldgr_core::market::Quote>,
+        cache_key: Option<String>,
+    },
     QuoteError(String, String),
-    Historical(Vec<ldgr_core::market::Ohlcv>),
+    /// Parsed historical bars. `cache_key` is `Some` for network results to persist.
+    Historical {
+        bars: Vec<ldgr_core::market::Ohlcv>,
+        cache_key: Option<String>,
+    },
     HistoricalError(String),
 }
 
+/// Build the per-symbol quote cache key (matches the in-memory cache convention).
+fn quote_cache_key(symbol: &str) -> String {
+    let mut syms = [symbol];
+    MarketCache::quote_key("yahoo", &mut syms)
+}
+
 /// Run the watchlist TUI.
-pub fn run(symbols: Vec<String>, interval_secs: u64) -> Result<()> {
+pub fn run(symbols: Vec<String>, interval_secs: u64, vault_path: &std::path::Path) -> Result<()> {
     if symbols.is_empty() {
         anyhow::bail!(
             "No symbols provided.\nUsage: ldgr watch AAPL MSFT GOOG\n\nAdd symbols to track their prices in real-time."
         );
     }
 
+    // The price cache is an optimization — if it can't be opened, carry on without it.
+    let cache = crate::commands::cache::open_cache(vault_path).ok();
+
     let rt = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
-    rt.block_on(run_watchlist_async(symbols, interval_secs))
+    rt.block_on(run_watchlist_async(symbols, interval_secs, cache))
 }
 
 #[allow(clippy::unused_async, clippy::too_many_lines)]
-async fn run_watchlist_async(symbols: Vec<String>, interval_secs: u64) -> Result<()> {
+async fn run_watchlist_async(
+    symbols: Vec<String>,
+    interval_secs: u64,
+    mut cache: Option<PersistentCache>,
+) -> Result<()> {
     // Set up terminal
     enable_raw_mode().context("failed to enable raw mode")?;
     let _guard = TerminalGuard;
@@ -89,7 +112,7 @@ async fn run_watchlist_async(symbols: Vec<String>, interval_secs: u64) -> Result
     let (fetch_tx, mut fetch_rx) = mpsc::unbounded_channel::<FetchResult>();
 
     // Initial fetch
-    spawn_quote_fetch(&client, &provider, &app.symbols, &fetch_tx);
+    dispatch_quote_fetch(cache.as_mut(), &client, &provider, &app.symbols, &fetch_tx);
     app.mark_loading();
 
     let mut chart_app: Option<ChartApp> = None;
@@ -105,9 +128,23 @@ async fn run_watchlist_async(symbols: Vec<String>, interval_secs: u64) -> Result
         // Process fetch results (non-blocking)
         while let Ok(result) = fetch_rx.try_recv() {
             match result {
-                FetchResult::Quotes(quotes) => app.update_quotes(quotes),
+                FetchResult::Quotes { quotes, cache_key } => {
+                    if let (Some(c), Some(key)) = (cache.as_mut(), cache_key)
+                        && let Ok(json) = serde_json::to_string(&quotes)
+                    {
+                        let now = chrono::Utc::now().timestamp();
+                        let _ = c.set(key, json, QUOTE_TTL, now);
+                    }
+                    app.update_quotes(quotes);
+                }
                 FetchResult::QuoteError(sym, err) => app.set_error(&sym, err),
-                FetchResult::Historical(bars) => {
+                FetchResult::Historical { bars, cache_key } => {
+                    if let (Some(c), Some(key)) = (cache.as_mut(), cache_key)
+                        && let Ok(json) = serde_json::to_string(&bars)
+                    {
+                        let now = chrono::Utc::now().timestamp();
+                        let _ = c.set(key, json, HISTORICAL_TTL, now);
+                    }
                     if let Some(ref mut ca) = chart_app {
                         ca.update_data(bars);
                     }
@@ -131,7 +168,8 @@ async fn run_watchlist_async(symbols: Vec<String>, interval_secs: u64) -> Result
                         continue;
                     }
                     if ca.needs_data {
-                        spawn_historical_fetch(
+                        dispatch_historical_fetch(
+                            cache.as_mut(),
                             &client,
                             &provider,
                             &ca.symbol,
@@ -145,7 +183,14 @@ async fn run_watchlist_async(symbols: Vec<String>, interval_secs: u64) -> Result
                         && let Some(sym) = app.selected_symbol().map(String::from)
                     {
                         let ca = ChartApp::new(sym.clone());
-                        spawn_historical_fetch(&client, &provider, &sym, ca.timeframe, &fetch_tx);
+                        dispatch_historical_fetch(
+                            cache.as_mut(),
+                            &client,
+                            &provider,
+                            &sym,
+                            ca.timeframe,
+                            &fetch_tx,
+                        );
                         chart_app = Some(ca);
                         continue;
                     }
@@ -165,12 +210,24 @@ async fn run_watchlist_async(symbols: Vec<String>, interval_secs: u64) -> Result
                         .cloned()
                         .collect();
                     if !new_symbols.is_empty() {
-                        spawn_quote_fetch(&client, &provider, &new_symbols, &fetch_tx);
+                        dispatch_quote_fetch(
+                            cache.as_mut(),
+                            &client,
+                            &provider,
+                            &new_symbols,
+                            &fetch_tx,
+                        );
                     }
 
                     // Manual refresh
                     if key.code == crossterm::event::KeyCode::Char('r') {
-                        spawn_quote_fetch(&client, &provider, &app.symbols, &fetch_tx);
+                        dispatch_quote_fetch(
+                            cache.as_mut(),
+                            &client,
+                            &provider,
+                            &app.symbols,
+                            &fetch_tx,
+                        );
                         app.mark_loading();
                     }
                 }
@@ -186,7 +243,13 @@ async fn run_watchlist_async(symbols: Vec<String>, interval_secs: u64) -> Result
 
                 if chart_app.is_none() {
                     // Auto-refresh quotes
-                    spawn_quote_fetch(&client, &provider, &app.symbols, &fetch_tx);
+                    dispatch_quote_fetch(
+                        cache.as_mut(),
+                        &client,
+                        &provider,
+                        &app.symbols,
+                        &fetch_tx,
+                    );
                     app.mark_loading();
                     app.status_message = None;
                 }
@@ -200,14 +263,34 @@ async fn run_watchlist_async(symbols: Vec<String>, interval_secs: u64) -> Result
     Ok(())
 }
 
-/// Spawn async quote fetches for the given symbols.
-fn spawn_quote_fetch(
+/// Serve fresh cached quotes where possible, fetching the rest from the network.
+///
+/// Cache hits are delivered immediately with no network request; misses spawn an
+/// async fetch that writes its result back through the cache on arrival.
+fn dispatch_quote_fetch(
+    mut cache: Option<&mut PersistentCache>,
     client: &reqwest::Client,
     provider: &YahooFinance,
     symbols: &[String],
     tx: &mpsc::UnboundedSender<FetchResult>,
 ) {
+    let now = chrono::Utc::now().timestamp();
+
     for symbol in symbols {
+        let key = quote_cache_key(symbol);
+
+        // Cache hit within TTL → serve locally, no network request.
+        if let Some(c) = cache.as_deref_mut()
+            && let Ok(Some(data)) = c.get(&key, now)
+            && let Ok(quotes) = serde_json::from_str::<Vec<ldgr_core::market::Quote>>(&data)
+        {
+            let _ = tx.send(FetchResult::Quotes {
+                quotes,
+                cache_key: None,
+            });
+            continue;
+        }
+
         let url = provider.quote_url(&[symbol.as_str()]);
         if url.is_empty() {
             continue;
@@ -222,7 +305,10 @@ fn spawn_quote_fetch(
                 Ok(resp) => match resp.text().await {
                     Ok(text) => match provider.parse_quotes(&text) {
                         Ok(quotes) => {
-                            let _ = tx.send(FetchResult::Quotes(quotes));
+                            let _ = tx.send(FetchResult::Quotes {
+                                quotes,
+                                cache_key: Some(key),
+                            });
                         }
                         Err(e) => {
                             let _ = tx.send(FetchResult::QuoteError(sym, e.to_string()));
@@ -240,18 +326,33 @@ fn spawn_quote_fetch(
     }
 }
 
-/// Spawn an async historical data fetch.
-fn spawn_historical_fetch(
+/// Serve fresh cached historical bars if available, otherwise fetch from network.
+fn dispatch_historical_fetch(
+    cache: Option<&mut PersistentCache>,
     client: &reqwest::Client,
     provider: &YahooFinance,
     symbol: &str,
     timeframe: crate::tui::chart::Timeframe,
     tx: &mpsc::UnboundedSender<FetchResult>,
 ) {
+    let now = chrono::Utc::now().timestamp();
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let start_date = (chrono::Utc::now() - chrono::Duration::days(timeframe.days()))
         .format("%Y-%m-%d")
         .to_string();
+
+    let key = MarketCache::historical_key("yahoo", symbol, &start_date, &today);
+
+    if let Some(c) = cache
+        && let Ok(Some(data)) = c.get(&key, now)
+        && let Ok(bars) = serde_json::from_str::<Vec<ldgr_core::market::Ohlcv>>(&data)
+    {
+        let _ = tx.send(FetchResult::Historical {
+            bars,
+            cache_key: None,
+        });
+        return;
+    }
 
     let range = ldgr_core::market::DateRange {
         start: start_date,
@@ -267,7 +368,10 @@ fn spawn_historical_fetch(
             Ok(resp) => match resp.text().await {
                 Ok(text) => match provider.parse_historical(&text) {
                     Ok(bars) => {
-                        let _ = tx.send(FetchResult::Historical(bars));
+                        let _ = tx.send(FetchResult::Historical {
+                            bars,
+                            cache_key: Some(key),
+                        });
                     }
                     Err(e) => {
                         let _ = tx.send(FetchResult::HistoricalError(e.to_string()));

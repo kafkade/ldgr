@@ -174,6 +174,12 @@ enum Commands {
     /// Portfolio view with market values and interactive charts
     Portfolio,
 
+    /// Manage the local market data price cache
+    Cache {
+        #[command(subcommand)]
+        action: CacheAction,
+    },
+
     /// Cross-device sync via encrypted blob store
     Sync {
         #[command(subcommand)]
@@ -185,6 +191,14 @@ enum Commands {
         #[command(subcommand)]
         action: ConfigAction,
     },
+}
+
+#[derive(clap::Subcommand)]
+enum CacheAction {
+    /// Remove all cached prices
+    Clear,
+    /// Show cache entry count and hit rate
+    Status,
 }
 
 #[derive(clap::Subcommand)]
@@ -370,8 +384,14 @@ fn main() {
         Some(Commands::Export { format, query }) => {
             commands::export::run(&vault_path, &format, &query)
         }
-        Some(Commands::Watch { symbols, interval }) => commands::watch::run(symbols, interval),
+        Some(Commands::Watch { symbols, interval }) => {
+            commands::watch::run(symbols, interval, &vault_path)
+        }
         Some(Commands::Portfolio) => commands::portfolio::run(&vault_path),
+        Some(Commands::Cache { action }) => match action {
+            CacheAction::Clear => commands::cache::run_clear(&vault_path),
+            CacheAction::Status => commands::cache::run_status(&vault_path),
+        },
         Some(Commands::Sync { action }) => match action {
             SyncAction::Setup => commands::sync::run_setup(&vault_path),
             SyncAction::Push => commands::sync::run_push(&vault_path),
