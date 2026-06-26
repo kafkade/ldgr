@@ -15,7 +15,7 @@ readme = "../../README.md"
 default = ["core"]
 core = []
 sqlite = ["dep:rusqlite"]
-sync = []
+sync = ["dep:num-bigint"]
 import-export = []
 market = []
 loans = []
@@ -32,6 +32,10 @@ rand.workspace = true
 sha2.workspace = true
 x25519-dalek.workspace = true
 zeroize.workspace = true
+
+# SRP-6a big-integer arithmetic (pure compute, no I/O; sync feature only).
+# Mirrors the version used by ldgr-server's SRP implementation.
+num-bigint = { version = "0.4", default-features = false, optional = true }
 
 # Data
 rust_decimal.workspace = true

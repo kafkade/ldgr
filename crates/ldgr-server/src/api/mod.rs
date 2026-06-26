@@ -30,7 +30,7 @@ pub fn router(state: SharedState) -> Router {
     // Batch blob routes (auth required)
     let batch_routes = Router::new()
         .route(
-            "/:device_id/:batch_id",
+            "/{device_id}/{batch_id}",
             put(batches::put_batch).get(batches::get_batch),
         )
         .route("/", get(batches::list_batches))
@@ -39,7 +39,7 @@ pub fn router(state: SharedState) -> Router {
     // Snapshot blob routes (auth required)
     let snapshot_routes = Router::new()
         .route(
-            "/:snapshot_id",
+            "/{snapshot_id}",
             put(snapshots::put_snapshot).get(snapshots::get_snapshot),
         )
         .route("/", get(snapshots::list_snapshots))
@@ -49,7 +49,7 @@ pub fn router(state: SharedState) -> Router {
     let device_routes = Router::new()
         .route("/", get(devices::list_devices))
         .route(
-            "/:device_id",
+            "/{device_id}",
             put(devices::put_device).delete(devices::delete_device),
         )
         .layer(DefaultBodyLimit::max(64 * 1024));
@@ -57,18 +57,18 @@ pub fn router(state: SharedState) -> Router {
     // Key exchange relay (auth required)
     let relay_routes = Router::new()
         .route("/offer", post(relay::create_offer))
-        .route("/:offer_id", get(relay::get_offer))
-        .route("/:offer_id/respond", post(relay::post_response))
-        .route("/:offer_id/response", get(relay::get_response))
+        .route("/{offer_id}", get(relay::get_offer))
+        .route("/{offer_id}/respond", post(relay::post_response))
+        .route("/{offer_id}/response", get(relay::get_response))
         .layer(DefaultBodyLimit::max(64 * 1024));
 
     Router::new()
         .route("/health", get(health))
         .nest("/api/v1/auth", auth_routes)
         .nest("/api/v1/vaults", vault_routes)
-        .nest("/api/v1/vaults/:vault_id/batches", batch_routes)
-        .nest("/api/v1/vaults/:vault_id/snapshots", snapshot_routes)
-        .nest("/api/v1/vaults/:vault_id/devices", device_routes)
+        .nest("/api/v1/vaults/{vault_id}/batches", batch_routes)
+        .nest("/api/v1/vaults/{vault_id}/snapshots", snapshot_routes)
+        .nest("/api/v1/vaults/{vault_id}/devices", device_routes)
         .nest("/api/v1/relay", relay_routes)
         .with_state(state)
 }

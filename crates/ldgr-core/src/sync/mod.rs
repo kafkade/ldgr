@@ -10,6 +10,11 @@ pub mod onboarding;
 pub mod snapshot;
 pub mod transport;
 
+/// Server sync protocol (SRP-6a client + endpoint types). Requires the `sync`
+/// feature, which pulls in big-integer arithmetic for SRP.
+#[cfg(feature = "sync")]
+pub mod server;
+
 pub use conflicts::*;
 pub use events::*;
 pub use onboarding::{

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- SRP-6a client primitives and transport-agnostic server sync protocol types in `ldgr-core` (registration verifier generation, login proof computation, session key derivation, and serde request/response types for every server endpoint), reused by all platform clients without performing any I/O
+- `ServerSyncClient` that orchestrates the auth handshake and encrypted batch/snapshot/device/relay sync over an injected platform HTTP callback
 - Persistent client-side market price cache (SQLite) with per-type TTLs (quotes 15 min, historical 24 hr) so cached prices survive CLI restarts and avoid repeat network requests within TTL
 - `ldgr cache status` and `ldgr cache clear` commands to inspect hit rate / entry count and flush cached prices
 - Apple Watch companion app: read-only glances for net worth, portfolio, and monthly spending
@@ -44,6 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ldgr config` subcommand: `set`, `get`, and `list-themes` for managing CLI settings
 - Live theme reload in TUI views (watchlist, portfolio, chart) without restarting the application
 - Web theme preference with system/light/dark options and live system preference tracking
+
+### Fixed
+
+- `ldgr-server` router now uses axum 0.8 `{param}` path syntax; the previous `:param` syntax panicked at router construction under axum 0.8
 
 ## [1.2.0] - 2026-05-30
 
