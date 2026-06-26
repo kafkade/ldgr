@@ -26,3 +26,15 @@ pub use wrap::{
     WrappedKey, unwrap_item_key, unwrap_vault_key, unwrap_vault_key_with_recovery, wrap_item_key,
     wrap_vault_key, wrap_vault_key_with_recovery,
 };
+
+#[cfg(feature = "test-vectors")]
+#[doc(hidden)]
+pub use envelope::encrypt_item_with;
+#[cfg(feature = "test-vectors")]
+#[doc(hidden)]
+pub use vault::{serialize_parts, serialize_sealed_envelope, serialize_wrapped_key};
+#[cfg(feature = "test-vectors")]
+#[doc(hidden)]
+pub use wrap::{
+    wrap_item_key_with_nonce, wrap_vault_key_with_nonce, wrap_vault_key_with_recovery_with_nonce,
+};

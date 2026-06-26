@@ -483,8 +483,60 @@ pub fn verify_recovery_key(
     Ok(())
 }
 
-// ── Internal: binary format parsing ────────────────────────────────────────────
+// ── Deterministic test-vector serialization (feature = "test-vectors") ──────────
 
+/// TEST ONLY — serialize an explicitly-constructed header and item list to the
+/// v1 binary vault format.
+///
+/// Unlike [`serialize_vault`], this accepts a fully-formed [`VaultHeader`] and
+/// item list directly, so callers can build a vault from known keys and nonces
+/// and obtain byte-for-byte reproducible output for the published test vectors.
+///
+/// # Errors
+///
+/// Returns an error if any component is too large to encode.
+#[cfg(feature = "test-vectors")]
+#[doc(hidden)]
+pub fn serialize_parts(
+    header: &VaultHeader,
+    items: &[SealedEnvelope],
+) -> Result<Vec<u8>, CryptoError> {
+    let mut w = BinaryWriter::new();
+
+    write_header(&mut w, header)?;
+
+    let item_count = u32::try_from(items.len())
+        .map_err(|_| CryptoError::InvalidVault("too many items".into()))?;
+    w.write_u32_le(item_count);
+
+    for item in items {
+        write_sealed_envelope(&mut w, item)?;
+    }
+
+    Ok(w.finish())
+}
+
+/// TEST ONLY — serialize a single [`WrappedKey`] to its v1 binary sub-format
+/// (`version u8 || nonce[12] || ct_len u32 LE || ciphertext`).
+#[cfg(feature = "test-vectors")]
+#[doc(hidden)]
+pub fn serialize_wrapped_key(wk: &WrappedKey) -> Result<Vec<u8>, CryptoError> {
+    let mut w = BinaryWriter::new();
+    write_wrapped_key(&mut w, wk)?;
+    Ok(w.finish())
+}
+
+/// TEST ONLY — serialize a single [`SealedEnvelope`] to its v1 binary
+/// sub-format (`version u8 || WrappedKey || nonce[12] || ct_len u32 LE || ciphertext`).
+#[cfg(feature = "test-vectors")]
+#[doc(hidden)]
+pub fn serialize_sealed_envelope(env: &SealedEnvelope) -> Result<Vec<u8>, CryptoError> {
+    let mut w = BinaryWriter::new();
+    write_sealed_envelope(&mut w, env)?;
+    Ok(w.finish())
+}
+
+// ── Internal: binary format parsing ────────────────────────────────────────────
 /// Parse a complete vault from bytes into header + items.
 fn parse_vault(data: &[u8]) -> Result<(VaultHeader, Vec<SealedEnvelope>), CryptoError> {
     validate_vault(data)?;

@@ -44,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ldgr config` subcommand: `set`, `get`, and `list-themes` for managing CLI settings
 - Live theme reload in TUI views (watchlist, portfolio, chart) without restarting the application
 - Web theme preference with system/light/dark options and live system preference tracking
+- Published vault format test vectors (`docs/security/test-vectors.md`) with binary fixtures and a CI conformance test, so third-party implementations can verify byte-for-byte compatibility with the v1 vault format
 
 ## [1.2.0] - 2026-05-30
 
