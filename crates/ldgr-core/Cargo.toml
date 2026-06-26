@@ -21,6 +21,10 @@ market = []
 loans = []
 budget = []
 goals = []
+# Test-only: exposes deterministic-nonce crypto helpers used to generate and
+# verify the published vault-format test vectors (see docs/security/test-vectors.md).
+# NEVER enable in production builds — it allows caller-supplied nonces/keys.
+test-vectors = []
 full = ["core", "sqlite", "sync", "import-export", "market", "loans", "budget", "goals"]
 
 [dependencies]
@@ -50,6 +54,8 @@ thiserror.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
 
 [lints]
 workspace = true

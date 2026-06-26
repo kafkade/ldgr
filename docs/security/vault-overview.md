@@ -159,3 +159,6 @@ This page is the friendly overview. If you'd like to go deeper:
 - **[ldgr Architecture](../ldgr-architecture.md)** — the full system design,
   including the encryption architecture and security decisions, for engineers
   and auditors.
+- **[Vault format test vectors](./test-vectors.md)** — known-answer test vectors
+  (KDF, key wrapping, envelope encryption, a full annotated vault file, and
+  negative cases) for anyone building or auditing a compatible implementation.

@@ -47,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Live theme reload in TUI views (watchlist, portfolio, chart) without restarting the application
 - Web theme preference with system/light/dark options and live system preference tracking
 - Vault format expert specification (`docs/security/vault-format-spec.md`): byte-precise binary format definition for independent re-implementation and security audit
+- Published vault format test vectors (`docs/security/test-vectors.md`) with binary fixtures and a CI conformance test, so third-party implementations can verify byte-for-byte compatibility with the v1 vault format
 
 ### Fixed
 

@@ -56,6 +56,36 @@ fn wrap_key_raw(
     })
 }
 
+/// Low-level: wrap a plaintext key with AES-256-GCM using an explicit nonce.
+///
+/// **TEST ONLY.** Used to generate reproducible vault-format test vectors.
+#[cfg(feature = "test-vectors")]
+fn wrap_key_raw_with_nonce(
+    wrapping_key: &[u8; 32],
+    plaintext_key: &[u8; 32],
+    nonce_bytes: &[u8; NONCE_LEN],
+    aad: &[u8],
+) -> Result<WrappedKey, CryptoError> {
+    let cipher = Aes256Gcm::new_from_slice(wrapping_key)
+        .map_err(|e| CryptoError::WrapFailed(e.to_string()))?;
+    let nonce = Nonce::from_slice(nonce_bytes);
+
+    let payload = aes_gcm::aead::Payload {
+        msg: plaintext_key,
+        aad,
+    };
+
+    let ciphertext = cipher
+        .encrypt(nonce, payload)
+        .map_err(|_| CryptoError::WrapFailed("AES-GCM encryption failed".into()))?;
+
+    Ok(WrappedKey {
+        version: WRAP_VERSION,
+        nonce: *nonce_bytes,
+        ciphertext,
+    })
+}
+
 /// Low-level: unwrap an encrypted key with AES-256-GCM using the given wrapping key and AAD.
 fn unwrap_key_raw(
     wrapping_key: &[u8; 32],
@@ -169,6 +199,55 @@ pub fn wrap_item_key(vault_key: &VaultKey, item_key: &ItemKey) -> Result<Wrapped
 pub fn unwrap_item_key(vault_key: &VaultKey, wrapped: &WrappedKey) -> Result<ItemKey, CryptoError> {
     let bytes = unwrap_key_raw(vault_key.as_bytes(), wrapped, ITEM_WRAP_AAD)?;
     Ok(ItemKey::from_bytes(bytes))
+}
+
+// --- Deterministic test-vector helpers (feature = "test-vectors") ---
+
+/// TEST ONLY — wrap a vault key with the MEK using an explicit nonce.
+///
+/// Produces byte-for-byte reproducible output for vault-format test vectors.
+/// Never use with caller-supplied nonces in production: nonce reuse under the
+/// same key breaks AES-GCM confidentiality and integrity.
+#[cfg(feature = "test-vectors")]
+#[doc(hidden)]
+pub fn wrap_vault_key_with_nonce(
+    mek: &MasterEncryptionKey,
+    vault_key: &VaultKey,
+    nonce: &[u8; NONCE_LEN],
+) -> Result<WrappedKey, CryptoError> {
+    wrap_key_raw_with_nonce(mek.as_bytes(), vault_key.as_bytes(), nonce, VAULT_WRAP_AAD)
+}
+
+/// TEST ONLY — wrap a vault key with a recovery key using an explicit nonce.
+#[cfg(feature = "test-vectors")]
+#[doc(hidden)]
+pub fn wrap_vault_key_with_recovery_with_nonce(
+    recovery_key: &RecoveryKey,
+    vault_key: &VaultKey,
+    nonce: &[u8; NONCE_LEN],
+) -> Result<WrappedKey, CryptoError> {
+    wrap_key_raw_with_nonce(
+        recovery_key.as_bytes(),
+        vault_key.as_bytes(),
+        nonce,
+        RECOVERY_WRAP_AAD,
+    )
+}
+
+/// TEST ONLY — wrap an item key with the vault key using an explicit nonce.
+#[cfg(feature = "test-vectors")]
+#[doc(hidden)]
+pub fn wrap_item_key_with_nonce(
+    vault_key: &VaultKey,
+    item_key: &ItemKey,
+    nonce: &[u8; NONCE_LEN],
+) -> Result<WrappedKey, CryptoError> {
+    wrap_key_raw_with_nonce(
+        vault_key.as_bytes(),
+        item_key.as_bytes(),
+        nonce,
+        ITEM_WRAP_AAD,
+    )
 }
 
 #[cfg(test)]
