@@ -48,6 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Web theme preference with system/light/dark options and live system preference tracking
 - Vault format expert specification (`docs/security/vault-format-spec.md`): byte-precise binary format definition for independent re-implementation and security audit
 - Published vault format test vectors (`docs/security/test-vectors.md`) with binary fixtures and a CI conformance test, so third-party implementations can verify byte-for-byte compatibility with the v1 vault format
+- Account Secret Key (`A1-…` format): a high-entropy key combined with your password during server sign-in, so a stolen password alone cannot authenticate to the sync server
+- Two-secret key derivation for the sync server's SRP-6a verifier — server authentication now requires both the password and the account Secret Key, while the local vault still opens with the password (or vault recovery key) alone
 
 ### Fixed
 

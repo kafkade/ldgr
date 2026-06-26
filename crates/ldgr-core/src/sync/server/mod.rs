@@ -21,5 +21,6 @@ pub use protocol::{
     RegisterResponse, VaultResponse, hex_decode, hex_encode,
 };
 pub use srp::{
-    ClientLogin, ClientSession, RegistrationVerifier, SrpError, register, register_with_salt,
+    ClientLogin, ClientSession, RegistrationVerifier, SrpError, register, register_2skd,
+    register_2skd_with_salt, register_with_salt,
 };

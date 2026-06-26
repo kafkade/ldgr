@@ -21,7 +21,10 @@ use std::fmt;
 use num_bigint::BigUint;
 use rand::Rng;
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 use zeroize::Zeroizing;
+
+use crate::crypto::{AuthKey, SecretKey, derive_x_seed};
 
 // ── RFC 5054 2048-bit Group Parameters ────────────────────────────────────────
 
@@ -111,6 +114,22 @@ fn compute_x(username: &str, password: &[u8], salt: &[u8]) -> BigUint {
     let inner = hash(&[username.as_bytes(), b":", password]);
     let h = hash(&[salt, &inner]);
     BigUint::from_bytes_be(&h)
+}
+
+/// Compute the SRP private key `x` from the two-secret derivation (ADR-008).
+///
+/// `x = OS2IP(x_seed) mod N`, where `x_seed` mixes the master auth key
+/// (`MK_auth`) and the account [`SecretKey`], bound to `account_id` and the
+/// per-account `srp_salt`. The server only ever sees the resulting verifier.
+fn compute_x_2skd(
+    account_id: &Uuid,
+    mk_auth: &AuthKey,
+    secret_key: &SecretKey,
+    salt: &[u8],
+) -> BigUint {
+    let x_seed = derive_x_seed(mk_auth, secret_key, account_id.as_bytes(), salt)
+        .expect("HKDF expansion to 32 bytes is infallible");
+    BigUint::from_bytes_be(x_seed.as_slice()) % get_n()
 }
 
 /// Compute the session key K = H(pad(S)).
@@ -207,7 +226,56 @@ pub fn register_with_salt(username: &str, password: &[u8], salt: Vec<u8>) -> Reg
     }
 }
 
+/// Generate a **two-secret (2SKD)** registration verifier with a fresh random
+/// salt (ADR-008, Decision 1).
+///
+/// The verifier is derived from both the master auth key (`MK_auth`, the
+/// existing [`AuthKey`]) and the account [`SecretKey`]. The server stores only
+/// `(salt, verifier)` and never receives either secret.
+#[must_use]
+pub fn register_2skd(
+    account_id: &Uuid,
+    mk_auth: &AuthKey,
+    secret_key: &SecretKey,
+) -> RegistrationVerifier {
+    let mut salt = vec![0u8; SALT_LEN];
+    rand::rng().fill_bytes(&mut salt);
+    register_2skd_with_salt(account_id, mk_auth, secret_key, salt)
+}
+
+/// Generate a two-secret (2SKD) registration verifier with a caller-supplied
+/// salt. Primarily for deterministic tests; production code should prefer
+/// [`register_2skd`].
+#[must_use]
+pub fn register_2skd_with_salt(
+    account_id: &Uuid,
+    mk_auth: &AuthKey,
+    secret_key: &SecretKey,
+    salt: Vec<u8>,
+) -> RegistrationVerifier {
+    let n = get_n();
+    let g = get_g();
+    let x = compute_x_2skd(account_id, mk_auth, secret_key, &salt);
+    let v = g.modpow(&x, &n);
+    RegistrationVerifier {
+        salt,
+        verifier: v.to_bytes_be(),
+    }
+}
+
 // ── Login ──────────────────────────────────────────────────────────────────────
+
+/// The secret a client uses to derive the SRP private key `x` on login.
+enum Credential {
+    /// Legacy single-secret: `x = H(salt || H(username || ":" || password))`.
+    Password(Zeroizing<Vec<u8>>),
+    /// Two-secret (2SKD): `x = OS2IP(x_seed) mod N` (ADR-008).
+    TwoSecret {
+        account_id: Uuid,
+        mk_auth: AuthKey,
+        secret_key: SecretKey,
+    },
+}
 
 /// Secret client state between login init and verify.
 ///
@@ -215,7 +283,7 @@ pub fn register_with_salt(username: &str, password: &[u8], salt: Vec<u8>) -> Reg
 /// to finish the handshake. Consumed by [`ClientLogin::finish`].
 pub struct ClientLogin {
     username: String,
-    password: Zeroizing<Vec<u8>>,
+    credential: Credential,
     a: BigUint,
     a_pub: BigUint,
 }
@@ -225,7 +293,7 @@ impl fmt::Debug for ClientLogin {
         f.debug_struct("ClientLogin")
             .field("username", &self.username)
             .field("a", &"[REDACTED]")
-            .field("password", &"[REDACTED]")
+            .field("credential", &"[REDACTED]")
             .finish_non_exhaustive()
     }
 }
@@ -237,6 +305,35 @@ impl ClientLogin {
     /// the server's `/login/init` endpoint.
     #[must_use]
     pub fn start(username: &str, password: &[u8]) -> (Self, Vec<u8>) {
+        Self::start_with_credential(
+            username,
+            Credential::Password(Zeroizing::new(password.to_vec())),
+        )
+    }
+
+    /// Begin a **two-secret (2SKD)** login (ADR-008).
+    ///
+    /// `mk_auth` is the existing [`AuthKey`] derived from the master password;
+    /// `secret_key` is the account [`SecretKey`]. Both are required to
+    /// reproduce the verifier's `x` — the password or Secret Key alone cannot.
+    #[must_use]
+    pub fn start_2skd(
+        username: &str,
+        account_id: Uuid,
+        mk_auth: AuthKey,
+        secret_key: SecretKey,
+    ) -> (Self, Vec<u8>) {
+        Self::start_with_credential(
+            username,
+            Credential::TwoSecret {
+                account_id,
+                mk_auth,
+                secret_key,
+            },
+        )
+    }
+
+    fn start_with_credential(username: &str, credential: Credential) -> (Self, Vec<u8>) {
         let n = get_n();
         let g = get_g();
 
@@ -248,7 +345,7 @@ impl ClientLogin {
         let a_pub_bytes = a_pub.to_bytes_be();
         let state = Self {
             username: username.to_string(),
-            password: Zeroizing::new(password.to_vec()),
+            credential,
             a,
             a_pub,
         };
@@ -287,7 +384,14 @@ impl ClientLogin {
         }
 
         let k = compute_k();
-        let x = compute_x(&self.username, &self.password, salt);
+        let x = match &self.credential {
+            Credential::Password(password) => compute_x(&self.username, password, salt),
+            Credential::TwoSecret {
+                account_id,
+                mk_auth,
+                secret_key,
+            } => compute_x_2skd(account_id, mk_auth, secret_key, salt),
+        };
 
         // S = (B - k * g^x) ^ (a + u * x) mod N
         let gx = g.modpow(&x, &n);
@@ -500,6 +604,126 @@ mod tests {
         assert_ne!(r1.verifier, r2.verifier);
     }
 
+    // ── Two-secret key derivation (2SKD, ADR-008) ───────────────────────────
+
+    use crate::crypto::{Argon2Params, SecretKey, derive_auth_key, derive_master_key};
+    use uuid::Uuid;
+
+    fn auth_key(password: &[u8]) -> AuthKey {
+        let mk = derive_master_key(password, b"argon-salt-16byte", &Argon2Params::test()).unwrap();
+        derive_auth_key(&mk).unwrap()
+    }
+
+    /// A full 2SKD registration + login handshake against the server's verifier
+    /// logic, using a fixed salt so registration and login derive the same `x`.
+    fn run_2skd_handshake(
+        username: &str,
+        account_id: Uuid,
+        mk_auth: &AuthKey,
+        secret_key: &SecretKey,
+    ) -> bool {
+        let salt = vec![9u8; SALT_LEN];
+        let reg = register_2skd_with_salt(&account_id, mk_auth, secret_key, salt);
+
+        let (login, a_pub) =
+            ClientLogin::start_2skd(username, account_id, mk_auth.clone(), secret_key.clone());
+        let server = ReferenceServer::initiate(username, &reg.salt, &reg.verifier, &a_pub);
+
+        let session = login
+            .finish(&reg.salt, &server.server_public_bytes())
+            .expect("client finish");
+
+        let Some(m2) = server.verify(session.proof()) else {
+            return false;
+        };
+        session.verify_server_proof(&m2)
+    }
+
+    #[test]
+    fn two_secret_handshake_succeeds() {
+        let account_id = Uuid::from_bytes([3u8; 16]);
+        let mk_auth = auth_key(b"correct horse battery staple");
+        let secret_key = SecretKey::generate(account_id);
+        assert!(run_2skd_handshake(
+            "alice",
+            account_id,
+            &mk_auth,
+            &secret_key
+        ));
+    }
+
+    #[test]
+    fn two_secret_verifier_is_deterministic() {
+        let account_id = Uuid::from_bytes([4u8; 16]);
+        let mk_auth = auth_key(b"password");
+        let secret_key = SecretKey::generate(account_id);
+        let salt = vec![1u8; SALT_LEN];
+        let v1 = register_2skd_with_salt(&account_id, &mk_auth, &secret_key, salt.clone());
+        let v2 = register_2skd_with_salt(&account_id, &mk_auth, &secret_key, salt);
+        assert_eq!(v1.verifier, v2.verifier);
+    }
+
+    #[test]
+    fn wrong_secret_key_produces_different_verifier_and_fails_login() {
+        let account_id = Uuid::from_bytes([5u8; 16]);
+        let mk_auth = auth_key(b"password");
+        let salt = vec![7u8; SALT_LEN];
+
+        let registered = SecretKey::generate(account_id);
+        let attacker = SecretKey::generate(account_id); // correct password, wrong Secret Key
+
+        let reg = register_2skd_with_salt(&account_id, &mk_auth, &registered, salt.clone());
+        let wrong = register_2skd_with_salt(&account_id, &mk_auth, &attacker, salt);
+        assert_ne!(
+            reg.verifier, wrong.verifier,
+            "a different Secret Key must yield a different verifier"
+        );
+
+        // Login with the wrong Secret Key (but correct password) is rejected.
+        let (login, a_pub) =
+            ClientLogin::start_2skd("eve", account_id, mk_auth.clone(), attacker.clone());
+        let server = ReferenceServer::initiate("eve", &reg.salt, &reg.verifier, &a_pub);
+        let session = login
+            .finish(&reg.salt, &server.server_public_bytes())
+            .expect("client finish");
+        assert!(server.verify(session.proof()).is_none());
+    }
+
+    #[test]
+    fn wrong_password_with_correct_secret_key_fails_login() {
+        let account_id = Uuid::from_bytes([6u8; 16]);
+        let secret_key = SecretKey::generate(account_id);
+        let salt = vec![8u8; SALT_LEN];
+
+        let reg =
+            register_2skd_with_salt(&account_id, &auth_key(b"right-password"), &secret_key, salt);
+
+        let (login, a_pub) = ClientLogin::start_2skd(
+            "frank",
+            account_id,
+            auth_key(b"wrong-password"),
+            secret_key.clone(),
+        );
+        let server = ReferenceServer::initiate("frank", &reg.salt, &reg.verifier, &a_pub);
+        let session = login
+            .finish(&reg.salt, &server.server_public_bytes())
+            .expect("client finish");
+        assert!(server.verify(session.proof()).is_none());
+    }
+
+    #[test]
+    fn two_secret_verifier_differs_from_legacy() {
+        // The 2SKD verifier must not coincide with the legacy password-only one.
+        let account_id = Uuid::from_bytes([2u8; 16]);
+        let mk_auth = auth_key(b"password");
+        let secret_key = SecretKey::generate(account_id);
+        let salt = vec![5u8; SALT_LEN];
+
+        let two = register_2skd_with_salt(&account_id, &mk_auth, &secret_key, salt.clone());
+        let legacy = register_with_salt("grace", b"password", salt);
+        assert_ne!(two.verifier, legacy.verifier);
+    }
+
     use proptest::prelude::*;
 
     proptest! {
@@ -527,6 +751,45 @@ mod tests {
             prop_assume!(password != other);
             let reg = register(&username, &password);
             let (login, a_pub) = ClientLogin::start(&username, &other);
+            let server = ReferenceServer::initiate(&username, &reg.salt, &reg.verifier, &a_pub);
+            let session = login
+                .finish(&reg.salt, &server.server_public_bytes())
+                .expect("client finish");
+            prop_assert!(server.verify(session.proof()).is_none());
+        }
+
+        /// For any password/account/Secret Key, a 2SKD registration followed by
+        /// a 2SKD login handshake must complete against the server's verifier
+        /// logic and the server proof must verify.
+        #[test]
+        fn prop_2skd_handshake_succeeds(
+            username in "[a-zA-Z0-9_]{1,32}",
+            password in proptest::collection::vec(any::<u8>(), 1..48),
+            account_bytes in proptest::array::uniform16(any::<u8>()),
+        ) {
+            let account_id = Uuid::from_bytes(account_bytes);
+            let mk_auth = auth_key(&password);
+            let secret_key = SecretKey::generate(account_id);
+            prop_assert!(run_2skd_handshake(&username, account_id, &mk_auth, &secret_key));
+        }
+
+        /// A 2SKD login with the correct password but a different Secret Key is
+        /// always rejected by the server.
+        #[test]
+        fn prop_2skd_wrong_secret_key_rejected(
+            username in "[a-zA-Z0-9_]{1,32}",
+            password in proptest::collection::vec(any::<u8>(), 1..48),
+            account_bytes in proptest::array::uniform16(any::<u8>()),
+        ) {
+            let account_id = Uuid::from_bytes(account_bytes);
+            let mk_auth = auth_key(&password);
+            let registered = SecretKey::generate(account_id);
+            let attacker = SecretKey::generate(account_id);
+            let salt = vec![3u8; SALT_LEN];
+
+            let reg = register_2skd_with_salt(&account_id, &mk_auth, &registered, salt);
+            let (login, a_pub) =
+                ClientLogin::start_2skd(&username, account_id, mk_auth.clone(), attacker);
             let server = ReferenceServer::initiate(&username, &reg.salt, &reg.verifier, &a_pub);
             let session = login
                 .finish(&reg.salt, &server.server_public_bytes())
