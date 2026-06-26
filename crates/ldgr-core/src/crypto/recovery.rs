@@ -7,11 +7,12 @@
 //!
 //! Format: `XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX`
 
+use super::crockford;
 use super::errors::CryptoError;
 use super::keys::RecoveryKey;
 
-/// Crockford's Base32 encoding alphabet (excludes I, L, O, U).
-const CROCKFORD_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+/// Number of raw key bytes (256 bits).
+const KEY_BYTES: usize = 32;
 
 /// Expected length of the base32-encoded recovery key (256 bits → 52 chars).
 const ENCODED_LEN: usize = 52;
@@ -26,15 +27,7 @@ const GROUP_SIZE: usize = 4;
 ///
 /// `A1B2-C3D4-E5F6-G7H8-J9KA-BCDE-FGHJ-KMNP-QRST-VWXY-Z012-3456-789A`
 pub fn encode_recovery_key(key: &RecoveryKey) -> String {
-    let raw = encode_crockford(key.as_bytes());
-    raw.as_bytes()
-        .chunks(GROUP_SIZE)
-        .map(|chunk| {
-            // SAFETY: encode_crockford only produces ASCII
-            std::str::from_utf8(chunk).expect("Crockford output is always valid UTF-8")
-        })
-        .collect::<Vec<_>>()
-        .join("-")
+    crockford::group(&crockford::encode(key.as_bytes()), GROUP_SIZE)
 }
 
 /// Decode a human-readable recovery key string back to a [`RecoveryKey`].
@@ -52,120 +45,18 @@ pub fn decode_recovery_key(encoded: &str) -> Result<RecoveryKey, CryptoError> {
         .filter(|c| !c.is_whitespace() && *c != '-')
         .collect();
 
-    let bytes = decode_crockford(&clean)?;
-    Ok(RecoveryKey::from_bytes(bytes))
-}
-
-/// Encode 32 bytes as 52-character Crockford Base32 string.
-fn encode_crockford(data: &[u8; 32]) -> String {
-    let mut result = String::with_capacity(ENCODED_LEN);
-    let mut buffer: u64 = 0;
-    let mut bits = 0u32;
-
-    for &byte in data {
-        buffer = (buffer << 8) | u64::from(byte);
-        bits += 8;
-
-        while bits >= 5 {
-            bits -= 5;
-            let index = ((buffer >> bits) & 0x1F) as usize;
-            result.push(CROCKFORD_ALPHABET[index] as char);
-        }
-    }
-
-    // 256 bits mod 5 = 1 remaining bit → pad with 4 zero bits
-    if bits > 0 {
-        let index = ((buffer << (5 - bits)) & 0x1F) as usize;
-        result.push(CROCKFORD_ALPHABET[index] as char);
-    }
-
-    debug_assert_eq!(result.len(), ENCODED_LEN);
-    result
-}
-
-/// Decode a 52-character Crockford Base32 string to 32 bytes.
-fn decode_crockford(s: &str) -> Result<[u8; 32], CryptoError> {
-    if s.len() != ENCODED_LEN {
+    if clean.chars().count() != ENCODED_LEN {
         return Err(CryptoError::InvalidParams(format!(
             "recovery key must be {ENCODED_LEN} characters, got {}",
-            s.len()
+            clean.chars().count()
         )));
     }
 
-    let mut buffer: u64 = 0;
-    let mut bits = 0u32;
-    let mut result = Vec::with_capacity(32);
-
-    for ch in s.chars() {
-        let value = crockford_decode_char(ch)?;
-        buffer = (buffer << 5) | u64::from(value);
-        bits += 5;
-
-        while bits >= 8 {
-            bits -= 8;
-            #[allow(clippy::cast_possible_truncation)] // intentional: extracting low byte
-            result.push((buffer >> bits) as u8);
-        }
-    }
-
-    // 52 × 5 = 260 bits = 32 bytes + 4 padding bits (must be zero)
-    if bits > 0 {
-        let mask = (1u64 << bits) - 1;
-        if buffer & mask != 0 {
-            return Err(CryptoError::InvalidParams(
-                "invalid padding in recovery key".into(),
-            ));
-        }
-    }
-
-    let bytes: [u8; 32] = result
+    let bytes = crockford::decode(&clean, KEY_BYTES)?;
+    let bytes: [u8; KEY_BYTES] = bytes
         .try_into()
         .map_err(|_| CryptoError::InvalidParams("decoded recovery key has wrong length".into()))?;
-
-    Ok(bytes)
-}
-
-/// Decode a single Crockford Base32 character to its 5-bit value.
-///
-/// Applies normalization: O → 0, I/L → 1. Rejects U (not in alphabet).
-fn crockford_decode_char(c: char) -> Result<u8, CryptoError> {
-    match c {
-        '0' | 'O' | 'o' => Ok(0),
-        '1' | 'I' | 'i' | 'L' | 'l' => Ok(1),
-        '2' => Ok(2),
-        '3' => Ok(3),
-        '4' => Ok(4),
-        '5' => Ok(5),
-        '6' => Ok(6),
-        '7' => Ok(7),
-        '8' => Ok(8),
-        '9' => Ok(9),
-        'A' | 'a' => Ok(10),
-        'B' | 'b' => Ok(11),
-        'C' | 'c' => Ok(12),
-        'D' | 'd' => Ok(13),
-        'E' | 'e' => Ok(14),
-        'F' | 'f' => Ok(15),
-        'G' | 'g' => Ok(16),
-        'H' | 'h' => Ok(17),
-        'J' | 'j' => Ok(18),
-        'K' | 'k' => Ok(19),
-        'M' | 'm' => Ok(20),
-        'N' | 'n' => Ok(21),
-        'P' | 'p' => Ok(22),
-        'Q' | 'q' => Ok(23),
-        'R' | 'r' => Ok(24),
-        'S' | 's' => Ok(25),
-        'T' | 't' => Ok(26),
-        'V' | 'v' => Ok(27),
-        'W' | 'w' => Ok(28),
-        'X' | 'x' => Ok(29),
-        'Y' | 'y' => Ok(30),
-        'Z' | 'z' => Ok(31),
-        _ => Err(CryptoError::InvalidParams(format!(
-            "invalid character in recovery key: '{c}'"
-        ))),
-    }
+    Ok(RecoveryKey::from_bytes(bytes))
 }
 
 #[cfg(test)]
@@ -221,7 +112,7 @@ mod tests {
         let clean: String = encoded.chars().filter(|c| *c != '-').collect();
         for ch in clean.chars() {
             assert!(
-                CROCKFORD_ALPHABET.contains(&(ch as u8)),
+                crockford::ALPHABET.contains(&(ch as u8)),
                 "unexpected character: '{ch}'"
             );
         }
