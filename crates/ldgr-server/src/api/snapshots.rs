@@ -40,6 +40,7 @@ pub async fn put_snapshot(
     let path = format!("{vault_id}/snapshots/{snapshot_id}.enc");
     let content_hash = hex_encode(&Sha256::digest(&body));
 
+    let default_quota = crate::settings::default_quota_bytes(&state).await?;
     let meta = state
         .db
         .put_blob(
@@ -47,7 +48,7 @@ pub async fn put_snapshot(
             &vault_id,
             body.to_vec(),
             &content_hash,
-            state.config.default_user_quota_bytes,
+            default_quota,
         )
         .await?;
 

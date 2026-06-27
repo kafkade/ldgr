@@ -40,6 +40,7 @@ pub async fn put_batch(
     let path = format!("{vault_id}/batches/{device_id}/{batch_id}.enc");
     let content_hash = hex_encode(&Sha256::digest(&body));
 
+    let default_quota = crate::settings::default_quota_bytes(&state).await?;
     let meta = state
         .db
         .put_blob(
@@ -47,7 +48,7 @@ pub async fn put_batch(
             &vault_id,
             body.to_vec(),
             &content_hash,
-            state.config.default_user_quota_bytes,
+            default_quota,
         )
         .await?;
 
