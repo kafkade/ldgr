@@ -324,14 +324,17 @@ pub fn create_account_with_sync(
             other => StorageError::Database(other),
         })?;
 
-    let payload = serde_json::json!({
-        "id": id,
-        "name": input.name,
-        "type": input.account_type.as_str(),
-        "commodity": input.commodity,
+    let payload = crate::sync::payload::to_bytes(&crate::sync::payload::AccountPayload {
+        id: id.clone(),
+        name: input.name.clone(),
+        account_type: input.account_type.as_str().to_string(),
+        commodity: input.commodity.clone(),
+        parent_id: input.parent_id.clone(),
+        note: input.note.clone(),
+        created_at: now.clone(),
+        modified_at: now.clone(),
     })
-    .to_string()
-    .into_bytes();
+    .map_err(|e| StorageError::InvalidInput(format!("failed to serialize account payload: {e}")))?;
 
     super::sync::record_event(
         &db_tx,
@@ -368,17 +371,37 @@ pub fn soft_delete_account_with_sync(
 ) -> Result<(), StorageError> {
     let db_tx = conn.unchecked_transaction()?;
 
-    let rows = db_tx.execute(
-        "UPDATE accounts SET deleted = 1, version = version + 1, modified_at = ?1
-         WHERE id = ?2 AND deleted = 0",
-        rusqlite::params![now_iso8601(), id],
+    // Read the current version so the emitted event carries the resulting
+    // (post-delete) entity version, keeping event.version meaningful for the
+    // remote apply path's staleness check.
+    let current_version: i64 = db_tx
+        .query_row(
+            "SELECT version FROM accounts WHERE id = ?1 AND deleted = 0",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                StorageError::NotFound(format!("account '{id}'"))
+            }
+            other => StorageError::Database(other),
+        })?;
+    let new_version = current_version + 1;
+
+    db_tx.execute(
+        "UPDATE accounts SET deleted = 1, version = ?1, modified_at = ?2
+         WHERE id = ?3 AND deleted = 0",
+        rusqlite::params![new_version, now_iso8601(), id],
     )?;
 
-    if rows == 0 {
-        return Err(StorageError::NotFound(format!("account '{id}'")));
-    }
+    let payload =
+        crate::sync::payload::to_bytes(&crate::sync::payload::DeletePayload { id: id.to_string() })
+            .map_err(|e| {
+                StorageError::InvalidInput(format!("failed to serialize delete payload: {e}"))
+            })?;
 
-    let payload = serde_json::json!({ "id": id }).to_string().into_bytes();
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    let version_u32 = new_version as u32;
 
     super::sync::record_event(
         &db_tx,
@@ -388,11 +411,113 @@ pub fn soft_delete_account_with_sync(
         "delete",
         &payload,
         ctx.lamport_clock,
-        1,
+        version_u32,
     )?;
 
     db_tx.commit()?;
     Ok(())
+}
+
+// ── Remote apply (sync ingest) ───────────────────────────────────────────────
+
+/// Apply a remote `Create`/`Update` account event to the canonical table.
+///
+/// Upserts the account by its **explicit** `payload.id` (unlike
+/// [`create_account`], which mints a fresh id). This is the apply half of the
+/// sync pipeline: it writes only the canonical table and **never** records a
+/// `sync_events` outbox row, so applied remote events do not echo back into our
+/// own outbox.
+///
+/// Staleness rule: the event is applied iff the account does not exist locally
+/// **or** the incoming `version` is strictly greater than the local row's
+/// version. An equal-or-older version is treated as already-seen and skipped.
+///
+/// Returns `true` if the row was written, `false` if the event was stale.
+pub fn apply_remote_account(
+    conn: &Connection,
+    payload: &crate::sync::payload::AccountPayload,
+    version: i64,
+) -> Result<bool, StorageError> {
+    // Validate the account-type string before touching the table.
+    let account_type = AccountType::from_str(&payload.account_type)?;
+
+    if let Some(local_version) = current_account_version(conn, &payload.id)?
+        && local_version >= version
+    {
+        return Ok(false);
+    }
+
+    conn.execute(
+        "INSERT INTO accounts
+             (id, name, type, commodity, parent_id, note, created_at, modified_at, version, deleted)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)
+         ON CONFLICT(id) DO UPDATE SET
+             name = excluded.name,
+             type = excluded.type,
+             commodity = excluded.commodity,
+             parent_id = excluded.parent_id,
+             note = excluded.note,
+             created_at = excluded.created_at,
+             modified_at = excluded.modified_at,
+             version = excluded.version,
+             deleted = 0",
+        rusqlite::params![
+            payload.id,
+            payload.name,
+            account_type.as_str(),
+            payload.commodity,
+            payload.parent_id,
+            payload.note,
+            payload.created_at,
+            payload.modified_at,
+            version,
+        ],
+    )
+    .map_err(|e| match e {
+        rusqlite::Error::SqliteFailure(err, _)
+            if err.code == rusqlite::ffi::ErrorCode::ConstraintViolation =>
+        {
+            StorageError::ConstraintViolation(format!(
+                "remote account name '{}' collides with a local active account",
+                payload.name
+            ))
+        }
+        other => StorageError::Database(other),
+    })?;
+
+    Ok(true)
+}
+
+/// Apply a remote `Delete` account event (soft delete by explicit id).
+///
+/// No-op (returns `false`) if the account is unknown locally or the incoming
+/// `version` is not strictly greater than the local row's version. The
+/// unknown-id no-op, combined with batch-level vector-clock dominance in the
+/// merge step, prevents a stale create from resurrecting a deleted account.
+pub fn apply_remote_account_delete(
+    conn: &Connection,
+    id: &str,
+    version: i64,
+) -> Result<bool, StorageError> {
+    match current_account_version(conn, id)? {
+        Some(local_version) if local_version < version => {
+            conn.execute(
+                "UPDATE accounts SET deleted = 1, version = ?1, modified_at = ?2 WHERE id = ?3",
+                rusqlite::params![version, now_iso8601(), id],
+            )?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// Current version of an account row (including soft-deleted rows), if it exists.
+fn current_account_version(conn: &Connection, id: &str) -> Result<Option<i64>, StorageError> {
+    let mut stmt = conn.prepare("SELECT version FROM accounts WHERE id = ?1")?;
+    let result = stmt
+        .query_row([id], |row| row.get::<_, i64>(0))
+        .optional()?;
+    Ok(result)
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────

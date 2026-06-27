@@ -24,6 +24,19 @@ impl EntityType {
             Self::Goal => "goal",
         }
     }
+
+    /// Parse the canonical lowercase string used in the outbox (`entity_type`
+    /// column) back into an [`EntityType`].
+    pub fn parse_str(s: &str) -> Option<Self> {
+        match s {
+            "transaction" => Some(Self::Transaction),
+            "account" => Some(Self::Account),
+            "price" => Some(Self::Price),
+            "budget" => Some(Self::Budget),
+            "goal" => Some(Self::Goal),
+            _ => None,
+        }
+    }
 }
 
 /// Sync operation type.
@@ -32,6 +45,27 @@ pub enum Operation {
     Create,
     Update,
     Delete,
+}
+
+impl Operation {
+    /// The canonical lowercase string used in the outbox (`operation` column).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Create => "create",
+            Self::Update => "update",
+            Self::Delete => "delete",
+        }
+    }
+
+    /// Parse a canonical lowercase operation string back into an [`Operation`].
+    pub fn parse_str(s: &str) -> Option<Self> {
+        match s {
+            "create" => Some(Self::Create),
+            "update" => Some(Self::Update),
+            "delete" => Some(Self::Delete),
+            _ => None,
+        }
+    }
 }
 
 /// A sync event capturing a single entity mutation.

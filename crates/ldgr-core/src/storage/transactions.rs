@@ -344,19 +344,20 @@ pub fn create_transaction_with_sync(
 
     let postings = insert_postings(&db_tx, &txn_id, &input.postings, &now)?;
 
-    let payload = serde_json::json!({
-        "id": txn_id,
-        "date": input.date,
-        "description": input.description,
-        "status": input.status.as_str(),
-        "postings": input.postings.iter().map(|p| serde_json::json!({
-            "account_id": p.account_id,
-            "amount_quantity": p.amount_quantity,
-            "amount_commodity": p.amount_commodity,
-        })).collect::<Vec<_>>(),
+    let payload = crate::sync::payload::to_bytes(&crate::sync::payload::TransactionPayload {
+        id: txn_id.clone(),
+        date: input.date.clone(),
+        status: input.status.as_str().to_string(),
+        code: input.code.clone(),
+        description: input.description.clone(),
+        comment: input.comment.clone(),
+        created_at: now.clone(),
+        modified_at: now.clone(),
+        postings: postings.iter().map(posting_to_payload).collect(),
     })
-    .to_string()
-    .into_bytes();
+    .map_err(|e| {
+        StorageError::InvalidInput(format!("failed to serialize transaction payload: {e}"))
+    })?;
 
     super::sync::record_event(
         &db_tx,
@@ -394,17 +395,36 @@ pub fn soft_delete_transaction_with_sync(
 ) -> Result<(), StorageError> {
     let db_tx = conn.unchecked_transaction()?;
 
-    let rows = db_tx.execute(
-        "UPDATE transactions SET deleted = 1, version = version + 1, modified_at = ?1
-         WHERE id = ?2 AND deleted = 0",
-        rusqlite::params![now_iso8601(), id],
+    // Read the current version so the delete event carries the resulting
+    // (post-delete) entity version for the remote apply path's staleness check.
+    let current_version: i64 = db_tx
+        .query_row(
+            "SELECT version FROM transactions WHERE id = ?1 AND deleted = 0",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                StorageError::NotFound(format!("transaction '{id}'"))
+            }
+            other => StorageError::Database(other),
+        })?;
+    let new_version = current_version + 1;
+
+    db_tx.execute(
+        "UPDATE transactions SET deleted = 1, version = ?1, modified_at = ?2
+         WHERE id = ?3 AND deleted = 0",
+        rusqlite::params![new_version, now_iso8601(), id],
     )?;
 
-    if rows == 0 {
-        return Err(StorageError::NotFound(format!("transaction '{id}'")));
-    }
+    let payload =
+        crate::sync::payload::to_bytes(&crate::sync::payload::DeletePayload { id: id.to_string() })
+            .map_err(|e| {
+                StorageError::InvalidInput(format!("failed to serialize delete payload: {e}"))
+            })?;
 
-    let payload = serde_json::json!({ "id": id }).to_string().into_bytes();
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    let version_u32 = new_version as u32;
 
     super::sync::record_event(
         &db_tx,
@@ -414,7 +434,7 @@ pub fn soft_delete_transaction_with_sync(
         "delete",
         &payload,
         ctx.lamport_clock,
-        1,
+        version_u32,
     )?;
 
     db_tx.commit()?;
@@ -490,6 +510,140 @@ pub fn list_transactions_for_account(
 
 fn now_iso8601() -> String {
     chrono::Utc::now().to_rfc3339()
+}
+
+// ── Remote apply (sync ingest) ───────────────────────────────────────────────
+
+/// Build a [`crate::sync::payload::PostingPayload`] from a stored posting.
+fn posting_to_payload(p: &Posting) -> crate::sync::payload::PostingPayload {
+    crate::sync::payload::PostingPayload {
+        id: p.id.clone(),
+        account_id: p.account_id.clone(),
+        amount_quantity: p.amount_quantity.clone(),
+        amount_commodity: p.amount_commodity.clone(),
+        balance_assertion_quantity: p.balance_assertion_quantity.clone(),
+        balance_assertion_commodity: p.balance_assertion_commodity.clone(),
+        created_at: p.created_at.clone(),
+        version: p.version,
+    }
+}
+
+/// Apply a remote `Create`/`Update` transaction event to the canonical tables.
+///
+/// Upserts the transaction header and **replaces** its postings (delete + insert
+/// by explicit id), reproducing the remote entity exactly. Writes only the
+/// canonical tables — never records a `sync_events` outbox row, so applied
+/// remote events do not echo into our outbox.
+///
+/// Staleness rule: applied iff the transaction is unknown locally **or** the
+/// incoming `version` is strictly greater than the local row's version.
+///
+/// Must be called inside an outer `SQLite` transaction (the ingest pipeline
+/// provides one) so the header + posting writes are atomic.
+///
+/// Returns `true` if written, `false` if stale.
+pub fn apply_remote_transaction(
+    conn: &Connection,
+    payload: &crate::sync::payload::TransactionPayload,
+    version: i64,
+) -> Result<bool, StorageError> {
+    // Validate the status string before touching the tables.
+    let status = TransactionStatus::from_str(&payload.status)?;
+
+    if let Some(local_version) = current_transaction_version(conn, &payload.id)?
+        && local_version >= version
+    {
+        return Ok(false);
+    }
+
+    conn.execute(
+        "INSERT INTO transactions
+             (id, date, status, code, description, comment, created_at, modified_at, version, deleted)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)
+         ON CONFLICT(id) DO UPDATE SET
+             date = excluded.date,
+             status = excluded.status,
+             code = excluded.code,
+             description = excluded.description,
+             comment = excluded.comment,
+             created_at = excluded.created_at,
+             modified_at = excluded.modified_at,
+             version = excluded.version,
+             deleted = 0",
+        rusqlite::params![
+            payload.id,
+            payload.date,
+            status.as_str(),
+            payload.code,
+            payload.description,
+            payload.comment,
+            payload.created_at,
+            payload.modified_at,
+            version,
+        ],
+    )?;
+
+    // Replace postings wholesale to mirror the remote transaction exactly.
+    conn.execute(
+        "DELETE FROM postings WHERE transaction_id = ?1",
+        [&payload.id],
+    )?;
+
+    for (i, p) in payload.postings.iter().enumerate() {
+        let order =
+            i64::try_from(i).map_err(|_| StorageError::InvalidInput("too many postings".into()))?;
+        conn.execute(
+            "INSERT INTO postings (id, transaction_id, account_id, amount_quantity, amount_commodity,
+                 balance_assertion_quantity, balance_assertion_commodity, posting_order, created_at, version)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            rusqlite::params![
+                p.id,
+                payload.id,
+                p.account_id,
+                p.amount_quantity,
+                p.amount_commodity,
+                p.balance_assertion_quantity,
+                p.balance_assertion_commodity,
+                order,
+                p.created_at,
+                p.version,
+            ],
+        )?;
+    }
+
+    Ok(true)
+}
+
+/// Apply a remote `Delete` transaction event (soft delete by explicit id).
+///
+/// No-op (returns `false`) if the transaction is unknown locally or the incoming
+/// `version` is not strictly greater than the local row's version. Postings are
+/// preserved, matching [`soft_delete_transaction`].
+pub fn apply_remote_transaction_delete(
+    conn: &Connection,
+    id: &str,
+    version: i64,
+) -> Result<bool, StorageError> {
+    match current_transaction_version(conn, id)? {
+        Some(local_version) if local_version < version => {
+            conn.execute(
+                "UPDATE transactions SET deleted = 1, version = ?1, modified_at = ?2 WHERE id = ?3",
+                rusqlite::params![version, now_iso8601(), id],
+            )?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// Current version of a transaction row (including soft-deleted rows), if any.
+fn current_transaction_version(conn: &Connection, id: &str) -> Result<Option<i64>, StorageError> {
+    use rusqlite::OptionalExtension;
+    let mut stmt = conn.prepare("SELECT version FROM transactions WHERE id = ?1")?;
+    let result = stmt
+        .query_row([id], |row| row.get::<_, i64>(0))
+        .optional()?;
+    Ok(result)
 }
 
 /// Insert postings for a transaction, assigning `posting_order` by list position.
