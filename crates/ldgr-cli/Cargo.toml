@@ -42,3 +42,7 @@ uuid.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+ldgr-server = { path = "../ldgr-server" }
+axum.workspace = true

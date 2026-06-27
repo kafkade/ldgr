@@ -8,13 +8,20 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
+use ldgr_core::sync::server::{ServerSyncClient, ServerSyncError};
 use ldgr_core::sync::transport::{
     TransportConfig, batch_path, batches_prefix, device_path, parse_batch_path,
 };
 
 use crate::sync::dropbox::DropboxTransport;
+use crate::sync::server::{ReqwestSender, ServerTransport};
 use crate::sync::webdav::WebDavTransport;
 use crate::sync::{BlobTransport, RetryTransport};
+
+/// File name for the SRP session token (a bearer secret), stored alongside the
+/// non-secret `sync-config.json` — mirrors how the Dropbox `access_token` is
+/// persisted (never inside `TransportConfig`).
+const CREDENTIALS_FILE: &str = "sync-credentials.json";
 
 /// Run `ldgr sync setup` — interactive transport configuration.
 pub fn run_setup(vault_path: &Path) -> Result<()> {
@@ -27,9 +34,10 @@ pub fn run_setup(vault_path: &Path) -> Result<()> {
     println!("Choose a sync provider:");
     println!("  1. Dropbox");
     println!("  2. WebDAV (Nextcloud, ownCloud, etc.)");
+    println!("  3. ldgr-server (self-hosted, end-to-end encrypted)");
     println!();
 
-    print!("Provider [1/2]: ");
+    print!("Provider [1/2/3]: ");
     io::stdout().flush()?;
     let mut choice = String::new();
     io::stdin().read_line(&mut choice)?;
@@ -37,7 +45,8 @@ pub fn run_setup(vault_path: &Path) -> Result<()> {
     let config = match choice.trim() {
         "1" => setup_dropbox()?,
         "2" => setup_webdav()?,
-        _ => bail!("Invalid choice. Please enter 1 or 2."),
+        "3" => setup_server(&vault_dir)?,
+        _ => bail!("Invalid choice. Please enter 1, 2, or 3."),
     };
 
     // Save config
@@ -132,6 +141,152 @@ fn setup_webdav() -> Result<TransportConfig> {
     println!("For persistent auth, use `ldgr sync auth`.");
 
     Ok(TransportConfig::WebDav { base_url, username })
+}
+
+/// Interactive setup for the self-hosted `ldgr-server` transport.
+///
+/// Performs a one-time SRP-6a login (registering the account first if needed),
+/// ensures the vault exists, registers this device, and persists the resulting
+/// session token to `sync-credentials.json` (a bearer secret, kept out of the
+/// non-secret `TransportConfig`). The password is used only for the handshake
+/// and is never stored.
+///
+/// Two-secret onboarding (2SKD, ADR-008 / issue #180) is a future addition: the
+/// only change required here is prompting for the account Secret Key and calling
+/// `register_2skd` / `login_2skd` in place of the single-secret calls below.
+fn setup_server(vault_dir: &Path) -> Result<TransportConfig> {
+    println!();
+    println!("ldgr-server Setup (self-hosted)");
+    println!("───────────────────────────────");
+    println!("Sync to your own ldgr-server over an end-to-end encrypted SRP-6a");
+    println!("session. Your password never leaves this device and is not stored.");
+    println!();
+
+    print!("Server URL (e.g. https://sync.example.com): ");
+    io::stdout().flush()?;
+    let mut base_url = String::new();
+    io::stdin().read_line(&mut base_url)?;
+    let base_url = base_url.trim().trim_end_matches('/').to_string();
+    if base_url.is_empty() {
+        bail!("Server URL cannot be empty.");
+    }
+
+    print!("Username (email): ");
+    io::stdout().flush()?;
+    let mut username = String::new();
+    io::stdin().read_line(&mut username)?;
+    let username = username.trim().to_string();
+    if username.is_empty() {
+        bail!("Username cannot be empty.");
+    }
+
+    let password = rpassword::prompt_password("Password: ").context("failed to read password")?;
+    if password.is_empty() {
+        bail!("Password cannot be empty.");
+    }
+
+    let vault_id = get_vault_id(vault_dir);
+    let device_id = get_device_id(vault_dir)?;
+
+    let rt = tokio::runtime::Runtime::new().context("failed to create runtime")?;
+    let session_token = rt.block_on(async {
+        let sender = ReqwestSender::new(base_url.clone());
+        let mut client = ServerSyncClient::new(sender);
+
+        // One-time login (`&mut self`). On 401/404 offer to register, since the
+        // account may not exist yet on a fresh self-hosted instance.
+        match client.login(&username, password.as_bytes()).await {
+            Ok(()) => {}
+            Err(ServerSyncError::Http { status, .. }) if status == 401 || status == 404 => {
+                println!();
+                println!("Login failed — account not found or wrong password.");
+                print!("Register a new account with these credentials? [y/N]: ");
+                io::stdout().flush()?;
+                let mut yn = String::new();
+                io::stdin().read_line(&mut yn)?;
+                if !matches!(yn.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+                    bail!("Setup aborted. Verify your credentials and try again.");
+                }
+                client
+                    .register(&username, password.as_bytes())
+                    .await
+                    .map_err(|e| anyhow::anyhow!("registration failed: {e}"))?;
+                client
+                    .login(&username, password.as_bytes())
+                    .await
+                    .map_err(|e| anyhow::anyhow!("login after registration failed: {e}"))?;
+            }
+            Err(e) => bail!("login failed: {e}"),
+        }
+
+        // Ensure the vault exists (idempotent — a 409 means it already does).
+        if let Err(e) = client.create_vault(&vault_id).await {
+            match e {
+                ServerSyncError::Http { status: 409, .. } => {}
+                other => bail!("failed to create vault: {other}"),
+            }
+        }
+
+        // Register this device. The real encrypted device blob is uploaded on
+        // `sync push`; this is a best-effort placeholder so the device is known.
+        let _ = client.put_device(&vault_id, &device_id, b"{}").await;
+
+        let token = client
+            .token()
+            .map(str::to_string)
+            .ok_or_else(|| anyhow::anyhow!("server did not return a session token"))?;
+        Ok::<String, anyhow::Error>(token)
+    })?;
+
+    println!();
+    println!("✓ Authenticated to {base_url} and registered device {device_id}.");
+
+    // Persist the session token as a secret, separate from the config — same
+    // file/pattern as the Dropbox `access_token`.
+    store_session_token(vault_dir, &session_token)?;
+
+    Ok(TransportConfig::Server {
+        base_url,
+        username: Some(username),
+        vault_id,
+        device_id,
+    })
+}
+
+/// Persist the SRP session token into `sync-credentials.json`.
+///
+/// Read-merge-write so we preserve any other provider's keys already in the
+/// file (e.g. a Dropbox `access_token`) instead of clobbering them.
+fn store_session_token(vault_dir: &Path, session_token: &str) -> Result<()> {
+    let creds_path = vault_dir.join(CREDENTIALS_FILE);
+    let mut creds: serde_json::Value = if creds_path.exists() {
+        let existing =
+            std::fs::read_to_string(&creds_path).context("failed to read sync credentials")?;
+        if existing.trim().is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::from_str(&existing).context("failed to parse sync credentials")?
+        }
+    } else {
+        serde_json::json!({})
+    };
+    creds["session_token"] = serde_json::Value::String(session_token.to_string());
+    std::fs::write(
+        &creds_path,
+        serde_json::to_string_pretty(&creds).context("failed to serialize credentials")?,
+    )
+    .context("failed to write sync credentials")?;
+
+    // Restrict permissions on Unix — this file holds the bearer session token.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(&creds_path, perms)
+            .context("failed to set credentials permissions")?;
+    }
+
+    Ok(())
 }
 
 /// Run `ldgr sync push` — push local changes to remote.
@@ -380,6 +535,19 @@ pub fn run_status(vault_path: &Path) -> Result<()> {
                 println!("  Username: {user}");
             }
         }
+        TransportConfig::Server {
+            base_url,
+            username,
+            vault_id,
+            ..
+        } => {
+            println!();
+            println!("  Server URL: {base_url}");
+            if let Some(user) = username {
+                println!("  Username:   {user}");
+            }
+            println!("  Vault ID:   {vault_id}");
+        }
     }
 
     Ok(())
@@ -449,7 +617,7 @@ fn create_transport(config: &TransportConfig, vault_dir: &Path) -> Result<Box<dy
     match config {
         TransportConfig::Dropbox { .. } => {
             // Load access token from local credentials
-            let creds_path = vault_dir.join("sync-credentials.json");
+            let creds_path = vault_dir.join(CREDENTIALS_FILE);
             if !creds_path.exists() {
                 bail!(
                     "Dropbox credentials not found.\n\
@@ -480,6 +648,36 @@ fn create_transport(config: &TransportConfig, vault_dir: &Path) -> Result<Box<dy
             };
 
             let transport = WebDavTransport::new(base_url.clone(), user, password);
+            let retry = RetryTransport::new(transport, policy);
+            Ok(Box::new(retry))
+        }
+        TransportConfig::Server {
+            base_url, vault_id, ..
+        } => {
+            // The SRP session token is a secret kept in sync-credentials.json,
+            // written at `sync setup` after login (same pattern as Dropbox).
+            let creds_path = vault_dir.join(CREDENTIALS_FILE);
+            if !creds_path.exists() {
+                bail!(
+                    "ldgr-server credentials not found.\n\
+                     Run `ldgr sync setup` to authenticate with your server."
+                );
+            }
+            let creds_json =
+                std::fs::read_to_string(&creds_path).context("failed to read credentials")?;
+            let creds: serde_json::Value =
+                serde_json::from_str(&creds_json).context("failed to parse credentials")?;
+            let token = creds["session_token"]
+                .as_str()
+                .context(
+                    "missing session_token in credentials — re-run `ldgr sync setup` to log in",
+                )?
+                .to_string();
+
+            // Token-based: the SRP login already happened at `sync setup`. The
+            // password is never stored, so an expired token surfaces as an auth
+            // error telling the user to re-run setup.
+            let transport = ServerTransport::new(base_url.clone(), token, vault_id.clone());
             let retry = RetryTransport::new(transport, policy);
             Ok(Box::new(retry))
         }

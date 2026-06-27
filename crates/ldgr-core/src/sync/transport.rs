@@ -152,6 +152,7 @@ pub struct DeviceInfo {
 pub enum TransportProvider {
     Dropbox,
     WebDav,
+    Server,
 }
 
 impl TransportProvider {
@@ -159,6 +160,7 @@ impl TransportProvider {
         match self {
             Self::Dropbox => "dropbox",
             Self::WebDav => "webdav",
+            Self::Server => "server",
         }
     }
 }
@@ -182,6 +184,22 @@ pub enum TransportConfig {
         /// Username hint (not the password).
         username: Option<String>,
     },
+    /// Self-hosted `ldgr-server` (SRP-6a).
+    ///
+    /// Non-secret data only. The SRP session token is a bearer **secret** and is
+    /// stored separately in the platform credential store (the CLI's
+    /// `sync-credentials.json`), never in this config.
+    Server {
+        /// Base URL of the `ldgr-server` instance.
+        #[allow(clippy::doc_markdown)]
+        base_url: String,
+        /// Account username hint (email), not secret.
+        username: Option<String>,
+        /// Remote vault identifier.
+        vault_id: String,
+        /// This device's identifier.
+        device_id: String,
+    },
 }
 
 impl TransportConfig {
@@ -189,6 +207,7 @@ impl TransportConfig {
         match self {
             Self::Dropbox { .. } => TransportProvider::Dropbox,
             Self::WebDav { .. } => TransportProvider::WebDav,
+            Self::Server { .. } => TransportProvider::Server,
         }
     }
 }
@@ -418,6 +437,39 @@ mod tests {
             username: None,
         };
         assert_eq!(cfg.provider(), TransportProvider::WebDav);
+    }
+
+    #[test]
+    fn transport_config_server_provider_and_round_trip() {
+        let cfg = TransportConfig::Server {
+            base_url: "https://sync.example.com".into(),
+            username: Some("alice@example.com".into()),
+            vault_id: "vault_1".into(),
+            device_id: "dev_1".into(),
+        };
+        assert_eq!(cfg.provider(), TransportProvider::Server);
+        assert_eq!(cfg.provider().as_str(), "server");
+
+        // Round-trips through serde unchanged.
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let back: TransportConfig = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.provider(), TransportProvider::Server);
+
+        // The session token is a secret and must never be part of this config.
+        assert!(
+            !json.contains("token"),
+            "config must not carry a session token: {json}"
+        );
+
+        // Existing externally-tagged configs still parse identically (adding a
+        // variant must not break backward compatibility).
+        let legacy = r#"{"Dropbox":{"app_key":"k","account_hint":null}}"#;
+        assert_eq!(
+            serde_json::from_str::<TransportConfig>(legacy)
+                .unwrap()
+                .provider(),
+            TransportProvider::Dropbox
+        );
     }
 
     #[test]
