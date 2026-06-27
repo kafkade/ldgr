@@ -62,6 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime-updatable server settings via the admin API: registration policy, default storage quota, and max blob size are now persisted and editable without a restart, with environment variables providing the initial defaults
 - Server stats endpoint for admins reporting account count and per-user / total storage usage
 - Last-admin protection: the final active administrator cannot be disabled, demoted, or deleted
+- Swift/UniFFI server-sync bindings: an `LdgrSyncClient` that drives SRP-6a sign-in/registration (single-secret and two-secret), vault creation, and encrypted batch/snapshot/device sync from Swift, with all key derivation kept in Rust so no key material crosses the binding boundary
+- Platform-provided async HTTP transport seam (`FfiHttpSender`) with a ready-to-use `URLSessionHTTPSender` for iOS, letting the app supply networking while encrypted blobs move opaquely through the bindings
 
 ### Fixed
 

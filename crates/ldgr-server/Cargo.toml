@@ -40,7 +40,11 @@ thiserror.workspace = true
 # In-process integration testing: drive the router via tower's oneshot and the
 # core SRP-6a client (no sockets, no real HTTP).
 ldgr-core = { path = "../ldgr-core", features = ["core", "sync"] }
+# FFI-level e2e test drives the UniFFI `LdgrSyncClient` through its foreign
+# async-sender seam against this same in-process router. Test-only edge.
+ldgr-ffi = { path = "../ldgr-ffi" }
 tower = { version = "0.5", features = ["util"] }
+async-trait.workspace = true
 
 [lints]
 workspace = true

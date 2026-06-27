@@ -12,16 +12,14 @@
 #
 # Output:
 #   Frameworks/ldgr_ffiFFI.xcframework   — fat XCFramework
-#   Sources/LdgrFFI/ldgr_ffi.swift       — generated Swift bindings
+#   Sources/LdgrFFI/ldgr.swift           — generated Swift bindings (library mode)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-FFI_CRATE="$REPO_ROOT/crates/ldgr-ffi"
 OUT_DIR="$SCRIPT_DIR/Frameworks"
 SWIFT_OUT="$SCRIPT_DIR/Sources/LdgrFFI"
-UDL_PATH="$FFI_CRATE/src/ldgr.udl"
 
 PROFILE="debug"
 CARGO_FLAGS=""
@@ -71,14 +69,20 @@ SIM_LIB="$SIM_UNIVERSAL/libldgr_ffi.a"
 echo "▸ Generating Swift bindings…"
 mkdir -p "$SWIFT_OUT"
 
-cargo run -p uniffi-bindgen -- generate "$UDL_PATH" \
+# Library mode (required for UniFFI 0.31): bindgen reads the FFI metadata
+# embedded in the compiled staticlib. This is mandatory because the server-sync
+# surface is defined with proc-macro `#[uniffi::export]` (async + foreign
+# callback interfaces) mixed with the legacy `.udl` — UDL-source mode would only
+# see the `.udl` types and miss the proc-macro exports. The old `--lib-file`
+# flag was removed in 0.31.
+cargo run -p uniffi-bindgen -- generate \
+    --library "$DEVICE_LIB" \
     --language swift \
-    --out-dir "$SWIFT_OUT" \
-    --lib-file "$DEVICE_LIB"
+    --out-dir "$SWIFT_OUT"
 
-# Locate generated header and modulemap
-HEADER="$SWIFT_OUT/ldgr_ffiFFI.h"
-MODULEMAP="$SWIFT_OUT/ldgr_ffiFFI.modulemap"
+# Locate generated header and modulemap (namespace-named: ldgrFFI.h / .modulemap).
+HEADER="$SWIFT_OUT/ldgrFFI.h"
+MODULEMAP="$SWIFT_OUT/ldgrFFI.modulemap"
 
 if [[ ! -f "$HEADER" ]]; then
     HEADER=$(find "$SWIFT_OUT" -name "*.h" | head -1)
