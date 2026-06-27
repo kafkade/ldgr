@@ -113,7 +113,7 @@ pub async fn register(
     let mut role = if is_bootstrap_admin { "admin" } else { "user" }.to_string();
     let mut invited_by: Option<String> = None;
     if !is_bootstrap_admin {
-        match state.config.registration_policy {
+        match crate::settings::registration_policy(&state).await? {
             RegistrationPolicy::Open => {}
             RegistrationPolicy::InviteOnly => {
                 let token = req

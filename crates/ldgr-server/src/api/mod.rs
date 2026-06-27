@@ -1,3 +1,4 @@
+pub mod admin;
 pub mod auth;
 pub mod batches;
 pub mod devices;
@@ -62,6 +63,28 @@ pub fn router(state: SharedState) -> Router {
         .route("/{offer_id}/response", get(relay::get_response))
         .layer(DefaultBodyLimit::max(64 * 1024));
 
+    // Admin API (admin role required — guarded per-handler by AdminUser).
+    let admin_routes = Router::new()
+        .route("/users", get(admin::list_users).post(admin::create_user))
+        .route(
+            "/users/{id}",
+            axum::routing::patch(admin::update_user).delete(admin::delete_user),
+        )
+        .route(
+            "/invites",
+            get(admin::list_invites).post(admin::create_invite),
+        )
+        .route(
+            "/invites/{token}",
+            axum::routing::delete(admin::delete_invite),
+        )
+        .route(
+            "/settings",
+            get(admin::get_settings).patch(admin::update_settings),
+        )
+        .route("/stats", get(admin::stats))
+        .layer(DefaultBodyLimit::max(64 * 1024));
+
     Router::new()
         .route("/health", get(health))
         .nest("/api/v1/auth", auth_routes)
@@ -70,6 +93,7 @@ pub fn router(state: SharedState) -> Router {
         .nest("/api/v1/vaults/{vault_id}/snapshots", snapshot_routes)
         .nest("/api/v1/vaults/{vault_id}/devices", device_routes)
         .nest("/api/v1/relay", relay_routes)
+        .nest("/api/v1/admin", admin_routes)
         .with_state(state)
 }
 

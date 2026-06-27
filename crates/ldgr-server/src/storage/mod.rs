@@ -38,6 +38,32 @@ pub struct InviteGrant {
     pub created_by: Option<String>,
 }
 
+/// A full account record for the admin API, including effective storage usage
+/// (aggregate blob bytes across the user's vaults).
+pub struct AdminUserRecord {
+    pub id: String,
+    pub username: String,
+    pub email: Option<String>,
+    pub role: String,
+    pub status: String,
+    pub storage_quota_bytes: Option<i64>,
+    pub created_at: String,
+    pub usage_bytes: i64,
+}
+
+/// An invite row as surfaced by the admin listing (the raw token is never
+/// stored — only its hash, which serves as the invite's stable id).
+pub struct InviteRecord {
+    pub token_hash: String,
+    pub email: Option<String>,
+    pub role: String,
+    pub created_by: Option<String>,
+    pub created_at: String,
+    pub expires_at: Option<String>,
+    pub redeemed_at: Option<String>,
+    pub redeemed_by: Option<String>,
+}
+
 pub struct Vault {
     pub id: String,
     #[allow(dead_code)]
@@ -133,6 +159,10 @@ impl ServerDb {
         // schema again is enough to add them to a legacy DB.
         conn.execute_batch(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email);
+             CREATE TABLE IF NOT EXISTS settings (
+                 key   TEXT PRIMARY KEY,
+                 value TEXT NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS invites (
                  token_hash  TEXT PRIMARY KEY,
                  email       TEXT,
@@ -276,8 +306,222 @@ impl ServerDb {
         .await?
     }
 
+    // ── Admin: user management (#176) ───────────────────────────────────────────
+
+    /// List every account with its effective storage usage (aggregate blob
+    /// bytes across all of the user's vaults), newest first.
+    pub async fn list_users(&self) -> Result<Vec<AdminUserRecord>, ServerError> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
+            let mut stmt = conn.prepare(
+                "SELECT u.id, u.username, u.email, u.role, u.status, u.storage_quota_bytes, \
+                        u.created_at, \
+                        COALESCE((SELECT SUM(b.size) FROM blobs b \
+                                  JOIN vaults v ON v.id = b.vault_id \
+                                  WHERE v.user_id = u.id), 0) AS usage \
+                 FROM users u ORDER BY u.created_at DESC",
+            )?;
+            let users = stmt
+                .query_map([], Self::map_admin_user)?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(users)
+        })
+        .await?
+    }
+
+    /// Fetch a single account by id, with its effective storage usage.
+    pub async fn get_user_by_id(&self, id: &str) -> Result<Option<AdminUserRecord>, ServerError> {
+        let conn = self.conn.clone();
+        let id = id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
+            let mut stmt = conn.prepare(
+                "SELECT u.id, u.username, u.email, u.role, u.status, u.storage_quota_bytes, \
+                        u.created_at, \
+                        COALESCE((SELECT SUM(b.size) FROM blobs b \
+                                  JOIN vaults v ON v.id = b.vault_id \
+                                  WHERE v.user_id = u.id), 0) AS usage \
+                 FROM users u WHERE u.id = ?1",
+            )?;
+            let user = stmt
+                .query_row(params![id], Self::map_admin_user)
+                .optional()?;
+            Ok(user)
+        })
+        .await?
+    }
+
+    /// Row mapper shared by the admin user list + single-fetch queries.
+    fn map_admin_user(row: &rusqlite::Row) -> rusqlite::Result<AdminUserRecord> {
+        Ok(AdminUserRecord {
+            id: row.get(0)?,
+            username: row.get(1)?,
+            email: row.get(2)?,
+            role: row.get(3)?,
+            status: row.get(4)?,
+            storage_quota_bytes: row.get(5)?,
+            created_at: row.get(6)?,
+            usage_bytes: row.get(7)?,
+        })
+    }
+
+    /// Set an account's status (`active`/`disabled`) by id, returning whether a
+    /// row was updated. The admin-facing counterpart to `set_user_status`.
+    pub async fn set_user_status_by_id(&self, id: &str, status: &str) -> Result<bool, ServerError> {
+        self.update_user_field(id, "status", status.to_string())
+            .await
+    }
+
+    /// Set an account's role (`admin`/`user`) by id, returning whether a row was
+    /// updated.
+    pub async fn set_user_role(&self, id: &str, role: &str) -> Result<bool, ServerError> {
+        self.update_user_field(id, "role", role.to_string()).await
+    }
+
+    /// Set (or clear, with `None`) an account's per-user storage quota override
+    /// by id, returning whether a row was updated.
+    pub async fn set_user_quota(
+        &self,
+        id: &str,
+        quota_bytes: Option<i64>,
+    ) -> Result<bool, ServerError> {
+        let conn = self.conn.clone();
+        let id = id.to_string();
+        let updated_at = chrono::Utc::now().to_rfc3339();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
+            let count = conn.execute(
+                "UPDATE users SET storage_quota_bytes = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id, quota_bytes, updated_at],
+            )?;
+            Ok(count > 0)
+        })
+        .await?
+    }
+
+    /// Shared helper for single-column user updates that take a string value.
+    async fn update_user_field(
+        &self,
+        id: &str,
+        column: &'static str,
+        value: String,
+    ) -> Result<bool, ServerError> {
+        let conn = self.conn.clone();
+        let id = id.to_string();
+        let updated_at = chrono::Utc::now().to_rfc3339();
+        let sql = format!("UPDATE users SET {column} = ?2, updated_at = ?3 WHERE id = ?1");
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
+            let count = conn.execute(&sql, params![id, value, updated_at])?;
+            Ok(count > 0)
+        })
+        .await?
+    }
+
+    /// Delete an account by id, returning whether a row was removed. Foreign-key
+    /// cascades (enabled at open) remove the user's vaults → blobs, sessions, and
+    /// relay offers.
+    pub async fn delete_user(&self, id: &str) -> Result<bool, ServerError> {
+        let conn = self.conn.clone();
+        let id = id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
+            let count = conn.execute("DELETE FROM users WHERE id = ?1", params![id])?;
+            Ok(count > 0)
+        })
+        .await?
+    }
+
+    /// Count active admins other than `id`. Used to guard against disabling,
+    /// demoting, or deleting the final admin (which would lock out the instance).
+    pub async fn count_active_admins_excluding(&self, id: &str) -> Result<i64, ServerError> {
+        let conn = self.conn.clone();
+        let id = id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM users \
+                 WHERE role = 'admin' AND status = 'active' AND id != ?1",
+                params![id],
+                |row| row.get(0),
+            )?;
+            Ok(count)
+        })
+        .await?
+    }
+
+    /// Total bytes stored across all vaults of all users (for admin stats).
+    pub async fn total_storage_used(&self) -> Result<i64, ServerError> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
+            let total: i64 =
+                conn.query_row("SELECT COALESCE(SUM(size), 0) FROM blobs", [], |row| {
+                    row.get(0)
+                })?;
+            Ok(total)
+        })
+        .await?
+    }
+
+    // ── Settings (#176) ─────────────────────────────────────────────────────────
+
+    /// Read a persisted server setting. Returns `None` when unset (callers fall
+    /// back to the env/config default).
+    pub async fn get_setting(&self, key: &str) -> Result<Option<String>, ServerError> {
+        let conn = self.conn.clone();
+        let key = key.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
+            let value: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM settings WHERE key = ?1",
+                    params![key],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            Ok(value)
+        })
+        .await?
+    }
+
+    /// Upsert a persisted server setting.
+    pub async fn set_setting(&self, key: &str, value: &str) -> Result<(), ServerError> {
+        let conn = self.conn.clone();
+        let key = key.to_string();
+        let value = value.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2) \
+                 ON CONFLICT (key) DO UPDATE SET value = ?2",
+                params![key, value],
+            )?;
+            Ok(())
+        })
+        .await?
+    }
+
     // ── Invites ───────────────────────────────────────────────────────────────
-    //
     // Minimal redemption-side mechanism for the `invite-only` registration
     // policy. The admin-facing issuance API is #176; `create_invite` exists so
     // that path (and tests) have a seam to write rows, while `redeem_invite`
@@ -351,6 +595,56 @@ impl ServerDb {
                 )
                 .optional()?;
             Ok(grant)
+        })
+        .await?
+    }
+
+    /// List all invites (newest first) for the admin API. The raw token is never
+    /// stored, so the `token_hash` doubles as each invite's stable id.
+    pub async fn list_invites(&self) -> Result<Vec<InviteRecord>, ServerError> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
+            let mut stmt = conn.prepare(
+                "SELECT token_hash, email, role, created_by, created_at, expires_at, \
+                        redeemed_at, redeemed_by \
+                 FROM invites ORDER BY created_at DESC",
+            )?;
+            let invites = stmt
+                .query_map([], |row| {
+                    Ok(InviteRecord {
+                        token_hash: row.get(0)?,
+                        email: row.get(1)?,
+                        role: row.get(2)?,
+                        created_by: row.get(3)?,
+                        created_at: row.get(4)?,
+                        expires_at: row.get(5)?,
+                        redeemed_at: row.get(6)?,
+                        redeemed_by: row.get(7)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(invites)
+        })
+        .await?
+    }
+
+    /// Revoke (delete) an unredeemed invite by its token hash, returning whether
+    /// a row was removed. Redeemed invites are left intact as an audit record.
+    pub async fn delete_invite(&self, token_hash: &str) -> Result<bool, ServerError> {
+        let conn = self.conn.clone();
+        let token_hash = token_hash.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
+            let count = conn.execute(
+                "DELETE FROM invites WHERE token_hash = ?1 AND redeemed_at IS NULL",
+                params![token_hash],
+            )?;
+            Ok(count > 0)
         })
         .await?
     }

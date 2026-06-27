@@ -13,12 +13,24 @@ pub enum RegistrationPolicy {
 }
 
 impl RegistrationPolicy {
-    fn parse(s: &str) -> Self {
+    /// Parse from a config/setting string. Unknown values fall back to the
+    /// secure default (`invite-only`).
+    pub fn parse(s: &str) -> Self {
         match s.trim().to_ascii_lowercase().as_str() {
             "open" => Self::Open,
             "admin-only" | "admin_only" | "adminonly" => Self::AdminOnly,
             // Default + explicit "invite-only" spellings.
             _ => Self::InviteOnly,
+        }
+    }
+
+    /// Canonical wire/storage spelling.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::InviteOnly => "invite-only",
+            Self::AdminOnly => "admin-only",
         }
     }
 }

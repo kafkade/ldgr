@@ -36,6 +36,14 @@ CREATE TABLE IF NOT EXISTS invites (
     redeemed_by TEXT
 );
 
+-- Runtime-updatable server settings (ADR-008). Env vars provide the bootstrap
+-- defaults; the admin API (#176) persists overrides here, which then win over
+-- env on subsequent reads. Absent keys fall back to the env/config default.
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
     token_hash  TEXT PRIMARY KEY,
     user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

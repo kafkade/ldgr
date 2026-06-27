@@ -54,6 +54,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Server registration policy (`LDGR_REGISTRATION`): `open`, `invite-only` (default), or `admin-only`, with invite-token redemption for invite-only instances
 - First-run admin bootstrap for the sync server: seed an admin from `LDGR_ADMIN_EMAIL` (recommended for docker-compose), or the first account to register becomes the admin
 - Per-user storage quotas on the sync server, with a configurable server default (`LDGR_DEFAULT_QUOTA_BYTES`, default 1 GiB) and optional per-account override; uploads exceeding the quota are rejected
+- Admin API for the sync server (`/api/v1/admin`, admin-only, JSON): list/create/disable/enable/delete users, change roles and storage quotas, and view per-user usage
+- Admin invite management: issue, list, and revoke invite tokens for invite-only instances (issued tokens redeem through the normal registration flow)
+- Runtime-updatable server settings via the admin API: registration policy, default storage quota, and max blob size are now persisted and editable without a restart, with environment variables providing the initial defaults
+- Server stats endpoint for admins reporting account count and per-user / total storage usage
+- Last-admin protection: the final active administrator cannot be disabled, demoted, or deleted
 
 ### Fixed
 
