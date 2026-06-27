@@ -3,6 +3,7 @@ pub mod auth;
 pub mod batches;
 pub mod devices;
 pub mod relay;
+pub mod server;
 pub mod snapshots;
 pub mod vaults;
 
@@ -87,6 +88,8 @@ pub fn router(state: SharedState) -> Router {
 
     Router::new()
         .route("/health", get(health))
+        .route("/api/v1/server/info", get(server::info))
+        .route("/api/v1/server/ping", get(server::ping))
         .nest("/api/v1/auth", auth_routes)
         .nest("/api/v1/vaults", vault_routes)
         .nest("/api/v1/vaults/{vault_id}/batches", batch_routes)

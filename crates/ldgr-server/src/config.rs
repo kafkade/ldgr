@@ -52,6 +52,10 @@ pub struct Config {
     /// Default per-user storage quota in bytes, applied when a user's
     /// `storage_quota_bytes` is unset.
     pub default_user_quota_bytes: i64,
+    /// Human-readable server name advertised by `GET /api/v1/server/info` and
+    /// `/ping` (`LDGR_SERVER_NAME`). Lets operators label their instance; purely
+    /// cosmetic and never used for auth. Defaults to `ldgr-server`.
+    pub server_name: String,
 }
 
 impl Config {
@@ -87,6 +91,14 @@ impl Config {
             default_user_quota_bytes: env_or("LDGR_DEFAULT_QUOTA_BYTES", "1073741824") // 1 GiB
                 .parse()
                 .expect("LDGR_DEFAULT_QUOTA_BYTES must be a valid number"),
+            server_name: {
+                let name = env_or("LDGR_SERVER_NAME", "ldgr-server").trim().to_string();
+                if name.is_empty() {
+                    "ldgr-server".to_string()
+                } else {
+                    name
+                }
+            },
         }
     }
 }
