@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Public, unauthenticated server-discovery endpoints (`GET /api/v1/server/info` and `GET /api/v1/server/ping`) so clients can validate a server URL, read the sync/auth protocol version, the effective registration policy, and capability flags (e.g. two-secret auth) before sign-in; instance label configurable via `LDGR_SERVER_NAME`
 - SRP-6a client primitives and transport-agnostic server sync protocol types in `ldgr-core` (registration verifier generation, login proof computation, session key derivation, and serde request/response types for every server endpoint), reused by all platform clients without performing any I/O
 - `ServerSyncClient` that orchestrates the auth handshake and encrypted batch/snapshot/device/relay sync over an injected platform HTTP callback
+- Two-secret (2SKD) sign-in support in the sync client (`ServerSyncClient::register_2skd` / `login_2skd`): registering and logging in with both the password-derived auth key and the account Secret Key, advertising the `srp-2skd-v1` scheme while keeping single-secret registration wire-compatible
 - Persistent client-side market price cache (SQLite) with per-type TTLs (quotes 15 min, historical 24 hr) so cached prices survive CLI restarts and avoid repeat network requests within TTL
 - `ldgr cache status` and `ldgr cache clear` commands to inspect hit rate / entry count and flush cached prices
 - Apple Watch companion app: read-only glances for net worth, portfolio, and monthly spending
