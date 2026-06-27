@@ -26,6 +26,9 @@ use rusqlite::Connection;
 
 uniffi::include_scaffolding!("ldgr");
 
+mod sync;
+pub use sync::*;
+
 // ── Error Type ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, thiserror::Error)]
