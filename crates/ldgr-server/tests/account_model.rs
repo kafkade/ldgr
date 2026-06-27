@@ -38,6 +38,7 @@ fn base_config() -> Config {
         registration_policy: RegistrationPolicy::Open,
         admin_email: None,
         default_user_quota_bytes: 1_073_741_824,
+        server_name: "ldgr-server".into(),
     }
 }
 
