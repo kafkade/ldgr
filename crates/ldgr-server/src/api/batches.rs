@@ -42,7 +42,13 @@ pub async fn put_batch(
 
     let meta = state
         .db
-        .put_blob(&path, &vault_id, body.to_vec(), &content_hash)
+        .put_blob(
+            &path,
+            &vault_id,
+            body.to_vec(),
+            &content_hash,
+            state.config.default_user_quota_bytes,
+        )
         .await?;
 
     Ok((
