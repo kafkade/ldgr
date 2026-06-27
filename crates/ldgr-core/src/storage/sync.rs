@@ -231,6 +231,33 @@ pub fn device_id(conn: &Connection) -> Result<String, StorageError> {
     Ok(id)
 }
 
+/// Count events originating from a specific device (synced or not).
+///
+/// Used by the sync pipeline to compute this device's own vector-clock
+/// component: a monotonic, rebuildable logical time equal to the number of
+/// events this device has ever emitted.
+pub fn device_event_count(conn: &Connection, device_id: &str) -> Result<u64, StorageError> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sync_events WHERE device_id = ?1",
+        [device_id],
+        |row| row.get(0),
+    )?;
+    #[allow(clippy::cast_sign_loss)]
+    Ok(count as u64)
+}
+
+/// Advance the persisted Lamport clock to `max(current, observed)`.
+///
+/// Called on sync ingest so subsequent local events causally follow the
+/// highest remote event observed (Lamport's receive rule, batch granularity).
+pub fn observe_lamport(conn: &Connection, observed: u64) -> Result<(), StorageError> {
+    let current = lamport_clock(conn)?;
+    if observed > current {
+        set_state(conn, "lamport_clock", &observed.to_string())?;
+    }
+    Ok(())
+}
+
 /// Get the current Lamport clock value (stored persistently).
 pub fn lamport_clock(conn: &Connection) -> Result<u64, StorageError> {
     match get_state(conn, "lamport_clock")? {

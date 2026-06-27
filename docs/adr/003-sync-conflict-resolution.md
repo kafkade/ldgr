@@ -55,6 +55,8 @@ Event {
 
 Events encrypted in batches (per-sync-session or daily chunks), not individually. Reduces encryption overhead, file system pressure, and sync enumeration cost.
 
+The concrete batch-blob byte layout (compose/encrypt/apply) is specified in [Sync Batch-Blob Format](../sync-blob-format.md), implemented by `ldgr-core`'s `sync::pipeline` (`export_pending_batch` / `ingest_batch`).
+
 ### Event Log Compaction
 
 Every 1,000 events OR monthly (whichever first), create a snapshot of materialized state. New device sync: download latest snapshot + event batches since snapshot. Target: new device onboarding < 30 seconds for 10 years of data.

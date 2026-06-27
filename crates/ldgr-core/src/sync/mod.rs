@@ -7,6 +7,7 @@
 pub mod conflicts;
 pub mod events;
 pub mod onboarding;
+pub mod payload;
 pub mod snapshot;
 pub mod transport;
 
@@ -14,6 +15,12 @@ pub mod transport;
 /// feature, which pulls in big-integer arithmetic for SRP.
 #[cfg(feature = "sync")]
 pub mod server;
+
+/// Batch-blob compose/apply pipeline (pending events ↔ encrypted blob).
+/// Requires the `sqlite` feature because it reads and writes the canonical
+/// `SQLite` vault via a passed-in `Connection`.
+#[cfg(feature = "sqlite")]
+pub mod pipeline;
 
 pub use conflicts::*;
 pub use events::*;
