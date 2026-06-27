@@ -21,9 +21,11 @@ use super::protocol::{
     hex_decode, hex_encode,
 };
 use super::srp::{ClientLogin, SrpError};
+use crate::crypto::{AuthKey, SecretKey};
 use crate::sync::transport::{
     RemoteBatchMeta, RemoteSnapshotMeta, parse_batch_path, parse_snapshot_path,
 };
+use uuid::Uuid;
 
 // ── Raw transport contract ──────────────────────────────────────────────────────
 
@@ -191,6 +193,40 @@ impl<T: RawHttpSender> ServerSyncClient<T> {
             username: username.to_string(),
             salt: hex_encode(&reg.salt),
             verifier: hex_encode(&reg.verifier),
+            auth_scheme: None,
+        };
+        self.post_json(&format!("{API_PREFIX}/auth/register"), &body, false)
+            .await
+    }
+
+    /// Register a new account using **two-secret (2SKD)** derivation (ADR-008).
+    ///
+    /// The SRP verifier is derived from both the master auth key (`mk_auth`,
+    /// derived from the password) and the account [`SecretKey`]; the request
+    /// advertises `auth_scheme = "srp-2skd-v1"`. Neither secret leaves the
+    /// device — only `(salt, verifier)` is sent.
+    ///
+    /// The Secret Key is **server-auth-only** (ADR-008, Decision 3): it
+    /// participates in account authentication and is never used to decrypt the
+    /// vault.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the transport fails or the server rejects the
+    /// request.
+    pub async fn register_2skd(
+        &self,
+        username: &str,
+        account_id: &Uuid,
+        mk_auth: &AuthKey,
+        secret_key: &SecretKey,
+    ) -> Result<RegisterResponse, ServerSyncError> {
+        let reg = super::srp::register_2skd(account_id, mk_auth, secret_key);
+        let body = RegisterRequest {
+            username: username.to_string(),
+            salt: hex_encode(&reg.salt),
+            verifier: hex_encode(&reg.verifier),
+            auth_scheme: Some("srp-2skd-v1".to_string()),
         };
         self.post_json(&format!("{API_PREFIX}/auth/register"), &body, false)
             .await
@@ -209,8 +245,50 @@ impl<T: RawHttpSender> ServerSyncClient<T> {
     ///
     /// [`is_authenticated`]: Self::is_authenticated
     pub async fn login(&mut self, username: &str, password: &[u8]) -> Result<(), ServerSyncError> {
-        // Step 1: init.
         let (login, a_pub) = ClientLogin::start(username, password);
+        self.run_login(username, login, a_pub).await
+    }
+
+    /// Perform a **two-secret (2SKD)** SRP-6a login and store the session token
+    /// (ADR-008).
+    ///
+    /// `mk_auth` is the master auth key derived from the password; `secret_key`
+    /// is the account [`SecretKey`]. Both are required to reproduce the
+    /// verifier — neither alone authenticates.
+    ///
+    /// The Secret Key is **server-auth-only** (ADR-008, Decision 3): it is used
+    /// solely to prove account ownership to the server and is never used for
+    /// vault decryption.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerSyncError::ProofMismatch`] if the server's proof fails to
+    /// verify, an SRP error for a malformed handshake, or a transport/HTTP
+    /// error.
+    pub async fn login_2skd(
+        &mut self,
+        username: &str,
+        account_id: &Uuid,
+        mk_auth: &AuthKey,
+        secret_key: &SecretKey,
+    ) -> Result<(), ServerSyncError> {
+        let (login, a_pub) =
+            ClientLogin::start_2skd(username, *account_id, mk_auth.clone(), secret_key.clone());
+        self.run_login(username, login, a_pub).await
+    }
+
+    /// Drive the SRP-6a init → verify exchange common to every auth scheme.
+    ///
+    /// `login` is the started [`ClientLogin`] state and `a_pub` its public
+    /// value `A`. On success the client becomes authenticated and the SRP
+    /// session key is retained.
+    async fn run_login(
+        &mut self,
+        username: &str,
+        login: ClientLogin,
+        a_pub: Vec<u8>,
+    ) -> Result<(), ServerSyncError> {
+        // Step 1: init.
         let init_req = LoginInitRequest {
             username: username.to_string(),
             client_public: hex_encode(&a_pub),

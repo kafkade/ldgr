@@ -62,6 +62,12 @@ pub struct RegisterRequest {
     pub salt: String,
     /// Hex-encoded SRP verifier.
     pub verifier: String,
+    /// SRP derivation scheme: `srp-1secret` (legacy, default) or `srp-2skd-v1`.
+    ///
+    /// Omitted from the wire when `None`, keeping single-secret registration
+    /// byte-identical to the original protocol.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_scheme: Option<String>,
 }
 
 /// `POST /api/v1/auth/register` response body.
@@ -258,7 +264,35 @@ mod tests {
             username: "alice".into(),
             salt: "00ff".into(),
             verifier: "abcd".into(),
+            auth_scheme: None,
         });
+        // `None` must omit `auth_scheme` entirely (wire-identical to legacy).
+        let legacy = RegisterRequest {
+            username: "alice".into(),
+            salt: "00ff".into(),
+            verifier: "abcd".into(),
+            auth_scheme: None,
+        };
+        let legacy_json = serde_json::to_string(&legacy).expect("serialize");
+        assert!(
+            !legacy_json.contains("auth_scheme"),
+            "auth_scheme must be omitted when None: {legacy_json}"
+        );
+        // `Some(..)` round-trips and is present on the wire.
+        round_trip(&RegisterRequest {
+            username: "alice".into(),
+            salt: "00ff".into(),
+            verifier: "abcd".into(),
+            auth_scheme: Some("srp-2skd-v1".into()),
+        });
+        let two_skd = RegisterRequest {
+            username: "alice".into(),
+            salt: "00ff".into(),
+            verifier: "abcd".into(),
+            auth_scheme: Some("srp-2skd-v1".into()),
+        };
+        let two_skd_json = serde_json::to_string(&two_skd).expect("serialize");
+        assert!(two_skd_json.contains("\"auth_scheme\":\"srp-2skd-v1\""));
         round_trip(&RegisterResponse {
             user_id: "u1".into(),
         });
