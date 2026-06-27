@@ -14,6 +14,28 @@ pub struct User {
     pub username: String,
     pub salt: Vec<u8>,
     pub verifier: Vec<u8>,
+    pub role: String,
+    pub status: String,
+}
+
+/// Attributes set when creating an account, beyond the SRP `(salt, verifier)`.
+pub struct NewUser<'a> {
+    pub id: &'a str,
+    pub username: &'a str,
+    pub email: Option<&'a str>,
+    pub salt: &'a [u8],
+    pub verifier: &'a [u8],
+    pub role: &'a str,
+    pub auth_scheme: &'a str,
+    pub invited_by: Option<&'a str>,
+    pub created_at: &'a str,
+}
+
+/// A redeemed invite's metadata (role granted, optional bound email, issuer).
+pub struct InviteGrant {
+    pub role: String,
+    pub email: Option<String>,
+    pub created_by: Option<String>,
 }
 
 pub struct Vault {
@@ -68,43 +90,161 @@ impl ServerDb {
             .map_err(ServerError::from)?;
         conn.execute_batch(schema::SCHEMA)
             .map_err(ServerError::from)?;
+        Self::migrate(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
     }
 
+    /// Apply additive, idempotent migrations to bring a pre-ADR-008 database up
+    /// to the current `users` schema. Safe to run repeatedly and on fresh DBs
+    /// (where the columns already exist and nothing is added).
+    ///
+    /// Each `ALTER TABLE ... ADD COLUMN` is guarded by a `PRAGMA table_info`
+    /// check because `SQLite` has no `ADD COLUMN IF NOT EXISTS`. Existing rows are
+    /// backfilled by `SQLite` with the column defaults, so legacy accounts become
+    /// `role='user'`, `status='active'`, `auth_scheme='srp-1secret'`.
+    fn migrate(conn: &Connection) -> Result<(), ServerError> {
+        let existing = Self::user_columns(conn)?;
+
+        // (column, DDL fragment) — must match the canonical schema defaults.
+        let additions: &[(&str, &str)] = &[
+            ("email", "email TEXT"),
+            ("role", "role TEXT NOT NULL DEFAULT 'user'"),
+            ("status", "status TEXT NOT NULL DEFAULT 'active'"),
+            ("storage_quota_bytes", "storage_quota_bytes INTEGER"),
+            ("invited_by", "invited_by TEXT"),
+            ("updated_at", "updated_at TEXT"),
+            (
+                "auth_scheme",
+                "auth_scheme TEXT NOT NULL DEFAULT 'srp-1secret'",
+            ),
+            ("secret_key_version", "secret_key_version INTEGER"),
+        ];
+
+        for (name, ddl) in additions {
+            if !existing.iter().any(|c| c == name) {
+                conn.execute_batch(&format!("ALTER TABLE users ADD COLUMN {ddl};"))
+                    .map_err(ServerError::from)?;
+            }
+        }
+
+        // Index + invites table are `IF NOT EXISTS`, so running the canonical
+        // schema again is enough to add them to a legacy DB.
+        conn.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email);
+             CREATE TABLE IF NOT EXISTS invites (
+                 token_hash  TEXT PRIMARY KEY,
+                 email       TEXT,
+                 role        TEXT NOT NULL DEFAULT 'user',
+                 created_by  TEXT,
+                 created_at  TEXT NOT NULL,
+                 expires_at  TEXT,
+                 redeemed_at TEXT,
+                 redeemed_by TEXT
+             );",
+        )
+        .map_err(ServerError::from)?;
+
+        Ok(())
+    }
+
+    /// Return the set of column names currently on the `users` table.
+    fn user_columns(conn: &Connection) -> Result<Vec<String>, ServerError> {
+        let mut stmt = conn
+            .prepare("PRAGMA table_info(users)")
+            .map_err(ServerError::from)?;
+        let cols = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(ServerError::from)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(ServerError::from)?;
+        Ok(cols)
+    }
+
     // ── Users ─────────────────────────────────────────────────────────────────
 
-    pub async fn create_user(
-        &self,
-        id: &str,
-        username: &str,
-        salt: &[u8],
-        verifier: &[u8],
-        created_at: &str,
-    ) -> Result<(), ServerError> {
+    pub async fn create_user(&self, new: &NewUser<'_>) -> Result<(), ServerError> {
         let conn = self.conn.clone();
-        let id = id.to_string();
-        let username = username.to_string();
-        let salt = salt.to_vec();
-        let verifier = verifier.to_vec();
-        let created_at = created_at.to_string();
+        let id = new.id.to_string();
+        let username = new.username.to_string();
+        let email = new.email.map(str::to_string);
+        let salt = new.salt.to_vec();
+        let verifier = new.verifier.to_vec();
+        let role = new.role.to_string();
+        let auth_scheme = new.auth_scheme.to_string();
+        let invited_by = new.invited_by.map(str::to_string);
+        let created_at = new.created_at.to_string();
         tokio::task::spawn_blocking(move || {
             let conn = conn
                 .lock()
                 .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
             conn.execute(
-                "INSERT INTO users (id, username, salt, verifier, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![id, username, salt, verifier, created_at],
+                "INSERT INTO users \
+                 (id, username, email, salt, verifier, created_at, role, status, auth_scheme, invited_by, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'active', ?8, ?9, ?6)",
+                params![id, username, email, salt, verifier, created_at, role, auth_scheme, invited_by],
             ).map_err(|e| match e {
                 rusqlite::Error::SqliteFailure(err, _)
                     if err.code == rusqlite::ErrorCode::ConstraintViolation =>
                 {
-                    ServerError::Conflict("username already exists".into())
+                    ServerError::Conflict("username or email already exists".into())
                 }
                 other => ServerError::from(other),
             })?;
             Ok(())
+        })
+        .await?
+    }
+
+    /// Count the total number of accounts. Used for first-run admin bootstrap.
+    pub async fn count_users(&self) -> Result<i64, ServerError> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
+            let count: i64 = conn.query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))?;
+            Ok(count)
+        })
+        .await?
+    }
+
+    /// Whether an account already exists for the given email (case-insensitive).
+    pub async fn email_exists(&self, email: &str) -> Result<bool, ServerError> {
+        let conn = self.conn.clone();
+        let email = email.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
+            let exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM users WHERE email = ?1 COLLATE NOCASE)",
+                params![email],
+                |row| row.get(0),
+            )?;
+            Ok(exists)
+        })
+        .await?
+    }
+
+    /// Set an account's status (`active`/`disabled`) by username, returning
+    /// whether a row was updated. Admin issuance of this lands in #176; exposed
+    /// here as the storage seam (and for tests).
+    pub async fn set_user_status(&self, username: &str, status: &str) -> Result<bool, ServerError> {
+        let conn = self.conn.clone();
+        let username = username.to_string();
+        let status = status.to_string();
+        let updated_at = chrono::Utc::now().to_rfc3339();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
+            let count = conn.execute(
+                "UPDATE users SET status = ?2, updated_at = ?3 WHERE username = ?1",
+                params![username, status, updated_at],
+            )?;
+            Ok(count > 0)
         })
         .await?
     }
@@ -116,8 +256,9 @@ impl ServerDb {
             let conn = conn
                 .lock()
                 .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
-            let mut stmt =
-                conn.prepare("SELECT id, username, salt, verifier FROM users WHERE username = ?1")?;
+            let mut stmt = conn.prepare(
+                "SELECT id, username, salt, verifier, role, status FROM users WHERE username = ?1",
+            )?;
             let user = stmt
                 .query_row(params![username], |row| {
                     Ok(User {
@@ -125,10 +266,91 @@ impl ServerDb {
                         username: row.get(1)?,
                         salt: row.get(2)?,
                         verifier: row.get(3)?,
+                        role: row.get(4)?,
+                        status: row.get(5)?,
                     })
                 })
                 .optional()?;
             Ok(user)
+        })
+        .await?
+    }
+
+    // ── Invites ───────────────────────────────────────────────────────────────
+    //
+    // Minimal redemption-side mechanism for the `invite-only` registration
+    // policy. The admin-facing issuance API is #176; `create_invite` exists so
+    // that path (and tests) have a seam to write rows, while `redeem_invite`
+    // is the hook `register` calls.
+
+    /// Insert an invite row. `token_hash` is the SHA-256 of the raw invite
+    /// token (the raw token is never stored, mirroring session tokens).
+    pub async fn create_invite(
+        &self,
+        token_hash: &str,
+        email: Option<&str>,
+        role: &str,
+        created_by: Option<&str>,
+        expires_at: Option<&str>,
+    ) -> Result<(), ServerError> {
+        let conn = self.conn.clone();
+        let token_hash = token_hash.to_string();
+        let email = email.map(str::to_string);
+        let role = role.to_string();
+        let created_by = created_by.map(str::to_string);
+        let expires_at = expires_at.map(str::to_string);
+        let created_at = chrono::Utc::now().to_rfc3339();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
+            conn.execute(
+                "INSERT INTO invites (token_hash, email, role, created_by, created_at, expires_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![token_hash, email, role, created_by, created_at, expires_at],
+            )?;
+            Ok(())
+        })
+        .await?
+    }
+
+    /// Atomically redeem a valid, unredeemed, unexpired invite by token hash,
+    /// returning the granted role and any bound email. Returns `None` if the
+    /// token is unknown, already redeemed, or expired.
+    pub async fn redeem_invite(
+        &self,
+        token_hash: &str,
+        redeemed_by: &str,
+    ) -> Result<Option<InviteGrant>, ServerError> {
+        let conn = self.conn.clone();
+        let token_hash = token_hash.to_string();
+        let redeemed_by = redeemed_by.to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
+            // Single UPDATE…RETURNING marks the row redeemed and yields the
+            // grant in one statement, so concurrent redemptions can't double-use
+            // a token (the second sees redeemed_at IS NOT NULL and matches zero
+            // rows).
+            let grant = conn
+                .query_row(
+                    "UPDATE invites SET redeemed_at = ?2, redeemed_by = ?3 \
+                     WHERE token_hash = ?1 AND redeemed_at IS NULL \
+                       AND (expires_at IS NULL OR expires_at > ?2) \
+                     RETURNING role, email, created_by",
+                    params![token_hash, now, redeemed_by],
+                    |row| {
+                        Ok(InviteGrant {
+                            role: row.get(0)?,
+                            email: row.get(1)?,
+                            created_by: row.get(2)?,
+                        })
+                    },
+                )
+                .optional()?;
+            Ok(grant)
         })
         .await?
     }
@@ -273,12 +495,19 @@ impl ServerDb {
     // ── Blobs ─────────────────────────────────────────────────────────────────
 
     /// Insert a blob (put-if-absent: fails on duplicate path).
+    ///
+    /// Enforces the aggregate per-user storage quota: the sum of all blob bytes
+    /// across every vault owned by the blob's owner must not exceed the user's
+    /// `storage_quota_bytes` (or `default_quota_bytes` when the column is NULL).
+    /// The quota check and the INSERT run under the same connection lock, so
+    /// concurrent uploads can't race past the cap.
     pub async fn put_blob(
         &self,
         path: &str,
         vault_id: &str,
         data: Vec<u8>,
         content_hash: &str,
+        default_quota_bytes: i64,
     ) -> Result<BlobMeta, ServerError> {
         let conn = self.conn.clone();
         let path = path.to_string();
@@ -295,6 +524,34 @@ impl ServerDb {
             let conn = conn
                 .lock()
                 .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
+
+            // Resolve the owning user and their effective quota.
+            let owner: Option<(String, Option<i64>)> = conn
+                .query_row(
+                    "SELECT u.id, u.storage_quota_bytes \
+                     FROM vaults v JOIN users u ON u.id = v.user_id \
+                     WHERE v.id = ?1",
+                    params![vault_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            if let Some((user_id, quota_override)) = owner {
+                let quota = quota_override.unwrap_or(default_quota_bytes);
+                // Aggregate bytes already stored across all of the user's vaults.
+                let used: i64 = conn.query_row(
+                    "SELECT COALESCE(SUM(b.size), 0) \
+                     FROM blobs b JOIN vaults v ON v.id = b.vault_id \
+                     WHERE v.user_id = ?1",
+                    params![user_id],
+                    |row| row.get(0),
+                )?;
+                if used.saturating_add(size) > quota {
+                    return Err(ServerError::QuotaExceeded(format!(
+                        "storage quota exceeded: {used} + {size} bytes would exceed {quota}"
+                    )));
+                }
+            }
+
             conn.execute(
                 "INSERT INTO blobs (path, vault_id, data, size, content_hash, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![p, vault_id, data, size, hash, ts],

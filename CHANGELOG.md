@@ -50,6 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Published vault format test vectors (`docs/security/test-vectors.md`) with binary fixtures and a CI conformance test, so third-party implementations can verify byte-for-byte compatibility with the v1 vault format
 - Account Secret Key (`A1-…` format): a high-entropy key combined with your password during server sign-in, so a stolen password alone cannot authenticate to the sync server
 - Two-secret key derivation for the sync server's SRP-6a verifier — server authentication now requires both the password and the account Secret Key, while the local vault still opens with the password (or vault recovery key) alone
+- Multi-user accounts for the self-hosted sync server: email sign-in identity, admin/user roles, and active/disabled account status
+- Server registration policy (`LDGR_REGISTRATION`): `open`, `invite-only` (default), or `admin-only`, with invite-token redemption for invite-only instances
+- First-run admin bootstrap for the sync server: seed an admin from `LDGR_ADMIN_EMAIL` (recommended for docker-compose), or the first account to register becomes the admin
+- Per-user storage quotas on the sync server, with a configurable server default (`LDGR_DEFAULT_QUOTA_BYTES`, default 1 GiB) and optional per-account override; uploads exceeding the quota are rejected
 
 ### Fixed
 

@@ -9,11 +9,15 @@ pub enum ServerError {
     Conflict(String),
     #[error("unauthorized")]
     Unauthorized,
+    #[error("forbidden: {0}")]
+    Forbidden(String),
     #[error("bad request: {0}")]
     BadRequest(String),
     #[error("payload too large")]
     #[allow(dead_code)]
     PayloadTooLarge,
+    #[error("storage quota exceeded: {0}")]
+    QuotaExceeded(String),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -38,8 +42,9 @@ impl IntoResponse for ServerError {
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::Conflict(_) => StatusCode::CONFLICT,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
+            Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
-            Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::PayloadTooLarge | Self::QuotaExceeded(_) => StatusCode::PAYLOAD_TOO_LARGE,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         // Don't leak internal details to clients
