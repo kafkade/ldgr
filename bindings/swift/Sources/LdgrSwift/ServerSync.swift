@@ -187,4 +187,158 @@ public enum LdgrSync {
             token: token
         )
     }
+
+    /// Build an idiomatic ``LdgrSyncSession`` targeting `baseURL`.
+    ///
+    /// Prefer this over ``makeClient(baseURL:session:)`` from host apps: the
+    /// session exposes only Swift-native types and `LdgrSwift` errors, so callers
+    /// don't need to import the generated `LdgrFFI` module.
+    public static func makeSession(
+        baseURL: URL,
+        session: URLSession = .shared
+    ) -> LdgrSyncSession {
+        LdgrSyncSession(client: makeClient(baseURL: baseURL, session: session))
+    }
+
+    /// Build an idiomatic ``LdgrSyncSession`` that resumes a persisted `token`.
+    public static func makeSession(
+        baseURL: URL,
+        token: String,
+        session: URLSession = .shared
+    ) -> LdgrSyncSession {
+        LdgrSyncSession(client: makeClient(baseURL: baseURL, token: token, session: session))
+    }
+}
+
+// MARK: - Idiomatic session wrapper
+
+/// Metadata about a remote encrypted batch, in Swift-native types.
+public struct RemoteBatchMeta: Sendable {
+    public let batchId: String
+    public let deviceId: String
+    public let path: String
+    public let size: UInt64
+    public let contentHash: String?
+    /// Server-reported last-modified timestamp (RFC 3339). Used as the pull
+    /// cursor high-water mark.
+    public let modifiedAt: String?
+}
+
+/// Result of uploading an encrypted blob.
+public struct PutBlobResult: Sendable {
+    public let path: String
+    public let size: UInt64
+    public let contentHash: String
+}
+
+/// Idiomatic async/await wrapper around the server-sync FFI client.
+///
+/// Mirrors ``LdgrClient``: it hides the generated `LdgrFFI` types behind
+/// Swift-native types (`Data`, `String`, ``RemoteBatchMeta``) and maps
+/// `FfiSyncError` to ``LdgrSyncError``, so host apps only ever depend on the
+/// `LdgrSwift` module. The heavy lifting (SRP-6a auth, routing) stays in Rust.
+public final class LdgrSyncSession: @unchecked Sendable {
+    private let client: LdgrSyncClient
+
+    init(client: LdgrSyncClient) {
+        self.client = client
+    }
+
+    /// The current session token, if authenticated.
+    public func token() async -> String? {
+        await client.token()
+    }
+
+    /// Whether the session holds a token.
+    public func isAuthenticated() async -> Bool {
+        await client.isAuthenticated()
+    }
+
+    /// Register a new single-secret account. Returns the new user id.
+    public func register(username: String, password: Data) async throws -> String {
+        try await mapping { try await client.register(username: username, password: password) }
+    }
+
+    /// Sign in (single-secret SRP-6a) and store the session token internally.
+    public func login(username: String, password: Data) async throws {
+        try await mapping { try await client.login(username: username, password: password) }
+    }
+
+    /// Create a vault on the server (idempotent enrollment). Returns its path.
+    @discardableResult
+    public func createVault(vaultId: String) async throws -> String {
+        try await mapping { try await client.createVault(vaultId: vaultId) }
+    }
+
+    /// Register/refresh this device's record on the server.
+    public func putDevice(vaultId: String, deviceId: String, encryptedInfo: Data) async throws {
+        try await mapping {
+            try await client.putDevice(
+                vaultId: vaultId,
+                deviceId: deviceId,
+                encryptedInfo: encryptedInfo
+            )
+        }
+    }
+
+    /// Upload an encrypted batch blob.
+    @discardableResult
+    public func putBatch(
+        vaultId: String,
+        deviceId: String,
+        batchId: String,
+        ciphertext: Data
+    ) async throws -> PutBlobResult {
+        try await mapping {
+            let r = try await client.putBatch(
+                vaultId: vaultId,
+                deviceId: deviceId,
+                batchId: batchId,
+                ciphertext: ciphertext
+            )
+            return PutBlobResult(path: r.path, size: r.size, contentHash: r.contentHash)
+        }
+    }
+
+    /// Download an encrypted batch blob.
+    public func getBatch(vaultId: String, deviceId: String, batchId: String) async throws -> Data {
+        try await mapping {
+            try await client.getBatch(vaultId: vaultId, deviceId: deviceId, batchId: batchId)
+        }
+    }
+
+    /// List remote batches, newest-first relative to `since` (RFC 3339 cursor).
+    public func listRemoteBatches(
+        vaultId: String,
+        since: String?,
+        deviceId: String?,
+        limit: UInt32?
+    ) async throws -> [RemoteBatchMeta] {
+        try await mapping {
+            try await client.listRemoteBatches(
+                vaultId: vaultId,
+                since: since,
+                deviceId: deviceId,
+                limit: limit
+            ).map {
+                RemoteBatchMeta(
+                    batchId: $0.batchId,
+                    deviceId: $0.deviceId,
+                    path: $0.path,
+                    size: $0.size,
+                    contentHash: $0.contentHash,
+                    modifiedAt: $0.modifiedAt
+                )
+            }
+        }
+    }
+
+    /// Run `body`, converting any `FfiSyncError` into ``LdgrSyncError``.
+    private func mapping<T>(_ body: () async throws -> T) async throws -> T {
+        do {
+            return try await body()
+        } catch let error as FfiSyncError {
+            throw LdgrSyncError(from: error)
+        }
+    }
 }

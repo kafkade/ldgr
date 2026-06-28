@@ -202,6 +202,43 @@ pub fn ingest_batch(
     })
 }
 
+// ── Session-key convenience entry points ─────────────────────────────────────
+//
+// The [`VaultKey`] type is deliberately non-constructible outside `ldgr-core`
+// (`VaultKey::from_bytes` is `pub(crate)`), which keeps the sensitive key type
+// encapsulated. FFI / WASM hosts only ever hold the raw 32-byte session key
+// (exported via `UnlockedVault::export_session_key`), so these thin wrappers
+// rebuild the [`VaultKey`] inside the crate and delegate to the canonical
+// pipeline functions above. No additional crypto is performed here.
+
+/// Like [`export_pending_batch`], but accepting the raw 32-byte vault session
+/// key (as exported by `UnlockedVault::export_session_key`) instead of a
+/// [`VaultKey`]. Intended for FFI/WASM hosts that cannot construct a
+/// [`VaultKey`] directly.
+pub fn export_pending_batch_with_session_key(
+    conn: &Connection,
+    device_id: &str,
+    session_key: &[u8; 32],
+) -> Result<Option<ExportedBatch>, PipelineError> {
+    export_pending_batch(conn, device_id, &VaultKey::from_bytes(*session_key))
+}
+
+/// Like [`ingest_batch`], but accepting the raw 32-byte vault session key
+/// instead of a [`VaultKey`]. Intended for FFI/WASM hosts.
+pub fn ingest_batch_with_session_key(
+    conn: &Connection,
+    local_device_id: &str,
+    session_key: &[u8; 32],
+    ciphertext: &[u8],
+) -> Result<IngestOutcome, PipelineError> {
+    ingest_batch(
+        conn,
+        local_device_id,
+        &VaultKey::from_bytes(*session_key),
+        ciphertext,
+    )
+}
+
 // ── Blob framing ─────────────────────────────────────────────────────────────
 
 /// Seal a batch into the canonical blob: `json(encrypt_item(vk, json(batch)))`.
@@ -496,6 +533,41 @@ mod tests {
 
         // Apply did not echo into B's outbox.
         assert_eq!(pending_event_count(&b).unwrap(), 0);
+    }
+
+    #[test]
+    fn session_key_entry_points_round_trip() {
+        // The FFI/WASM seam never holds a `VaultKey` (it is non-constructible
+        // outside this crate); it only has the raw 32-byte session key. Verify
+        // the `*_with_session_key` wrappers reproduce the entity on a second
+        // device exactly like the `VaultKey`-typed path, and reject a wrong key.
+        let vk = VaultKey::generate();
+        let session_key = *vk.as_bytes();
+
+        let a = vault();
+        let acct = seed_account(&a, "dev_a", 1, "Assets:Checking");
+
+        let exported = export_pending_batch_with_session_key(&a, "dev_a", &session_key)
+            .unwrap()
+            .expect("a pending batch");
+        assert_eq!(exported.device_id, "dev_a");
+        assert!(!exported.event_ids.is_empty());
+
+        let b = vault();
+        let outcome =
+            ingest_batch_with_session_key(&b, "dev_b", &session_key, &exported.ciphertext).unwrap();
+        assert_eq!(outcome.applied, 1);
+        assert_eq!(outcome.conflicts, 0);
+
+        let got = get_account(&b, &acct, &ListOptions::default())
+            .unwrap()
+            .expect("account present on B");
+        assert_eq!(got.name, "Assets:Checking");
+
+        // A wrong session key must fail to decrypt — never silently accepted.
+        let wrong = *VaultKey::generate().as_bytes();
+        let c = vault();
+        assert!(ingest_batch_with_session_key(&c, "dev_c", &wrong, &exported.ciphertext).is_err());
     }
 
     #[test]
