@@ -100,15 +100,30 @@ cargo run -p ldgr-server
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `LDGR_BIND_ADDR` | `127.0.0.1:8080` | Listen address |
-| `LDGR_DB_PATH` | `ldgr-server.db` | SQLite database path |
+| `LDGR_BIND_ADDR` | `127.0.0.1:8080` | Listen address (Docker image overrides to `0.0.0.0:8080`) |
+| `LDGR_DB_PATH` | `ldgr-server.db` | SQLite database path (Docker image overrides to `/data/ldgr-server.db`) |
+| `LDGR_REGISTRATION` | `invite-only` | Who may register: `open`, `invite-only`, or `admin-only` |
+| `LDGR_ADMIN_EMAIL` | (unset) | Seeds the first admin; that account bypasses the registration policy |
 | `LDGR_SESSION_TTL_HOURS` | `720` | Session lifetime (30 days) |
-| `LDGR_MAX_BLOB_BYTES` | `52428800` | Max blob size (50 MB) |
 | `LDGR_RELAY_TTL_MINUTES` | `10` | Key exchange relay offer TTL |
+| `LDGR_MAX_BLOB_BYTES` | `52428800` | Max blob size (50 MB) |
+| `LDGR_SRP_HANDSHAKE_TTL_SECS` | `120` | Login handshake lifetime (seconds) |
+| `LDGR_DEFAULT_QUOTA_BYTES` | `1073741824` | Default per-user storage quota (1 GiB) |
+| `LDGR_SERVER_NAME` | `ldgr-server` | Cosmetic server name advertised by the discovery endpoint |
+
+> **New to sync?** The default registration policy is `invite-only` — for a personal
+> instance you'll usually want `LDGR_REGISTRATION=open`. See the full walkthrough
+> below.
 
 **API endpoints**: Register, login (SRP-6a), vault management, encrypted batch
 and snapshot CRUD, device registration, and key exchange relay. See the
 [architecture doc](docs/ldgr-architecture.md) for details.
+
+**Setting it up across devices?** The
+[Cross-Client Sync Setup guide](docs/sync-setup.md) is the authoritative,
+step-by-step walkthrough — deploy the server, create an account, register each
+device (CLI / iOS / macOS / web), sync a transaction between two clients, review
+conflicts, and understand the threat model.
 
 ## Architecture
 
