@@ -14,7 +14,7 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = ["core"]
 core = ["ldgr-core/core"]
-sync = ["ldgr-core/sync"]
+sync = ["ldgr-core/sync", "dep:wasm-bindgen-futures"]
 import-export = ["ldgr-core/import-export"]
 market = ["ldgr-core/market"]
 budget = ["ldgr-core/budget"]
@@ -24,6 +24,7 @@ loans = ["ldgr-core/loans"]
 [dependencies]
 ldgr-core = { path = "../ldgr-core", default-features = false }
 wasm-bindgen = "0.2"
+wasm-bindgen-futures = { version = "0.4", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde-wasm-bindgen = "0.6"

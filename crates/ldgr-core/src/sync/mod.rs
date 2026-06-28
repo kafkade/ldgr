@@ -6,6 +6,7 @@
 
 pub mod conflicts;
 pub mod events;
+pub mod framing;
 pub mod onboarding;
 pub mod payload;
 pub mod snapshot;
@@ -24,6 +25,9 @@ pub mod pipeline;
 
 pub use conflicts::*;
 pub use events::*;
+pub use framing::{
+    FramingError, open_batch, open_batch_with_session_key, seal_batch, seal_batch_with_session_key,
+};
 pub use onboarding::{
     OnboardingInitiation, OnboardingResponse, QrPayload, complete_onboarding, decrypt_vault_key,
     encrypt_vault_key, initiate_onboarding, respond_to_onboarding,

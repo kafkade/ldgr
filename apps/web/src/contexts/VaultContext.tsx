@@ -6,10 +6,11 @@ import {
   useState,
   useCallback,
   useEffect,
+  useRef,
   type ReactNode,
 } from 'react';
 import type { Database } from 'sql.js';
-import type { LdgrWasm, WasmModule } from '@/lib/wasm';
+import type { LdgrWasm, WasmModule, WasmSyncClient } from '@/lib/wasm';
 import { loadWasm } from '@/lib/wasm';
 import {
   saveVaultBlob,
@@ -18,6 +19,24 @@ import {
   createDatabase,
   exportDatabase,
 } from '@/lib/storage';
+import {
+  createAccount as emitCreateAccount,
+  createTransaction as emitCreateTransaction,
+  deleteTransaction as emitDeleteTransaction,
+  runSync,
+  loadServerConfig,
+  saveServerConfig,
+  loadToken,
+  saveToken,
+  clearToken,
+  getOrCreateDeviceId,
+  listOpenConflicts,
+  resolveConflict,
+  makeFetchCallback,
+  type ServerConfig,
+  type SyncOutcome,
+  type ConflictRow,
+} from '@/lib/sync';
 import type {
   StoredAccount,
   StoredTransaction,
@@ -61,6 +80,20 @@ interface VaultContextValue {
   deleteTransaction: (id: string) => void;
   saveVault: () => Promise<void>;
 
+  // ── Sync ──
+  serverConfig: ServerConfig | null;
+  serverAuthenticated: boolean;
+  syncing: boolean;
+  deviceId: string | null;
+  conflicts: ConflictRow[];
+  configureServer: (cfg: ServerConfig) => Promise<void>;
+  registerServer: (username: string, password: string) => Promise<void>;
+  loginServer: (username: string, password: string) => Promise<void>;
+  logoutServer: () => Promise<void>;
+  createRemoteVault: () => Promise<void>;
+  sync: () => Promise<SyncOutcome>;
+  resolveSyncConflict: (id: string, keepRemote: boolean) => Promise<void>;
+
   getBalanceReport: (accountFilter?: string) => BalanceReport | null;
   getRegisterReport: (accountFilter?: string, begin?: string, end?: string) => RegisterReport | null;
   getTransactionsForWasm: () => Transaction[];
@@ -91,6 +124,22 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     transactions: [],
     postings: [],
   });
+
+  const clientRef = useRef<WasmSyncClient | null>(null);
+  const [serverConfig, setServerConfig] = useState<ServerConfig | null>(null);
+  const [serverAuthenticated, setServerAuthenticated] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [deviceId, setDeviceId] = useState<string | null>(null);
+  const [conflicts, setConflicts] = useState<ConflictRow[]>([]);
+
+  // Hydrate the in-memory sync state from a freshly opened database.
+  const initSyncState = useCallback((database: Database) => {
+    clientRef.current = null;
+    setServerConfig(loadServerConfig(database));
+    setDeviceId(getOrCreateDeviceId(database));
+    setConflicts(listOpenConflicts(database));
+    setServerAuthenticated(loadToken(database) !== null);
+  }, []);
 
   // Load WASM on mount
   useEffect(() => {
@@ -190,6 +239,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
       setVault(v);
       setDb(database);
       refreshData(database);
+      initSyncState(database);
       setState((s) => ({
         ...s,
         status: 'unlocked',
@@ -200,7 +250,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
       result.free();
       return recoveryKey;
     },
-    [wasm, refreshData],
+    [wasm, refreshData, initSyncState],
   );
 
   const unlockVault = useCallback(
@@ -223,6 +273,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
       setVault(v);
       setDb(database);
       refreshData(database);
+      initSyncState(database);
       setState((s) => ({
         ...s,
         status: 'unlocked',
@@ -230,30 +281,27 @@ export function VaultProvider({ children }: { children: ReactNode }) {
         error: null,
       }));
     },
-    [wasm, refreshData],
+    [wasm, refreshData, initSyncState],
   );
 
   const lockVault = useCallback(() => {
     if (vault) vault.free();
     if (db) db.close();
+    clientRef.current = null;
     setVault(null);
     setDb(null);
     setData({ accounts: [], transactions: [], postings: [] });
+    setServerConfig(null);
+    setServerAuthenticated(false);
+    setDeviceId(null);
+    setConflicts([]);
     setState((s) => ({ ...s, status: 'locked', vaultName: null }));
   }, [vault, db]);
-
-  const uid = () => crypto.randomUUID();
-  const now = () => new Date().toISOString();
 
   const addAccount = useCallback(
     (name: string, type: string, commodity: string) => {
       if (!db) return;
-      const ts = now();
-      db.run(
-        `INSERT INTO accounts (id, name, type, commodity, created_at, modified_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [uid(), name, type, commodity, ts, ts],
-      );
+      emitCreateAccount(db, { name, type, commodity });
       refreshData(db);
     },
     [db, refreshData],
@@ -266,20 +314,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
       postings: Array<{ accountId: string; amount: string; commodity: string }>,
     ) => {
       if (!db) return;
-      const ts = now();
-      const txId = uid();
-      db.run(
-        `INSERT INTO transactions (id, date, status, description, created_at, modified_at)
-         VALUES (?, ?, 'unmarked', ?, ?, ?)`,
-        [txId, date, description, ts, ts],
-      );
-      postings.forEach((p, i) => {
-        db.run(
-          `INSERT INTO postings (id, transaction_id, account_id, amount_quantity, amount_commodity, posting_order, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [uid(), txId, p.accountId, p.amount, p.commodity, i, ts],
-        );
-      });
+      emitCreateTransaction(db, date, description, postings);
       refreshData(db);
     },
     [db, refreshData],
@@ -288,11 +323,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const deleteTransaction = useCallback(
     (id: string) => {
       if (!db) return;
-      const ts = now();
-      db.run(
-        `UPDATE transactions SET deleted = 1, modified_at = ? WHERE id = ?`,
-        [ts, id],
-      );
+      emitDeleteTransaction(db, id);
       refreshData(db);
     },
     [db, refreshData],
@@ -309,6 +340,99 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     const vaultBlob = vault.serializeVault();
     await saveVaultBlob(state.vaultName, vaultBlob);
   }, [vault, db, state.vaultName]);
+
+  // ── Sync actions ──────────────────────────────────────────────────────────────
+
+  const buildClient = useCallback(
+    (cfg: ServerConfig, token?: string | null): WasmSyncClient => {
+      if (!wasm) throw new Error('WASM not loaded');
+      const callback = makeFetchCallback(cfg.serverUrl);
+      return token
+        ? wasm.WasmSyncClient.withToken(callback, token)
+        : new wasm.WasmSyncClient(callback);
+    },
+    [wasm],
+  );
+
+  const configureServer = useCallback(
+    async (cfg: ServerConfig) => {
+      if (!db) return;
+      saveServerConfig(db, cfg);
+      setServerConfig(cfg);
+      clientRef.current = null;
+      await saveVault();
+    },
+    [db, saveVault],
+  );
+
+  const registerServer = useCallback(
+    async (username: string, password: string) => {
+      if (!serverConfig) throw new Error('Configure the server first');
+      const client = buildClient(serverConfig);
+      await client.register(username, password);
+    },
+    [serverConfig, buildClient],
+  );
+
+  const loginServer = useCallback(
+    async (username: string, password: string) => {
+      if (!db || !serverConfig) throw new Error('Configure the server first');
+      const client = buildClient(serverConfig);
+      await client.login(username, password);
+      clientRef.current = client;
+      const token = client.token;
+      if (token) saveToken(db, token);
+      setServerAuthenticated(client.isAuthenticated());
+      await saveVault();
+    },
+    [db, serverConfig, buildClient, saveVault],
+  );
+
+  const logoutServer = useCallback(async () => {
+    if (!db) return;
+    clientRef.current?.logout();
+    clientRef.current = null;
+    clearToken(db);
+    setServerAuthenticated(false);
+    await saveVault();
+  }, [db, saveVault]);
+
+  const createRemoteVault = useCallback(async () => {
+    if (!db || !serverConfig) throw new Error('Configure the server first');
+    const client =
+      clientRef.current ?? buildClient(serverConfig, loadToken(db));
+    clientRef.current = client;
+    await client.createVault(serverConfig.vaultId);
+  }, [db, serverConfig, buildClient]);
+
+  const sync = useCallback(async (): Promise<SyncOutcome> => {
+    if (!wasm || !vault || !db || !serverConfig)
+      throw new Error('Sync is not configured');
+    const client =
+      clientRef.current ?? buildClient(serverConfig, loadToken(db));
+    clientRef.current = client;
+    setSyncing(true);
+    try {
+      const outcome = await runSync(db, wasm, vault, client, serverConfig.vaultId);
+      refreshData(db);
+      setConflicts(listOpenConflicts(db));
+      await saveVault();
+      return outcome;
+    } finally {
+      setSyncing(false);
+    }
+  }, [wasm, vault, db, serverConfig, buildClient, refreshData, saveVault]);
+
+  const resolveSyncConflict = useCallback(
+    async (id: string, keepRemote: boolean) => {
+      if (!db) return;
+      resolveConflict(db, id, keepRemote);
+      refreshData(db);
+      setConflicts(listOpenConflicts(db));
+      await saveVault();
+    },
+    [db, refreshData, saveVault],
+  );
 
   const getTransactionsForWasm = useCallback((): Transaction[] => {
     if (!db) return [];
@@ -393,6 +517,18 @@ export function VaultProvider({ children }: { children: ReactNode }) {
         addTransaction,
         deleteTransaction,
         saveVault,
+        serverConfig,
+        serverAuthenticated,
+        syncing,
+        deviceId,
+        conflicts,
+        configureServer,
+        registerServer,
+        loginServer,
+        logoutServer,
+        createRemoteVault,
+        sync,
+        resolveSyncConflict,
         getBalanceReport,
         getRegisterReport,
         getTransactionsForWasm,

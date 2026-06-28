@@ -222,3 +222,98 @@ describe("sql.js with ldgr schema", () => {
     db.close();
   });
 });
+
+describe("schema migration of an existing pre-sync vault", () => {
+  // The schema older vaults were created with: postings has no version or
+  // balance-assertion columns, and the sync_conflicts table does not exist.
+  const OLD_SCHEMA_SQL = `
+    CREATE TABLE accounts (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+      type TEXT NOT NULL, commodity TEXT NOT NULL DEFAULT 'USD',
+      parent_id TEXT, note TEXT,
+      created_at TEXT NOT NULL, modified_at TEXT NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1, deleted INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE transactions (
+      id TEXT PRIMARY KEY, date TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'unmarked',
+      code TEXT, description TEXT NOT NULL, comment TEXT,
+      created_at TEXT NOT NULL, modified_at TEXT NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1, deleted INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE postings (
+      id TEXT PRIMARY KEY,
+      transaction_id TEXT NOT NULL REFERENCES transactions(id),
+      account_id TEXT NOT NULL REFERENCES accounts(id),
+      amount_quantity TEXT, amount_commodity TEXT,
+      posting_order INTEGER NOT NULL, created_at TEXT NOT NULL
+    );
+  `;
+
+  function oldVault(SQL) {
+    const db = new SQL.Database();
+    db.run(OLD_SCHEMA_SQL);
+    const ts = "2024-01-15T00:00:00Z";
+    db.run(
+      `INSERT INTO accounts (id,name,type,created_at,modified_at) VALUES ('a1','Assets:Cash','asset',?,?)`,
+      [ts, ts],
+    );
+    db.run(
+      `INSERT INTO transactions (id,date,description,created_at,modified_at) VALUES ('t1','2024-01-15','Opening',?,?)`,
+      [ts, ts],
+    );
+    db.run(
+      `INSERT INTO postings (id,transaction_id,account_id,amount_quantity,amount_commodity,posting_order,created_at)
+       VALUES ('p1','t1','a1','-50.00','USD',0,?)`,
+      [ts],
+    );
+    return db;
+  }
+
+  test("adds new posting columns and sync_conflicts, preserving existing data", async () => {
+    // Import the real migrate() from the app so the test can never drift from it.
+    const { migrate } = await import("../src/lib/storage.ts");
+    const SQL = await initSqlJs();
+    const db = oldVault(SQL);
+
+    migrate(db);
+
+    const cols = db
+      .exec("PRAGMA table_info(postings)")[0]
+      .values.map((r) => r[1]);
+    assert.ok(cols.includes("balance_assertion_quantity"));
+    assert.ok(cols.includes("balance_assertion_commodity"));
+    assert.ok(cols.includes("version"));
+
+    const tables = db
+      .exec("SELECT name FROM sqlite_master WHERE type='table'")
+      .flatMap((r) => r.values.map((v) => v[0]));
+    assert.ok(tables.includes("sync_conflicts"));
+    assert.ok(tables.includes("sync_events"));
+    assert.ok(tables.includes("sync_state"));
+
+    // Existing rows survive; backfilled posting version defaults to 1.
+    const row = db.exec(
+      "SELECT amount_quantity, version FROM postings WHERE id = 'p1'",
+    )[0].values[0];
+    assert.equal(row[0], "-50.00");
+    assert.equal(row[1], 1);
+
+    db.close();
+  });
+
+  test("is idempotent when run repeatedly", async () => {
+    const { migrate } = await import("../src/lib/storage.ts");
+    const SQL = await initSqlJs();
+    const db = oldVault(SQL);
+
+    migrate(db);
+    migrate(db); // must not throw or duplicate columns
+
+    const versionCols = db
+      .exec("PRAGMA table_info(postings)")[0]
+      .values.filter((r) => r[1] === "version").length;
+    assert.equal(versionCols, 1);
+
+    db.close();
+  });
+});

@@ -23,16 +23,16 @@ use rusqlite::Connection;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::crypto::{CryptoError, SealedEnvelope, VaultKey, decrypt_item, encrypt_item};
+use crate::crypto::{CryptoError, VaultKey};
 use crate::storage::error::StorageError;
 use crate::storage::sync as sync_store;
 use crate::storage::{accounts, transactions};
 
 use super::conflicts::merge_events;
 use super::events::{
-    EntityType, EventBatch, Operation, SyncEvent, VectorClock, create_batch, deserialize_batch,
-    serialize_batch, total_order,
+    EntityType, EventBatch, Operation, SyncEvent, VectorClock, create_batch, total_order,
 };
+use super::framing::FramingError;
 use super::payload::{self, AccountPayload, DeletePayload, TransactionPayload};
 
 /// `sync_state` key holding the persisted local vector clock (JSON).
@@ -58,6 +58,15 @@ pub enum PipelineError {
     /// (`price`/`budget`/`goal`). Tracked by issue #203.
     #[error("unsupported entity type for apply: {0}")]
     UnsupportedEntity(String),
+}
+
+impl From<FramingError> for PipelineError {
+    fn from(e: FramingError) -> Self {
+        match e {
+            FramingError::Crypto(c) => Self::Crypto(c),
+            FramingError::Format(s) => Self::Format(s),
+        }
+    }
 }
 
 /// A composed, encrypted batch blob ready for upload.
@@ -242,19 +251,16 @@ pub fn ingest_batch_with_session_key(
 // ── Blob framing ─────────────────────────────────────────────────────────────
 
 /// Seal a batch into the canonical blob: `json(encrypt_item(vk, json(batch)))`.
+///
+/// Delegates to [`super::framing::seal_batch`] — the single source of truth for
+/// the blob layout — so CLI/iOS/web stay byte-cross-compatible.
 fn seal_batch(vault_key: &VaultKey, batch: &EventBatch) -> Result<Vec<u8>, PipelineError> {
-    let plaintext = serialize_batch(batch).map_err(PipelineError::Format)?;
-    let envelope = encrypt_item(vault_key, &plaintext)?;
-    serde_json::to_vec(&envelope)
-        .map_err(|e| PipelineError::Format(format!("failed to serialize sealed envelope: {e}")))
+    Ok(super::framing::seal_batch(vault_key, batch)?)
 }
 
 /// Inverse of [`seal_batch`]: decrypt and deserialize a canonical blob.
 fn open_batch(vault_key: &VaultKey, ciphertext: &[u8]) -> Result<EventBatch, PipelineError> {
-    let envelope: SealedEnvelope = serde_json::from_slice(ciphertext)
-        .map_err(|e| PipelineError::Format(format!("failed to parse sealed envelope: {e}")))?;
-    let plaintext = decrypt_item(vault_key, &envelope)?;
-    deserialize_batch(&plaintext).map_err(PipelineError::Format)
+    Ok(super::framing::open_batch(vault_key, ciphertext)?)
 }
 
 // ── Apply dispatch ───────────────────────────────────────────────────────────
@@ -365,7 +371,7 @@ fn persist_local_clock(conn: &Connection, clock: &VectorClock) -> Result<(), Pip
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::VaultKey;
+    use crate::crypto::{SealedEnvelope, VaultKey, decrypt_item};
     use crate::storage::accounts::{
         AccountType, ListOptions, NewAccount, create_account_with_sync, get_account, list_accounts,
         soft_delete_account_with_sync,
@@ -376,6 +382,7 @@ mod tests {
         NewPosting, NewTransaction, TransactionStatus, create_transaction_with_sync,
         get_transaction,
     };
+    use crate::sync::events::deserialize_batch;
 
     fn vault() -> Connection {
         let conn = Connection::open_in_memory().unwrap();

@@ -18,6 +18,40 @@ declare module '*pkg/ldgr_wasm' {
     clearItems(): void;
     get itemCount(): number;
     serializeVault(): Uint8Array;
+    sealBatch(eventBatchJson: string): Uint8Array;
+    openBatch(ciphertext: Uint8Array): string;
+    free(): void;
+  }
+
+  export class WasmSyncClient {
+    constructor(sendCallback: (request: any) => Promise<any>);
+    static withToken(
+      sendCallback: (request: any) => Promise<any>,
+      token: string,
+    ): WasmSyncClient;
+    get token(): string | undefined;
+    isAuthenticated(): boolean;
+    logout(): void;
+    register(username: string, password: string): Promise<void>;
+    login(username: string, password: string): Promise<void>;
+    createVault(vaultId: string): Promise<void>;
+    putBatch(
+      vaultId: string,
+      deviceId: string,
+      batchId: string,
+      ciphertext: Uint8Array,
+    ): Promise<void>;
+    getBatch(
+      vaultId: string,
+      deviceId: string,
+      batchId: string,
+    ): Promise<Uint8Array>;
+    listBatches(
+      vaultId: string,
+      since?: string | null,
+      deviceId?: string | null,
+      limit?: number | null,
+    ): Promise<string>;
     free(): void;
   }
 
@@ -28,6 +62,12 @@ declare module '*pkg/ldgr_wasm' {
   }
 
   export function parseJournal(text: string): string;
+  export function mergeBatch(
+    localPendingJson: string,
+    remoteBatchJson: string,
+    localClockJson: string,
+    now: string,
+  ): string;
   export function computeBalance(
     transactionsJson: string,
     accountFilter?: string,

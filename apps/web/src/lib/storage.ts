@@ -135,7 +135,10 @@ const SCHEMA_SQL = `
     amount_quantity TEXT,
     amount_commodity TEXT,
     posting_order INTEGER NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    balance_assertion_quantity TEXT,
+    balance_assertion_commodity TEXT,
+    version INTEGER NOT NULL DEFAULT 1
   );
 
   CREATE TABLE IF NOT EXISTS sync_events (
@@ -155,7 +158,80 @@ const SCHEMA_SQL = `
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS sync_conflicts (
+    id TEXT PRIMARY KEY,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    local_event_id TEXT NOT NULL,
+    remote_event_id TEXT NOT NULL,
+    local_payload BLOB NOT NULL,
+    remote_payload BLOB NOT NULL,
+    detected_at TEXT NOT NULL,
+    resolved INTEGER NOT NULL DEFAULT 0,
+    resolution TEXT
+  );
 `;
+
+// Idempotent migration for vaults created with an earlier schema. ALTER TABLE
+// ADD COLUMN appends columns at the end, so existing positional reads are
+// unaffected. Runs on every open (new and loaded databases).
+const SYNC_BACKFILL_SQL = `
+  CREATE TABLE IF NOT EXISTS sync_events (
+    id TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    payload BLOB NOT NULL,
+    lamport_clock INTEGER NOT NULL,
+    version INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    synced INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE TABLE IF NOT EXISTS sync_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS sync_conflicts (
+    id TEXT PRIMARY KEY,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    local_event_id TEXT NOT NULL,
+    remote_event_id TEXT NOT NULL,
+    local_payload BLOB NOT NULL,
+    remote_payload BLOB NOT NULL,
+    detected_at TEXT NOT NULL,
+    resolved INTEGER NOT NULL DEFAULT 0,
+    resolution TEXT
+  );
+`;
+
+function hasColumn(db: Database, table: string, column: string): boolean {
+  const res = db.exec(`PRAGMA table_info(${table})`);
+  if (res.length === 0) return false;
+  // table_info columns: cid, name, type, notnull, dflt_value, pk
+  return res[0].values.some((row) => row[1] === column);
+}
+
+/**
+ * Bring an existing database up to the current schema. Safe to run repeatedly.
+ * Adds the posting balance-assertion + version columns and the sync_conflicts
+ * table that older vaults predate, so the sync apply path can write canonical
+ * postings.
+ */
+export function migrate(db: Database): void {
+  db.run(SYNC_BACKFILL_SQL);
+  if (!hasColumn(db, 'postings', 'balance_assertion_quantity')) {
+    db.run('ALTER TABLE postings ADD COLUMN balance_assertion_quantity TEXT');
+  }
+  if (!hasColumn(db, 'postings', 'balance_assertion_commodity')) {
+    db.run('ALTER TABLE postings ADD COLUMN balance_assertion_commodity TEXT');
+  }
+  if (!hasColumn(db, 'postings', 'version')) {
+    db.run('ALTER TABLE postings ADD COLUMN version INTEGER NOT NULL DEFAULT 1');
+  }
+}
 
 let sqlPromise: Promise<typeof import('sql.js')> | null = null;
 
@@ -175,6 +251,7 @@ export async function createDatabase(data?: Uint8Array): Promise<Database> {
   if (!data) {
     db.run(SCHEMA_SQL);
   }
+  migrate(db);
   return db;
 }
 

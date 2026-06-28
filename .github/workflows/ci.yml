@@ -107,13 +107,13 @@ jobs:
 
       # Verify ldgr-core itself stays WASM-compilable
       - name: Build ldgr-core for WASM
-        run: cargo build -p ldgr-core --target wasm32-unknown-unknown --no-default-features --features core
+        run: cargo build -p ldgr-core --target wasm32-unknown-unknown --no-default-features --features core,sync
 
       # Build the wasm-bindgen package with optimizations
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
-      - name: Build ldgr-wasm (core)
-        run: wasm-pack build crates/ldgr-wasm --target web --release -- --no-default-features --features core
+      - name: Build ldgr-wasm (core + sync)
+        run: wasm-pack build crates/ldgr-wasm --target web --release -- --no-default-features --features core,sync
 
       # Enforce 2 MB compressed budget (per ADR-005)
       - name: Check bundle size

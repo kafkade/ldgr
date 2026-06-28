@@ -14,6 +14,9 @@ use wasm_bindgen::prelude::*;
 use ldgr_core::accounting::{parser, reports, types as acct};
 use ldgr_core::crypto::{self, Argon2Params};
 
+#[cfg(feature = "sync")]
+mod sync;
+
 // ── Error Helpers ──────────────────────────────────────────────────────────────
 
 fn crypto_err(e: crypto::CryptoError) -> JsError {
@@ -127,6 +130,43 @@ impl LdgrWasm {
     #[wasm_bindgen(js_name = serializeVault)]
     pub fn serialize_vault(&self) -> Result<Vec<u8>, JsError> {
         crypto::serialize_vault(&self.vault).map_err(crypto_err)
+    }
+}
+
+// ── Sync Batch Framing (sync feature) ────────────────────────────────────────────
+//
+// Seal/open the canonical encrypted sync blob using the unlocked vault's session
+// key. The raw key never crosses into JS — it stays inside this Rust handle
+// (zero-knowledge). The byte format is produced by `ldgr_core::sync::framing`,
+// the single source of truth shared with the CLI/iOS pipeline.
+
+#[cfg(feature = "sync")]
+#[wasm_bindgen]
+impl LdgrWasm {
+    /// Seal an [`EventBatch`](ldgr_core::sync::EventBatch) JSON string into the
+    /// canonical encrypted blob (`json(SealedEnvelope)`), ready for upload.
+    ///
+    /// `event_batch_json` must be the JSON form of an `EventBatch`
+    /// (`{device_id, events, vector_clock}`); each event's `payload` is a JSON
+    /// array of bytes.
+    #[wasm_bindgen(js_name = sealBatch)]
+    pub fn seal_batch(&self, event_batch_json: &str) -> Result<Vec<u8>, JsError> {
+        let batch: ldgr_core::sync::EventBatch = serde_json::from_str(event_batch_json)
+            .map_err(|e| JsError::new(&format!("invalid EventBatch JSON: {e}")))?;
+        let key = self.vault.export_session_key();
+        ldgr_core::sync::seal_batch_with_session_key(&key, &batch)
+            .map_err(|e| JsError::new(&format!("seal error: {e}")))
+    }
+
+    /// Decrypt a canonical blob back into an
+    /// [`EventBatch`](ldgr_core::sync::EventBatch) JSON string.
+    #[wasm_bindgen(js_name = openBatch)]
+    pub fn open_batch(&self, ciphertext: &[u8]) -> Result<String, JsError> {
+        let key = self.vault.export_session_key();
+        let batch = ldgr_core::sync::open_batch_with_session_key(&key, ciphertext)
+            .map_err(|e| JsError::new(&format!("open error: {e}")))?;
+        serde_json::to_string(&batch)
+            .map_err(|e| JsError::new(&format!("serialization error: {e}")))
     }
 }
 
