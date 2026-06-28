@@ -10,11 +10,12 @@ use ldgr_core::import::profile::{CsvProfile, apply_profile};
 use ldgr_core::import::rules::{ImportRule, apply_rules};
 use ldgr_core::storage::accounts::get_account_by_name;
 use ldgr_core::storage::transactions::{
-    NewPosting, NewTransaction, TransactionStatus, create_transaction,
+    NewPosting, NewTransaction, TransactionStatus, create_transaction_with_sync,
 };
 
 use crate::db;
 use crate::session;
+use crate::sync::bridge::cli_sync_context;
 
 /// Run the `import` command.
 pub fn run(vault_path: &Path, csv_path: &str, profile_name: Option<&str>) -> Result<()> {
@@ -99,7 +100,7 @@ pub fn run(vault_path: &Path, csv_path: &str, profile_name: Option<&str>) -> Res
             format!("-{amount_str}")
         };
 
-        create_transaction(
+        create_transaction_with_sync(
             &conn,
             &NewTransaction {
                 date: candidate.date.clone(),
@@ -124,6 +125,7 @@ pub fn run(vault_path: &Path, csv_path: &str, profile_name: Option<&str>) -> Res
                     },
                 ],
             },
+            &cli_sync_context(&conn)?,
         )?;
         imported += 1;
     }

@@ -4,11 +4,12 @@ use anyhow::{Result, bail};
 use comfy_table::{Table, presets::UTF8_FULL_CONDENSED};
 
 use ldgr_core::storage::accounts::{
-    AccountType, AccountUpdate, ListOptions, NewAccount, create_account, get_account_by_name,
-    list_accounts, soft_delete_account, update_account,
+    AccountType, AccountUpdate, ListOptions, NewAccount, create_account_with_sync,
+    get_account_by_name, list_accounts, soft_delete_account_with_sync, update_account_with_sync,
 };
 
 use crate::db;
+use crate::sync::bridge::cli_sync_context;
 
 /// List all accounts.
 pub fn run_list(vault_path: &std::path::Path, flat: bool) -> Result<()> {
@@ -58,7 +59,7 @@ pub fn run_add(
     // Auto-create parent accounts
     ensure_parents(&conn, name, acct_type)?;
 
-    let acct = create_account(
+    let acct = create_account_with_sync(
         &conn,
         &NewAccount {
             name: name.to_string(),
@@ -67,6 +68,7 @@ pub fn run_add(
             parent_id: None,
             note: None,
         },
+        &cli_sync_context(&conn)?,
     )?;
 
     eprintln!(
@@ -86,7 +88,7 @@ pub fn run_rename(vault_path: &std::path::Path, old_name: &str, new_name: &str) 
 
     let new_type = detect_account_type(new_name).unwrap_or(acct.account_type);
 
-    update_account(
+    update_account_with_sync(
         &conn,
         &acct.id,
         &AccountUpdate {
@@ -97,6 +99,7 @@ pub fn run_rename(vault_path: &std::path::Path, old_name: &str, new_name: &str) 
             note: acct.note.clone(),
             expected_version: acct.version,
         },
+        &cli_sync_context(&conn)?,
     )?;
 
     eprintln!("✓ Renamed: {old_name} → {new_name}");
@@ -110,7 +113,7 @@ pub fn run_delete(vault_path: &std::path::Path, name: &str) -> Result<()> {
     let acct = get_account_by_name(&conn, name)?
         .ok_or_else(|| anyhow::anyhow!("Account '{name}' not found"))?;
 
-    soft_delete_account(&conn, &acct.id)?;
+    soft_delete_account_with_sync(&conn, &acct.id, &cli_sync_context(&conn)?)?;
     eprintln!("✓ Deleted account: {name}");
     Ok(())
 }
@@ -161,7 +164,7 @@ fn ensure_parents(
         let parent_name = parts[..depth].join(":");
         if get_account_by_name(conn, &parent_name)?.is_none() {
             let parent_type = detect_account_type(&parent_name).unwrap_or(default_type);
-            create_account(
+            create_account_with_sync(
                 conn,
                 &NewAccount {
                     name: parent_name,
@@ -170,6 +173,7 @@ fn ensure_parents(
                     parent_id: None,
                     note: None,
                 },
+                &cli_sync_context(conn)?,
             )?;
         }
     }

@@ -211,6 +211,8 @@ enum SyncAction {
     Pull,
     /// Show sync status
     Status,
+    /// Review and resolve pending sync conflicts
+    Resolve,
 }
 
 #[derive(clap::Subcommand)]
@@ -397,6 +399,7 @@ fn main() {
             SyncAction::Push => commands::sync::run_push(&vault_path),
             SyncAction::Pull => commands::sync::run_pull(&vault_path),
             SyncAction::Status => commands::sync::run_status(&vault_path),
+            SyncAction::Resolve => commands::sync::run_resolve(&vault_path),
         },
         Some(Commands::Config { action }) => match action {
             ConfigAction::Set { key, value } => commands::config::run_set(&key, &value),

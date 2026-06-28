@@ -5,6 +5,7 @@
 
 #![allow(dead_code)] // Trait methods used by implementations; not all called yet
 
+pub mod bridge;
 pub mod dropbox;
 pub mod server;
 pub mod webdav;

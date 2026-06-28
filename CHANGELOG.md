@@ -69,10 +69,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Swift/UniFFI vault bindings expose the batch-blob pipeline (`exportPendingBatch` / `ingestBatch`) so platform apps can compose and apply encrypted sync batches directly from an unlocked vault
 - Web app now syncs with a self-hosted `ldgr-server`: register or sign in via SRP-6a from vault settings, create or select a remote vault, and push/pull encrypted change batches over HTTPS — the server only ever sees encrypted blobs, never plaintext or key material (key derivation and batch sealing stay in WASM)
 - Web sync conflict review: concurrent edits to the same account or transaction are surfaced for review (keep local or keep remote) instead of being silently overwritten
+- CLI now syncs end-to-end with a self-hosted `ldgr-server`: `ldgr sync push` exports pending changes through the encrypted batch-blob pipeline and `ldgr sync pull` applies downloaded batches into the local vault, materializing accounts and transactions and surfacing concurrent-edit conflicts for review — replacing the previous file-staging placeholder that uploaded nothing and never applied pulled changes
+- `ldgr sync resolve` to review and resolve pending sync conflicts (keep local), and `ldgr sync status` now reports the pending-push event count and unresolved conflict count
 
 ### Fixed
 
 - `ldgr-server` router now uses axum 0.8 `{param}` path syntax; the previous `:param` syntax panicked at router construction under axum 0.8
+- CLI vault writes (add account, rename account, add/import/delete transaction) now record sync-outbox events, so locally created changes are actually included in the next push instead of being silently skipped
 - iOS vault writes (add account, add/delete transaction) now record sync-outbox events, so locally created changes are actually included in the next push instead of being silently skipped
 - Web vault writes (add account, add/delete transaction) now record sync-outbox events, so locally created changes are actually included in the next push instead of being silently skipped (the `sync_events`/`sync_state` tables were previously dead scaffolding)
 
