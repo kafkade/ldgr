@@ -1,0 +1,37 @@
+{
+  "format": "ldgr-sync-wire-vectors",
+  "version": 1,
+  "description": "Structural (decrypted/pre-encryption) known-answer vectors for the ldgr sync wire format. The on-the-wire sync blob is json(encrypt_item(vault_key, json(EventBatch))); encrypt_item uses a random item key and random nonce per call, so the ciphertext is NOT byte-reproducible. These vectors therefore pin the deterministic *structural* layer every client (CLI / iOS UniFFI / web WASM) must produce byte-for-byte: the EventBatch envelope, the per-entity payloads carried inside each event, and the SRP register request body. Each file is the exact compact JSON the canonical Rust client emits. Regenerate after a reviewed format change with: LDGR_REGENERATE_VECTORS=1 cargo test -p ldgr-core --all-features --test sync_vectors",
+  "vectors": [
+    {
+      "name": "account_payload_v1.json",
+      "type": "sync::payload::AccountPayload",
+      "producer": "ldgr_core::sync::payload::to_bytes",
+      "description": "Full account state carried inside a Create/Update account event (SyncEvent.payload)."
+    },
+    {
+      "name": "transaction_payload_v1.json",
+      "type": "sync::payload::TransactionPayload",
+      "producer": "ldgr_core::sync::payload::to_bytes",
+      "description": "Full transaction state (with ordered postings) carried inside a Create/Update transaction event."
+    },
+    {
+      "name": "event_batch_v1.json",
+      "type": "sync::events::EventBatch",
+      "producer": "ldgr_core::sync::serialize_batch",
+      "description": "The complete pre-encryption batch envelope (device_id, ordered events, BTreeMap vector clock). This is the exact plaintext sealed by framing::seal_batch. Event payloads appear as JSON byte arrays (the UTF-8 bytes of the inner payload JSON), matching the web outbox's Array.from(TextEncoder().encode(...)) encoding."
+    },
+    {
+      "name": "register_request_1secret_v1.json",
+      "type": "sync::server::protocol::RegisterRequest",
+      "producer": "serde_json::to_vec",
+      "description": "Legacy single-secret SRP registration body. auth_scheme is omitted from the wire (skip_serializing_if), keeping it byte-identical to the original protocol."
+    },
+    {
+      "name": "register_request_2skd_v1.json",
+      "type": "sync::server::protocol::RegisterRequest",
+      "producer": "serde_json::to_vec",
+      "description": "Two-secret (2SKD, ADR-008) registration body, with auth_scheme set to srp-2skd-v1."
+    }
+  ]
+}

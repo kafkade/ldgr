@@ -113,3 +113,95 @@ describe('ldgr-wasm cross-language sync blob', { skip: havePkg ? false : 'pkg no
     assert.equal(out.applied[0].operation, 'Create');
   });
 });
+
+/**
+ * Cross-language golden-vector check (issue #165, task 5).
+ *
+ * Asserts the web client emits structural sync/auth JSON that is byte-identical
+ * to the canonical Rust known-answer vectors in
+ * `crates/ldgr-core/tests/fixtures/sync/` (generated + verified by
+ * `ldgr-core/tests/sync_vectors.rs`). Because the on-the-wire sync blob uses
+ * random nonces it is not byte-reproducible, so the shared contract is this
+ * decrypted/structural layer. This block needs no compiled wasm — it proves the
+ * JS object shapes (field order, `skip_serializing_if` omission) match the Rust
+ * serde output exactly, so iOS/web/CLI stay byte-compatible.
+ */
+describe('cross-language sync wire vectors (golden)', () => {
+  const fixture = (name) =>
+    readFileSync(
+      fileURLToPath(new URL(`../../../crates/ldgr-core/tests/fixtures/sync/${name}`, import.meta.url)),
+      'utf8',
+    );
+
+  // Same canonical inputs as crates/ldgr-core/tests/sync_vectors.rs. Object key
+  // order MUST match the Rust struct field order (serde serializes in that order).
+  test('AccountPayload matches the Rust golden vector byte-for-byte', () => {
+    const accountPayload = {
+      id: 'aaaaaaaa-0000-7000-8000-000000000001',
+      name: 'Assets:Cash',
+      account_type: 'asset',
+      commodity: 'USD',
+      parent_id: null,
+      note: 'petty cash',
+      created_at: '2024-01-15T12:00:00Z',
+      modified_at: '2024-01-15T12:00:00Z',
+    };
+    assert.equal(JSON.stringify(accountPayload), fixture('account_payload_v1.json'));
+  });
+
+  test('TransactionPayload matches the Rust golden vector byte-for-byte', () => {
+    const txnPayload = {
+      id: 'bbbbbbbb-0000-7000-8000-000000000002',
+      date: '2024-01-15',
+      status: 'cleared',
+      code: 'REF-42',
+      description: 'Lunch',
+      comment: 'with team',
+      created_at: '2024-01-15T12:00:00Z',
+      modified_at: '2024-01-15T12:00:00Z',
+      postings: [
+        {
+          id: 'cccccccc-0000-7000-8000-000000000003',
+          account_id: 'aaaaaaaa-0000-7000-8000-000000000001',
+          amount_quantity: '-10.00',
+          amount_commodity: 'USD',
+          balance_assertion_quantity: null,
+          balance_assertion_commodity: null,
+          created_at: '2024-01-15T12:00:00Z',
+          version: 1,
+        },
+        {
+          id: 'dddddddd-0000-7000-8000-000000000004',
+          account_id: 'aaaaaaaa-0000-7000-8000-000000000005',
+          amount_quantity: '10.00',
+          amount_commodity: 'USD',
+          balance_assertion_quantity: null,
+          balance_assertion_commodity: null,
+          created_at: '2024-01-15T12:00:00Z',
+          version: 1,
+        },
+      ],
+    };
+    assert.equal(JSON.stringify(txnPayload), fixture('transaction_payload_v1.json'));
+  });
+
+  test('single-secret RegisterRequest matches the golden vector (auth_scheme omitted)', () => {
+    const req = {
+      username: 'alice',
+      salt: '00112233445566778899aabbccddeeff',
+      verifier: '0123456789abcdef',
+      // auth_scheme intentionally omitted — Rust drops it via skip_serializing_if.
+    };
+    assert.equal(JSON.stringify(req), fixture('register_request_1secret_v1.json'));
+  });
+
+  test('2SKD RegisterRequest matches the golden vector (auth_scheme present)', () => {
+    const req = {
+      username: 'carol',
+      salt: 'ffeeddccbbaa99887766554433221100',
+      verifier: 'fedcba9876543210',
+      auth_scheme: 'srp-2skd-v1',
+    };
+    assert.equal(JSON.stringify(req), fixture('register_request_2skd_v1.json'));
+  });
+});
