@@ -38,8 +38,15 @@ thiserror.workspace = true
 
 [dev-dependencies]
 # In-process integration testing: drive the router via tower's oneshot and the
-# core SRP-6a client (no sockets, no real HTTP).
-ldgr-core = { path = "../ldgr-core", features = ["core", "sync"] }
+# core SRP-6a client (no sockets, no real HTTP). The `sqlite` feature is test-only
+# here — it unlocks `sync::pipeline` (compose/apply) and the storage `_with_sync`
+# emitters so the e2e suite can drive the REAL pipeline through the booted router.
+# It is NOT enabled for the production server build (the server never touches the
+# canonical SQLite vault), so this does not change the shipped binary.
+ldgr-core = { path = "../ldgr-core", features = ["core", "sync", "sqlite"] }
+# Post-merge double-entry invariant checks parse posting amounts as exact
+# decimals (never floats) — see ADR-003 §"Post-merge validation".
+rust_decimal = { workspace = true }
 # FFI-level e2e test drives the UniFFI `LdgrSyncClient` through its foreign
 # async-sender seam against this same in-process router. Test-only edge.
 ldgr-ffi = { path = "../ldgr-ffi" }
