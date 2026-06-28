@@ -10,6 +10,8 @@ import Security
 enum KeychainManager {
     private static let service = "com.kafkade.ldgr"
     private static let sessionKeyAccount = "vault-session-key"
+    private static let serverAuthTokenAccount = "server-auth-token"
+    private static let serverDeviceIdAccount = "server-device-id"
 
     // MARK: - Store
 
@@ -114,6 +116,96 @@ enum KeychainManager {
         let status = SecItemCopyMatching(query as CFDictionary, nil)
         // errSecInteractionNotAllowed means item exists but requires auth
         return status == errSecSuccess || status == errSecInteractionNotAllowed
+    }
+
+    // MARK: - Server credentials (auth token + device id)
+    //
+    // Unlike the vault session key, these are NOT biometric-gated: background
+    // sync must be able to read them without a user-presence prompt. They are
+    // still device-only and only readable after first unlock. The user's server
+    // password is NEVER persisted — only the session token derived from it.
+
+    /// Store the server session token (replacing any existing value).
+    static func storeServerAuthToken(_ token: String) throws {
+        try storeServerValue(Data(token.utf8), account: serverAuthTokenAccount)
+    }
+
+    /// Retrieve the server session token, or `nil` if none is stored.
+    static func retrieveServerAuthToken() -> String? {
+        guard let data = retrieveServerValue(account: serverAuthTokenAccount) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// Remove the stored server session token.
+    static func deleteServerAuthToken() throws {
+        try deleteServerValue(account: serverAuthTokenAccount)
+    }
+
+    /// Whether a server session token is stored.
+    static func hasServerAuthToken() -> Bool {
+        retrieveServerValue(account: serverAuthTokenAccount) != nil
+    }
+
+    /// Store the server-registered device id (replacing any existing value).
+    static func storeServerDeviceId(_ deviceId: String) throws {
+        try storeServerValue(Data(deviceId.utf8), account: serverDeviceIdAccount)
+    }
+
+    /// Retrieve the server-registered device id, or `nil` if none is stored.
+    static func retrieveServerDeviceId() -> String? {
+        guard let data = retrieveServerValue(account: serverDeviceIdAccount) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// Remove the stored server device id.
+    static func deleteServerDeviceId() throws {
+        try deleteServerValue(account: serverDeviceIdAccount)
+    }
+
+    // MARK: - Server credential helpers
+
+    private static func storeServerValue(_ value: Data, account: String) throws {
+        try? deleteServerValue(account: account)
+
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecValueData as String: value,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+
+        let status = SecItemAdd(query as CFDictionary, nil)
+        guard status == errSecSuccess else {
+            throw KeychainError.storeFailed(status)
+        }
+    }
+
+    private static func retrieveServerValue(account: String) -> Data? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+        ]
+
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess else { return nil }
+        return result as? Data
+    }
+
+    private static func deleteServerValue(account: String) throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw KeychainError.deleteFailed(status)
+        }
     }
 }
 

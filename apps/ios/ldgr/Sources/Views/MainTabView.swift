@@ -51,6 +51,7 @@ struct MainTabView: View {
         }
         .task {
             await store.reload(client: client)
+            syncManager.configure(client: client)
             await syncManager.refreshStatus(client: client)
             await watchManager.sendUpdate(from: store, client: client)
             await widgetManager.sendUpdate(from: store, client: client)

@@ -72,6 +72,19 @@ dictionary FfiSyncStatus {
     string device_id;
 };
 
+dictionary FfiExportedBatch {
+    string batch_id;
+    string device_id;
+    sequence<u8> ciphertext;
+    sequence<string> event_ids;
+};
+
+dictionary FfiIngestOutcome {
+    u32 applied;
+    u32 conflicts;
+    u32 skipped;
+};
+
 interface LdgrVault {
     [Throws=LdgrError]
     constructor(string path);
@@ -130,4 +143,10 @@ interface LdgrVault {
 
     [Throws=LdgrError]
     void store_conflicts(sequence<FfiSyncConflict> conflicts);
+
+    [Throws=LdgrError]
+    FfiExportedBatch? export_pending_batch();
+
+    [Throws=LdgrError]
+    FfiIngestOutcome ingest_batch(sequence<u8> ciphertext);
 };

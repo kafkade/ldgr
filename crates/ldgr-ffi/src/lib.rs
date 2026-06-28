@@ -83,6 +83,22 @@ impl From<rusqlite::Error> for LdgrError {
     }
 }
 
+impl From<ldgr_core::sync::pipeline::PipelineError> for LdgrError {
+    fn from(e: ldgr_core::sync::pipeline::PipelineError) -> Self {
+        use ldgr_core::sync::pipeline::PipelineError;
+        match e {
+            PipelineError::Storage(s) => s.into(),
+            PipelineError::Crypto(c) => c.into(),
+            PipelineError::Format(msg) => {
+                Self::InvalidInput(format!("sync blob format error: {msg}"))
+            }
+            PipelineError::UnsupportedEntity(ent) => {
+                Self::InvalidInput(format!("unsupported sync entity: {ent}"))
+            }
+        }
+    }
+}
+
 // ── FFI Record Types ───────────────────────────────────────────────────────────
 
 pub struct FfiAccount {
@@ -145,6 +161,21 @@ pub struct FfiSyncStatus {
     pub unresolved_conflict_count: u64,
     pub last_sync_at: Option<String>,
     pub device_id: String,
+}
+
+#[derive(Debug)]
+pub struct FfiExportedBatch {
+    pub batch_id: String,
+    pub device_id: String,
+    pub ciphertext: Vec<u8>,
+    pub event_ids: Vec<String>,
+}
+
+#[derive(Debug)]
+pub struct FfiIngestOutcome {
+    pub applied: u32,
+    pub conflicts: u32,
+    pub skipped: u32,
 }
 
 // ── Vault State ────────────────────────────────────────────────────────────────
@@ -325,7 +356,8 @@ impl LdgrVault {
             parent_id: None,
             note: None,
         };
-        let account = accounts::create_account(conn, &input)?;
+        let ctx = next_sync_context(conn)?;
+        let account = accounts::create_account_with_sync(conn, &input, &ctx)?;
         Ok(account.id)
     }
 
@@ -413,7 +445,8 @@ impl LdgrVault {
             postings: new_postings,
         };
 
-        let txn = transactions::create_transaction(conn, &input)?;
+        let txn =
+            transactions::create_transaction_with_sync(conn, &input, &next_sync_context(conn)?)?;
         Ok(txn.id)
     }
 
@@ -433,7 +466,7 @@ impl LdgrVault {
         let state = self.state.lock().expect("mutex poisoned");
         let conn = require_conn(&state)?;
 
-        transactions::soft_delete_transaction(conn, &id)?;
+        transactions::soft_delete_transaction_with_sync(conn, &id, &next_sync_context(conn)?)?;
         Ok(())
     }
 
@@ -579,6 +612,64 @@ impl LdgrVault {
         sync_storage::store_conflicts(conn, &stored)?;
         Ok(())
     }
+
+    /// Compose all currently-pending sync events into one encrypted batch blob
+    /// ready for upload. Returns `null` if there are no pending events.
+    ///
+    /// Does **not** mark events synced — the caller uploads the ciphertext and
+    /// then calls [`Self::mark_events_synced`] with the returned `event_ids`.
+    pub fn export_pending_batch(&self) -> Result<Option<FfiExportedBatch>, LdgrError> {
+        let state = self.state.lock().expect("mutex poisoned");
+        let (vault, conn) = match &*state {
+            VaultState::Locked => return Err(LdgrError::VaultLocked),
+            VaultState::Unlocked { vault, conn } => (vault, conn),
+        };
+
+        let session_key = vault.export_session_key();
+        let device_id = sync_storage::device_id(conn)?;
+        let exported = ldgr_core::sync::pipeline::export_pending_batch_with_session_key(
+            conn,
+            &device_id,
+            &session_key,
+        )?;
+
+        Ok(exported.map(|b| FfiExportedBatch {
+            batch_id: b.batch_id,
+            device_id: b.device_id,
+            ciphertext: b.ciphertext,
+            event_ids: b.event_ids,
+        }))
+    }
+
+    /// Apply a downloaded encrypted batch blob against local state.
+    ///
+    /// Decrypts, three-way merges, applies cleanly-merged events to the
+    /// canonical tables, and persists any conflicts for later user review
+    /// (retrievable via [`Self::list_conflicts`]). Returns the applied /
+    /// conflict / skipped counts. Idempotent: re-ingesting a seen blob is a
+    /// no-op.
+    pub fn ingest_batch(&self, ciphertext: Vec<u8>) -> Result<FfiIngestOutcome, LdgrError> {
+        let state = self.state.lock().expect("mutex poisoned");
+        let (vault, conn) = match &*state {
+            VaultState::Locked => return Err(LdgrError::VaultLocked),
+            VaultState::Unlocked { vault, conn } => (vault, conn),
+        };
+
+        let session_key = vault.export_session_key();
+        let device_id = sync_storage::device_id(conn)?;
+        let outcome = ldgr_core::sync::pipeline::ingest_batch_with_session_key(
+            conn,
+            &device_id,
+            &session_key,
+            &ciphertext,
+        )?;
+
+        Ok(FfiIngestOutcome {
+            applied: outcome.applied,
+            conflicts: outcome.conflicts,
+            skipped: outcome.skipped,
+        })
+    }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -590,6 +681,18 @@ fn require_conn<'a>(
         VaultState::Locked => Err(LdgrError::VaultLocked),
         VaultState::Unlocked { conn, .. } => Ok(conn),
     }
+}
+
+/// Build a [`SyncContext`] for the next local mutation: the vault's device id
+/// plus a freshly-ticked Lamport clock. Used by the `_with_sync` storage
+/// variants so every write atomically records an outbox event for sync.
+fn next_sync_context(conn: &Connection) -> Result<sync_storage::SyncContext, LdgrError> {
+    let device_id = sync_storage::device_id(conn)?;
+    let lamport_clock = sync_storage::tick_lamport(conn)?;
+    Ok(sync_storage::SyncContext {
+        device_id,
+        lamport_clock,
+    })
 }
 
 fn parse_account_type(s: &str) -> Result<AccountType, LdgrError> {
@@ -965,5 +1068,146 @@ mod tests {
             matches!(err, LdgrError::CryptoError(_) | LdgrError::InvalidPassword),
             "expected CryptoError or InvalidPassword, got: {err:?}"
         );
+    }
+
+    /// Helper: build a vault, add two accounts + one transaction, and return
+    /// the handle plus the directory (kept alive by the caller).
+    fn vault_with_one_txn(dir: &std::path::Path) -> LdgrVault {
+        let path = dir.to_string_lossy().to_string();
+        let vault = LdgrVault::new(path).unwrap();
+        vault
+            .create_vault("test-pw".to_string(), "Device A".to_string())
+            .unwrap();
+
+        let checking = vault
+            .add_account(
+                "Assets:Checking".to_string(),
+                "asset".to_string(),
+                Some("USD".to_string()),
+            )
+            .unwrap();
+        let food = vault
+            .add_account(
+                "Expenses:Food".to_string(),
+                "expense".to_string(),
+                Some("USD".to_string()),
+            )
+            .unwrap();
+        vault
+            .add_transaction(
+                "2024-06-15".to_string(),
+                "Grocery store".to_string(),
+                "cleared".to_string(),
+                vec![
+                    FfiNewPosting {
+                        account_id: checking,
+                        amount: Some("-50.00".to_string()),
+                        commodity: Some("USD".to_string()),
+                    },
+                    FfiNewPosting {
+                        account_id: food,
+                        amount: Some("50.00".to_string()),
+                        commodity: Some("USD".to_string()),
+                    },
+                ],
+            )
+            .unwrap();
+        vault
+    }
+
+    #[test]
+    fn export_batch_then_ingest_into_second_device() {
+        // Device A: a fully-populated vault with pending sync events.
+        let dir_a = tempfile::tempdir().unwrap();
+        let vault_a = vault_with_one_txn(dir_a.path());
+
+        // Device B: a *second* device of the SAME vault. It shares A's vault
+        // key (same `vault.ldgr`) but has its own fresh, empty database — so it
+        // gets a distinct device id and starts with no data, exactly like a
+        // newly-enrolled device that has not yet synced.
+        let session_key = vault_a.export_session_key().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        std::fs::copy(
+            dir_a.path().join("vault.ldgr"),
+            dir_b.path().join("vault.ldgr"),
+        )
+        .unwrap();
+        let vault_b = LdgrVault::new(dir_b.path().to_string_lossy().to_string()).unwrap();
+        vault_b.open_with_session_key(session_key).unwrap();
+
+        // Sanity: B starts empty and the two devices differ.
+        assert!(vault_b.list_transactions().unwrap().is_empty());
+        assert!(vault_b.list_accounts().unwrap().is_empty());
+        assert_ne!(
+            vault_a.sync_status().unwrap().device_id,
+            vault_b.sync_status().unwrap().device_id,
+            "the two devices must have distinct device ids"
+        );
+
+        // A composes its pending events into an encrypted blob.
+        let batch = vault_a
+            .export_pending_batch()
+            .unwrap()
+            .expect("device A has pending events to export");
+        assert!(!batch.ciphertext.is_empty());
+        assert!(!batch.event_ids.is_empty());
+        assert_eq!(batch.device_id, vault_a.sync_status().unwrap().device_id);
+
+        // B ingests the blob and applies the events.
+        let outcome = vault_b.ingest_batch(batch.ciphertext.clone()).unwrap();
+        assert!(outcome.applied > 0, "expected applied > 0, got {outcome:?}");
+        assert_eq!(outcome.conflicts, 0);
+
+        // The transaction and accounts now exist on device B.
+        let txns = vault_b.list_transactions().unwrap();
+        assert_eq!(txns.len(), 1, "transaction should be present on device B");
+        assert_eq!(txns[0].description, "Grocery store");
+        let accts = vault_b.list_accounts().unwrap();
+        assert_eq!(
+            accts.len(),
+            2,
+            "both accounts should be present on device B"
+        );
+
+        // Re-ingesting the same blob is a no-op (idempotent).
+        let again = vault_b.ingest_batch(batch.ciphertext).unwrap();
+        assert_eq!(again.applied, 0);
+        assert_eq!(again.conflicts, 0);
+        assert_eq!(vault_b.list_transactions().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn export_pending_batch_empty_when_no_pending_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+        let vault = LdgrVault::new(path).unwrap();
+        vault
+            .create_vault("pw".to_string(), "Empty".to_string())
+            .unwrap();
+
+        // Mark everything synced so the outbox is empty.
+        let pending = vault.pending_sync_events().unwrap();
+        let ids: Vec<String> = pending.into_iter().map(|e| e.id).collect();
+        if !ids.is_empty() {
+            vault.mark_events_synced(ids).unwrap();
+        }
+
+        assert!(vault.export_pending_batch().unwrap().is_none());
+    }
+
+    #[test]
+    fn export_and_ingest_require_unlocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+        let vault = LdgrVault::new(path).unwrap();
+
+        assert!(matches!(
+            vault.export_pending_batch().unwrap_err(),
+            LdgrError::VaultLocked
+        ));
+        assert!(matches!(
+            vault.ingest_batch(vec![1, 2, 3]).unwrap_err(),
+            LdgrError::VaultLocked
+        ));
     }
 }

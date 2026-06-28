@@ -124,6 +124,32 @@ public struct SyncStatus: Sendable {
     public let deviceId: String
 }
 
+/// A composed, encrypted batch blob ready to upload to the sync server.
+///
+/// Produced by ``LdgrClient/exportPendingBatch()``. After a *successful*
+/// upload, mark the included events synced with
+/// ``LdgrClient/markEventsSynced(eventIds:)`` using ``eventIds``.
+public struct ExportedBatch: Sendable {
+    /// Random id for the blob (suitable as the `{batch}.enc` filename).
+    public let batchId: String
+    /// The device that produced the batch.
+    public let deviceId: String
+    /// The canonical encrypted blob bytes to upload via `putBatch`.
+    public let ciphertext: Data
+    /// Ids of the outbox events included — mark these synced after upload.
+    public let eventIds: [String]
+}
+
+/// Outcome of applying a downloaded batch blob via ``LdgrClient/ingestBatch(ciphertext:)``.
+public struct IngestOutcome: Sendable {
+    /// Events applied cleanly to the canonical tables.
+    public let applied: UInt32
+    /// Conflicts detected and persisted for user review (see `listConflicts`).
+    public let conflicts: UInt32
+    /// Events skipped as already-seen or stale (no-op).
+    public let skipped: UInt32
+}
+
 /// Errors from the ldgr vault.
 public enum LdgrClientError: Error, LocalizedError, Sendable {
     case vaultLocked
@@ -469,6 +495,43 @@ public final class LdgrClient: @unchecked Sendable {
     public func resolveConflict(id: String, resolution: ConflictResolution) throws {
         do {
             try vault.resolveConflict(conflictId: id, resolution: resolution.rawValue)
+        } catch let error as LdgrError {
+            throw LdgrClientError(from: error)
+        }
+    }
+
+    /// Compose all currently-pending sync events into one encrypted batch blob.
+    ///
+    /// Returns `nil` when there are no pending events. Does **not** mark events
+    /// synced — upload the ``ExportedBatch/ciphertext`` first, then call
+    /// ``markEventsSynced(eventIds:)`` with ``ExportedBatch/eventIds``.
+    public func exportPendingBatch() throws -> ExportedBatch? {
+        do {
+            guard let ffi = try vault.exportPendingBatch() else { return nil }
+            return ExportedBatch(
+                batchId: ffi.batchId,
+                deviceId: ffi.deviceId,
+                ciphertext: Data(ffi.ciphertext),
+                eventIds: ffi.eventIds
+            )
+        } catch let error as LdgrError {
+            throw LdgrClientError(from: error)
+        }
+    }
+
+    /// Apply a downloaded encrypted batch blob against local state.
+    ///
+    /// Decrypts, three-way merges, applies cleanly-merged events, and persists
+    /// any conflicts for review (retrievable via ``listConflicts()``). Returns
+    /// the applied / conflict / skipped counts. Idempotent.
+    public func ingestBatch(ciphertext: Data) throws -> IngestOutcome {
+        do {
+            let ffi = try vault.ingestBatch(ciphertext: [UInt8](ciphertext))
+            return IngestOutcome(
+                applied: ffi.applied,
+                conflicts: ffi.conflicts,
+                skipped: ffi.skipped
+            )
         } catch let error as LdgrError {
             throw LdgrClientError(from: error)
         }
