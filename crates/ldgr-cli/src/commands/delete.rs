@@ -5,9 +5,10 @@ use std::path::Path;
 use anyhow::{Result, bail};
 
 use ldgr_core::storage::accounts::ListOptions;
-use ldgr_core::storage::transactions::{get_transaction, soft_delete_transaction};
+use ldgr_core::storage::transactions::{get_transaction, soft_delete_transaction_with_sync};
 
 use crate::db;
+use crate::sync::bridge::cli_sync_context;
 
 /// Run the `delete` command.
 pub fn run(vault_path: &Path, id: &str, force: bool) -> Result<()> {
@@ -33,7 +34,7 @@ pub fn run(vault_path: &Path, id: &str, force: bool) -> Result<()> {
         }
     }
 
-    soft_delete_transaction(&conn, id)?;
+    soft_delete_transaction_with_sync(&conn, id, &cli_sync_context(&conn)?)?;
     eprintln!("✓ Deleted transaction: {} {}", txn.date, txn.description);
     Ok(())
 }

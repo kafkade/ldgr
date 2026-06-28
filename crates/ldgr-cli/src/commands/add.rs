@@ -8,10 +8,11 @@ use rust_decimal::Decimal;
 
 use ldgr_core::storage::accounts::get_account_by_name;
 use ldgr_core::storage::transactions::{
-    NewPosting, NewTransaction, TransactionStatus, create_transaction,
+    NewPosting, NewTransaction, TransactionStatus, create_transaction_with_sync,
 };
 
 use crate::db;
+use crate::sync::bridge::cli_sync_context;
 
 /// Run the `add` command in non-interactive mode.
 pub fn run_noninteractive(
@@ -46,7 +47,7 @@ pub fn run_noninteractive(
         }
     }
 
-    let txn = create_transaction(
+    let txn = create_transaction_with_sync(
         &conn,
         &NewTransaction {
             date: date.to_string(),
@@ -56,6 +57,7 @@ pub fn run_noninteractive(
             comment: None,
             postings,
         },
+        &cli_sync_context(&conn)?,
     )?;
 
     eprintln!(
@@ -143,7 +145,7 @@ pub fn run_interactive(vault_path: &Path) -> Result<()> {
 
     validate_balance(&postings)?;
 
-    let txn = create_transaction(
+    let txn = create_transaction_with_sync(
         &conn,
         &NewTransaction {
             date,
@@ -153,6 +155,7 @@ pub fn run_interactive(vault_path: &Path) -> Result<()> {
             comment: None,
             postings,
         },
+        &cli_sync_context(&conn)?,
     )?;
 
     eprintln!(

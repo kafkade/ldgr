@@ -418,6 +418,118 @@ pub fn soft_delete_account_with_sync(
     Ok(())
 }
 
+/// Update an existing account with atomic sync event recording.
+///
+/// Mirrors [`update_account`] but, within the same `SQLite` transaction, also
+/// records an `update` outbox event carrying the full post-update
+/// [`AccountPayload`] so the change propagates on the next `sync push`. The
+/// remote apply path already handles `Operation::Update` (it upserts via
+/// [`apply_remote_account`]), so no read-side change is required.
+pub fn update_account_with_sync(
+    conn: &Connection,
+    id: &str,
+    update: &AccountUpdate,
+    ctx: &SyncContext,
+) -> Result<Account, StorageError> {
+    let db_tx = conn.unchecked_transaction()?;
+
+    let now = now_iso8601();
+    let new_version = update.expected_version + 1;
+
+    // Preserve the original creation timestamp so the emitted payload (and any
+    // remote upsert it drives) keeps `created_at` stable across the update.
+    let created_at: String = db_tx
+        .query_row(
+            "SELECT created_at FROM accounts WHERE id = ?1 AND deleted = 0",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                StorageError::NotFound(format!("account '{id}'"))
+            }
+            other => StorageError::Database(other),
+        })?;
+
+    let rows = db_tx
+        .execute(
+            "UPDATE accounts
+             SET name = ?1, type = ?2, commodity = ?3, parent_id = ?4, note = ?5,
+                 modified_at = ?6, version = ?7
+             WHERE id = ?8 AND version = ?9 AND deleted = 0",
+            rusqlite::params![
+                update.name,
+                update.account_type.as_str(),
+                update.commodity,
+                update.parent_id,
+                update.note,
+                now,
+                new_version,
+                id,
+                update.expected_version,
+            ],
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::SqliteFailure(err, _)
+                if err.code == rusqlite::ffi::ErrorCode::ConstraintViolation =>
+            {
+                StorageError::ConstraintViolation(format!(
+                    "account name '{}' already exists",
+                    update.name
+                ))
+            }
+            other => StorageError::Database(other),
+        })?;
+
+    if rows == 0 {
+        return Err(StorageError::Conflict(format!(
+            "account '{id}' was modified or deleted (expected version {})",
+            update.expected_version
+        )));
+    }
+
+    let payload = crate::sync::payload::to_bytes(&crate::sync::payload::AccountPayload {
+        id: id.to_string(),
+        name: update.name.clone(),
+        account_type: update.account_type.as_str().to_string(),
+        commodity: update.commodity.clone(),
+        parent_id: update.parent_id.clone(),
+        note: update.note.clone(),
+        created_at: created_at.clone(),
+        modified_at: now.clone(),
+    })
+    .map_err(|e| StorageError::InvalidInput(format!("failed to serialize account payload: {e}")))?;
+
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    let version_u32 = new_version as u32;
+
+    super::sync::record_event(
+        &db_tx,
+        &ctx.device_id,
+        "account",
+        id,
+        "update",
+        &payload,
+        ctx.lamport_clock,
+        version_u32,
+    )?;
+
+    db_tx.commit()?;
+
+    Ok(Account {
+        id: id.to_string(),
+        name: update.name.clone(),
+        account_type: update.account_type,
+        commodity: update.commodity.clone(),
+        parent_id: update.parent_id.clone(),
+        note: update.note.clone(),
+        created_at,
+        modified_at: now,
+        version: new_version,
+        deleted: false,
+    })
+}
+
 // ── Remote apply (sync ingest) ───────────────────────────────────────────────
 
 /// Apply a remote `Create`/`Update` account event to the canonical table.
@@ -840,5 +952,88 @@ mod tests {
                 .unwrap();
             assert_eq!(fetched.account_type, *at);
         }
+    }
+
+    // --- Sync emitter ---
+
+    fn sync_ctx(device: &str, lamport: u64) -> SyncContext {
+        SyncContext {
+            device_id: device.into(),
+            lamport_clock: lamport,
+        }
+    }
+
+    #[test]
+    fn update_account_with_sync_emits_update_event() {
+        use crate::storage::sync::pending_events;
+
+        let conn = setup();
+        let acct =
+            create_account_with_sync(&conn, &sample_account(), &sync_ctx("dev_a", 1)).unwrap();
+
+        let updated = update_account_with_sync(
+            &conn,
+            &acct.id,
+            &AccountUpdate {
+                name: "Assets:Checking:Renamed".into(),
+                account_type: acct.account_type,
+                commodity: acct.commodity.clone(),
+                parent_id: acct.parent_id.clone(),
+                note: acct.note.clone(),
+                expected_version: acct.version,
+            },
+            &sync_ctx("dev_a", 2),
+        )
+        .unwrap();
+
+        // Canonical row reflects the update, keeping the original created_at.
+        assert_eq!(updated.name, "Assets:Checking:Renamed");
+        assert_eq!(updated.version, acct.version + 1);
+        assert_eq!(updated.created_at, acct.created_at);
+        let fetched = get_account(&conn, &acct.id, &ListOptions::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(fetched.name, "Assets:Checking:Renamed");
+
+        // Exactly one create + one update event landed in the outbox.
+        let pending = pending_events(&conn).unwrap();
+        assert_eq!(pending.len(), 2);
+        let update_ev = pending
+            .iter()
+            .find(|e| e.operation == "update")
+            .expect("update event recorded");
+        assert_eq!(update_ev.entity_type, "account");
+        assert_eq!(update_ev.entity_id, acct.id);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let expected_version = updated.version as u32;
+        assert_eq!(update_ev.version, expected_version);
+    }
+
+    #[test]
+    fn update_account_with_sync_version_conflict_emits_nothing() {
+        use crate::storage::sync::pending_event_count;
+
+        let conn = setup();
+        let acct =
+            create_account_with_sync(&conn, &sample_account(), &sync_ctx("dev_a", 1)).unwrap();
+
+        // Stale expected_version is rejected and records no outbox event.
+        let result = update_account_with_sync(
+            &conn,
+            &acct.id,
+            &AccountUpdate {
+                name: "Assets:Checking:Stale".into(),
+                account_type: acct.account_type,
+                commodity: acct.commodity.clone(),
+                parent_id: acct.parent_id.clone(),
+                note: acct.note.clone(),
+                expected_version: acct.version + 99,
+            },
+            &sync_ctx("dev_a", 2),
+        );
+        assert!(matches!(result, Err(StorageError::Conflict(_))));
+
+        // Only the original create event remains; the failed update rolled back.
+        assert_eq!(pending_event_count(&conn).unwrap(), 1);
     }
 }
