@@ -6,11 +6,11 @@
   "type": "module",
   "scripts": {
     "dev": "next dev",
-    "build:wasm": "wasm-pack build ../../crates/ldgr-wasm --target web --no-default-features --features core --release --out-dir ../../apps/web/pkg",
+    "build:wasm": "wasm-pack build ../../crates/ldgr-wasm --target web --release --out-dir ../../apps/web/pkg -- --no-default-features --features core,sync",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "node --test test/integration.mjs"
+    "test": "node --test test/integration.mjs test/sync-wasm.mjs"
   },
   "dependencies": {
     "next": "^16.2.9",

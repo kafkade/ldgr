@@ -22,6 +22,10 @@ export interface LdgrWasm {
   clearItems(): void;
   readonly itemCount: number;
   serializeVault(): Uint8Array;
+  /** Seal an EventBatch JSON string into the canonical encrypted blob. */
+  sealBatch(eventBatchJson: string): Uint8Array;
+  /** Decrypt a canonical blob back into an EventBatch JSON string. */
+  openBatch(ciphertext: Uint8Array): string;
   free(): void;
 }
 
@@ -30,8 +34,60 @@ export interface LdgrWasmStatic {
   openVault(vaultData: Uint8Array, password: string): LdgrWasm;
 }
 
+/** A raw HTTP request the JS `fetch` callback must execute for sync. */
+export interface SyncRawRequest {
+  method: string;
+  path: string;
+  query: Array<[string, string]>;
+  headers: Array<[string, string]>;
+  body: Uint8Array;
+}
+
+/** The response shape the JS `fetch` callback must resolve with. */
+export interface SyncRawResponse {
+  status: number;
+  body: Uint8Array;
+}
+
+export type SyncSendCallback = (
+  request: SyncRawRequest,
+) => Promise<SyncRawResponse>;
+
+export interface WasmSyncClient {
+  readonly token: string | undefined;
+  isAuthenticated(): boolean;
+  logout(): void;
+  register(username: string, password: string): Promise<void>;
+  login(username: string, password: string): Promise<void>;
+  createVault(vaultId: string): Promise<void>;
+  putBatch(
+    vaultId: string,
+    deviceId: string,
+    batchId: string,
+    ciphertext: Uint8Array,
+  ): Promise<void>;
+  getBatch(
+    vaultId: string,
+    deviceId: string,
+    batchId: string,
+  ): Promise<Uint8Array>;
+  listBatches(
+    vaultId: string,
+    since?: string | null,
+    deviceId?: string | null,
+    limit?: number | null,
+  ): Promise<string>;
+  free(): void;
+}
+
+export interface WasmSyncClientStatic {
+  new (sendCallback: SyncSendCallback): WasmSyncClient;
+  withToken(sendCallback: SyncSendCallback, token: string): WasmSyncClient;
+}
+
 export interface WasmModule {
   LdgrWasm: LdgrWasmStatic;
+  WasmSyncClient: WasmSyncClientStatic;
   parseJournal(text: string): string;
   computeBalance(
     transactionsJson: string,
@@ -44,6 +100,16 @@ export interface WasmModule {
     accountFilter?: string,
     beginDate?: string,
     endDate?: string,
+  ): string;
+  /**
+   * Three-way merge a decrypted remote batch against local pending events.
+   * Returns JSON `{ applied, conflicts, skipped }`.
+   */
+  mergeBatch(
+    localPendingJson: string,
+    remoteBatchJson: string,
+    localClockJson: string,
+    now: string,
   ): string;
 }
 

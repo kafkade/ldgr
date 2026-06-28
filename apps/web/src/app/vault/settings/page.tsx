@@ -3,6 +3,7 @@
 import { useVault } from '@/contexts/VaultContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useRouter } from 'next/navigation';
+import SyncSettings from './SyncSettings';
 
 export default function SettingsPage() {
   const { state, saveVault, lockVault } = useVault();
@@ -61,6 +62,9 @@ export default function SettingsPage() {
         </div>
       </div>
 
+      {/* Sync */}
+      <SyncSettings />
+
       {/* Security */}
       <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5 space-y-3">
         <h2 className="text-sm font-semibold text-[var(--color-text-secondary)]">
@@ -68,7 +72,8 @@ export default function SettingsPage() {
         </h2>
         <p className="text-xs text-[var(--color-text-secondary)]">
           All data is encrypted with AES-256-GCM using keys derived from your
-          password via Argon2id. No data is ever sent to a server.
+          password via Argon2id. By default nothing leaves this device; sync, if
+          enabled below, only ever transmits encrypted blobs.
         </p>
         <button
           onClick={handleLock}

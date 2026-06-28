@@ -67,11 +67,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-device sync batch-blob pipeline in `ldgr-core`: compose pending changes into a single encrypted blob (`export_pending_batch`) and apply a downloaded blob back into the local vault (`ingest_batch`), with full-state transaction-atomic events, version-gated upsert-by-id, soft-delete propagation, idempotent re-ingest, and concurrent edits to the same entity surfaced as conflicts for review rather than silently overwritten
 - iOS app now syncs with a self-hosted `ldgr-server`: sign in or create an account from Sync settings, then push and pull encrypted change batches over HTTPS with a persisted incremental cursor, and review concurrent-edit conflicts — replacing the previous in-app placeholder transport
 - Swift/UniFFI vault bindings expose the batch-blob pipeline (`exportPendingBatch` / `ingestBatch`) so platform apps can compose and apply encrypted sync batches directly from an unlocked vault
+- Web app now syncs with a self-hosted `ldgr-server`: register or sign in via SRP-6a from vault settings, create or select a remote vault, and push/pull encrypted change batches over HTTPS — the server only ever sees encrypted blobs, never plaintext or key material (key derivation and batch sealing stay in WASM)
+- Web sync conflict review: concurrent edits to the same account or transaction are surfaced for review (keep local or keep remote) instead of being silently overwritten
 
 ### Fixed
 
 - `ldgr-server` router now uses axum 0.8 `{param}` path syntax; the previous `:param` syntax panicked at router construction under axum 0.8
 - iOS vault writes (add account, add/delete transaction) now record sync-outbox events, so locally created changes are actually included in the next push instead of being silently skipped
+- Web vault writes (add account, add/delete transaction) now record sync-outbox events, so locally created changes are actually included in the next push instead of being silently skipped (the `sync_events`/`sync_state` tables were previously dead scaffolding)
 
 ## [1.2.0] - 2026-05-30
 
