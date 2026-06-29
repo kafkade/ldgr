@@ -6,6 +6,7 @@
 //! [`Debug`] implementations redact secret values.
 
 mod crockford;
+mod emergency_kit;
 mod envelope;
 mod errors;
 mod kdf;
@@ -17,6 +18,7 @@ mod two_skd;
 mod vault;
 mod wrap;
 
+pub use emergency_kit::EmergencyKit;
 pub use envelope::{SealedEnvelope, decrypt_item, encrypt_item};
 pub use errors::CryptoError;
 pub use kdf::{Argon2Params, derive_auth_key, derive_encryption_key, derive_master_key};
