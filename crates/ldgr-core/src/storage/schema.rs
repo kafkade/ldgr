@@ -9,7 +9,7 @@ use rusqlite::Connection;
 use super::error::StorageError;
 
 /// Current schema version (incremented with each migration).
-const CURRENT_VERSION: u32 = 5;
+const CURRENT_VERSION: u32 = 6;
 
 /// Initialize the database schema, running any pending migrations.
 ///
@@ -68,6 +68,7 @@ fn run_migration(conn: &Connection, version: u32) -> Result<(), StorageError> {
         3 => migrate_v3(conn),
         4 => migrate_v4(conn),
         5 => migrate_v5(conn),
+        6 => migrate_v6(conn),
         _ => Err(StorageError::Database(rusqlite::Error::QueryReturnedNoRows)),
     }
 }
@@ -283,6 +284,56 @@ fn migrate_v5(conn: &Connection) -> Result<(), StorageError> {
     Ok(())
 }
 
+/// Migration v6: Budgets — a versioned, soft-delete `budgets` table plus an
+/// ordered `budget_allocations` child table so budget *definitions* become a
+/// first-class, persisted vault entity (mirroring accounts/transactions/goals).
+///
+/// Storage-model choice: the nested `allocations` collection is stored in a
+/// dedicated child table (like `postings` on `transactions`), NOT an embedded
+/// JSON column. A child table gives deterministic, reproduced-on-read ordering
+/// via `allocation_order` (which the future sync payload depends on, like
+/// `posting_order`) and stays consistent with the existing parent+child model.
+///
+/// Only the budget *definition* (allocations) is persisted — the computed
+/// `BudgetReport` / `BudgetVsActual` stay pure compute. `amount` is stored as
+/// TEXT for decimal precision; `account` is a soft reference (no FK, as the
+/// referenced account may not exist on every device). See issue #216.
+fn migrate_v6(conn: &Connection) -> Result<(), StorageError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE budgets (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            method TEXT NOT NULL,
+            period TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            modified_at TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1,
+            deleted INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE INDEX idx_budgets_deleted ON budgets(deleted);
+
+        -- Allocations (belong to budgets); allocation_order preserves the
+        -- caller-supplied order on read (matters for the sync payload).
+        CREATE TABLE budget_allocations (
+            id TEXT PRIMARY KEY,
+            budget_id TEXT NOT NULL REFERENCES budgets(id),
+            account TEXT NOT NULL,
+            amount TEXT NOT NULL,
+            rollover INTEGER NOT NULL DEFAULT 0,
+            allocation_order INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1
+        );
+
+        CREATE INDEX idx_budget_allocations_budget ON budget_allocations(budget_id);
+        ",
+    )?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,6 +357,8 @@ mod tests {
 
         for expected in [
             "accounts",
+            "budget_allocations",
+            "budgets",
             "commodities",
             "goals",
             "postings",
@@ -506,6 +559,64 @@ mod tests {
     }
 
     #[test]
+    fn migrate_v6_upgrades_from_v5() {
+        // Simulate a database left at schema v5 (before issue #216) and confirm
+        // the v6 migration adds the budgets + budget_allocations tables without
+        // dropping existing rows.
+        let conn = memory_db();
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);")
+            .unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        migrate_v1(&tx).unwrap();
+        migrate_v2(&tx).unwrap();
+        migrate_v3(&tx).unwrap();
+        migrate_v4(&tx).unwrap();
+        migrate_v5(&tx).unwrap();
+        tx.execute("INSERT INTO schema_version (version) VALUES (5)", [])
+            .unwrap();
+        tx.execute(
+            "INSERT INTO accounts (id, name, type, created_at, modified_at)
+             VALUES ('a1', 'Expenses:Food', 'expense', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+
+        // Running initialize should apply v6.
+        initialize(&conn).unwrap();
+        assert_eq!(current_version(&conn).unwrap(), CURRENT_VERSION);
+
+        // Pre-existing data survived the migration.
+        let name: String = conn
+            .query_row("SELECT name FROM accounts WHERE id = 'a1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(name, "Expenses:Food");
+
+        // The new budgets + budget_allocations tables exist and are usable.
+        conn.execute(
+            "INSERT INTO budgets (id, name, method, period, created_at, modified_at)
+             VALUES ('bud1', 'Monthly', 'envelope', 'monthly', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO budget_allocations
+                 (id, budget_id, account, amount, rollover, allocation_order, created_at)
+             VALUES ('al1', 'bud1', 'Expenses:Food', '500', 1, 0, '2024-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM budget_allocations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
     fn empty_db_has_version_zero() {
         let conn = memory_db();
         conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);")
@@ -539,6 +650,8 @@ mod tests {
             "idx_prices_deleted",
             "idx_goals_type",
             "idx_goals_deleted",
+            "idx_budgets_deleted",
+            "idx_budget_allocations_budget",
         ] {
             assert!(
                 indexes.contains(&expected.to_string()),
