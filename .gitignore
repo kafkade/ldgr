@@ -1,6 +1,6 @@
-# target/
-Cargo.lock is intentionally tracked for binary crates
-/target/
+# Cargo build output (workspace + nested example crates).
+# Cargo.lock is intentionally tracked for binary crates.
+target/
 *.swp
 *.swo
 *~
