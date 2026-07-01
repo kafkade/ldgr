@@ -387,6 +387,126 @@ pub fn create_transaction_with_sync(
     })
 }
 
+/// Update a transaction and replace its postings with atomic sync event recording.
+///
+/// Uses optimistic concurrency via `update.expected_version`; on a version
+/// mismatch the canonical write is rolled back and **no** outbox event is
+/// recorded. Emits an `update` event carrying the full post-update
+/// [`TransactionPayload`], mirroring [`create_transaction_with_sync`].
+///
+/// # Errors
+///
+/// Returns [`StorageError::InvalidInput`] if the postings list is empty and
+/// [`StorageError::Conflict`] on a version mismatch (or if the transaction was
+/// deleted).
+pub fn update_transaction_with_sync(
+    conn: &Connection,
+    id: &str,
+    update: &TransactionUpdate,
+    ctx: &SyncContext,
+) -> Result<Transaction, StorageError> {
+    if update.postings.is_empty() {
+        return Err(StorageError::InvalidInput(
+            "transaction must have at least one posting".into(),
+        ));
+    }
+
+    let now = now_iso8601();
+    let new_version = update.expected_version + 1;
+
+    let db_tx = conn.unchecked_transaction()?;
+
+    // Preserve the original creation timestamp so the emitted payload (and any
+    // remote upsert it drives) keeps `created_at` stable across the update.
+    let created_at: String = db_tx
+        .query_row(
+            "SELECT created_at FROM transactions WHERE id = ?1 AND deleted = 0",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                StorageError::NotFound(format!("transaction '{id}'"))
+            }
+            other => StorageError::Database(other),
+        })?;
+
+    let rows = db_tx.execute(
+        "UPDATE transactions
+         SET date = ?1, status = ?2, code = ?3, description = ?4, comment = ?5,
+             modified_at = ?6, version = ?7
+         WHERE id = ?8 AND version = ?9 AND deleted = 0",
+        rusqlite::params![
+            update.date,
+            update.status.as_str(),
+            update.code,
+            update.description,
+            update.comment,
+            now,
+            new_version,
+            id,
+            update.expected_version,
+        ],
+    )?;
+
+    if rows == 0 {
+        db_tx.rollback()?;
+        return Err(StorageError::Conflict(format!(
+            "transaction '{id}' was modified or deleted (expected version {})",
+            update.expected_version
+        )));
+    }
+
+    // Replace postings: delete old, insert new
+    db_tx.execute("DELETE FROM postings WHERE transaction_id = ?1", [id])?;
+    let postings = insert_postings(&db_tx, id, &update.postings, &now)?;
+
+    let payload = crate::sync::payload::to_bytes(&crate::sync::payload::TransactionPayload {
+        id: id.to_string(),
+        date: update.date.clone(),
+        status: update.status.as_str().to_string(),
+        code: update.code.clone(),
+        description: update.description.clone(),
+        comment: update.comment.clone(),
+        created_at: created_at.clone(),
+        modified_at: now.clone(),
+        postings: postings.iter().map(posting_to_payload).collect(),
+    })
+    .map_err(|e| {
+        StorageError::InvalidInput(format!("failed to serialize transaction payload: {e}"))
+    })?;
+
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    let version_u32 = new_version as u32;
+
+    super::sync::record_event(
+        &db_tx,
+        &ctx.device_id,
+        "transaction",
+        id,
+        "update",
+        &payload,
+        ctx.lamport_clock,
+        version_u32,
+    )?;
+
+    db_tx.commit()?;
+
+    Ok(Transaction {
+        id: id.to_string(),
+        date: update.date.clone(),
+        status: update.status,
+        code: update.code.clone(),
+        description: update.description.clone(),
+        comment: update.comment.clone(),
+        created_at,
+        modified_at: now,
+        version: new_version,
+        deleted: false,
+        postings,
+    })
+}
+
 /// Soft-delete a transaction with atomic sync event recording.
 pub fn soft_delete_transaction_with_sync(
     conn: &Connection,
