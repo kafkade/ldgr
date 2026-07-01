@@ -7,6 +7,8 @@
 
 #[cfg(feature = "sqlite")]
 pub mod accounts;
+#[cfg(all(feature = "sqlite", feature = "budget"))]
+pub mod budgets;
 #[cfg(feature = "sqlite")]
 pub mod error;
 #[cfg(all(feature = "sqlite", feature = "goals"))]
