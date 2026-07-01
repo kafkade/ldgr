@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Web admin panel (`apps/web` `/admin`) for user and server management against a self-hosted `ldgr-server`: SRP sign-in (reusing the WASM sync client, so the password never leaves the browser and non-admins are rejected), user management (enable/disable, role, per-user quota, delete), invite issuance/revocation with one-time token display, server settings (registration policy, default quota, max blob size), a per-user storage/usage dashboard, and a server info/version view — kept in the Apache-2.0 web app talking to the headless AGPL server over JSON (ADR-008 §7)
 - Immich-style docker-compose self-hosting bundle at the repo root (`docker-compose.yml`, `.env.example`, `Caddyfile`): `cp .env.example .env && docker compose up -d` yields a running server with a persistent named volume and a passing `/health` healthcheck; pulls the published GHCR image by default with a commented local-build override, and an optional Caddy `tls` profile for automatic HTTPS
 - Multi-arch (amd64/arm64) `ldgr-server` container images published to GHCR (`ghcr.io/kafkade/ldgr-server`) on release tags via a dedicated CI workflow, tagged with the version, `major.minor`, `major`, and `latest`
 - Self-hosting guide (`docs/self-hosting.md`) covering one-command deploy, full env-var reference, TLS with Caddy (plus nginx/Traefik notes), upgrades, and volume backup/restore
