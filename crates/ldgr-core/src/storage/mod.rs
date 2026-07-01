@@ -12,6 +12,8 @@ pub mod error;
 #[cfg(all(feature = "sqlite", feature = "goals"))]
 pub mod goals;
 #[cfg(feature = "sqlite")]
+pub mod prices;
+#[cfg(feature = "sqlite")]
 pub mod schema;
 #[cfg(feature = "sqlite")]
 pub mod sync;

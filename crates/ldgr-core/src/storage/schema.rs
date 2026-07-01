@@ -9,7 +9,7 @@ use rusqlite::Connection;
 use super::error::StorageError;
 
 /// Current schema version (incremented with each migration).
-const CURRENT_VERSION: u32 = 4;
+const CURRENT_VERSION: u32 = 5;
 
 /// Initialize the database schema, running any pending migrations.
 ///
@@ -67,6 +67,7 @@ fn run_migration(conn: &Connection, version: u32) -> Result<(), StorageError> {
         2 => migrate_v2(conn),
         3 => migrate_v3(conn),
         4 => migrate_v4(conn),
+        5 => migrate_v5(conn),
         _ => Err(StorageError::Database(rusqlite::Error::QueryReturnedNoRows)),
     }
 }
@@ -258,6 +259,30 @@ fn migrate_v4(conn: &Connection) -> Result<(), StorageError> {
     Ok(())
 }
 
+/// Migration v5: Bring the dormant `prices` table into the versioned-row model
+/// so observed price points become a first-class, soft-deletable, sync-ready
+/// vault entity (mirroring accounts/transactions/goals). Adds `modified_at`,
+/// `version`, and `deleted` columns via `ALTER TABLE` (preserving any existing
+/// rows) and backfills `modified_at` from `created_at`. This canonical price
+/// store is distinct from the `market_cache` HTTP-response cache. See issue
+/// #215.
+fn migrate_v5(conn: &Connection) -> Result<(), StorageError> {
+    conn.execute_batch(
+        "
+        ALTER TABLE prices ADD COLUMN modified_at TEXT NOT NULL DEFAULT '';
+        ALTER TABLE prices ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE prices ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;
+
+        -- Backfill modified_at for any pre-existing rows.
+        UPDATE prices SET modified_at = created_at WHERE modified_at = '';
+
+        CREATE INDEX idx_prices_deleted ON prices(deleted);
+        ",
+    )?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,6 +446,66 @@ mod tests {
     }
 
     #[test]
+    fn migrate_v5_upgrades_from_v4() {
+        // Simulate a database left at schema v4 (before issue #215) and confirm
+        // the v5 migration adds the versioned-row columns to `prices` without
+        // dropping existing rows.
+        let conn = memory_db();
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);")
+            .unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        migrate_v1(&tx).unwrap();
+        migrate_v2(&tx).unwrap();
+        migrate_v3(&tx).unwrap();
+        migrate_v4(&tx).unwrap();
+        tx.execute("INSERT INTO schema_version (version) VALUES (4)", [])
+            .unwrap();
+        // A commodity + a pre-existing (v1-shaped) price row.
+        tx.execute("INSERT INTO commodities (symbol) VALUES ('AAPL')", [])
+            .unwrap();
+        tx.execute(
+            "INSERT INTO prices (id, commodity, currency, price, date, source, created_at)
+             VALUES ('p1', 'AAPL', 'USD', '185.50', '2024-01-15', 'yahoo', '2024-01-15T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+
+        // Running initialize should apply v5.
+        initialize(&conn).unwrap();
+        assert_eq!(current_version(&conn).unwrap(), CURRENT_VERSION);
+
+        // The new versioned-row columns exist.
+        let columns: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('prices')")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for expected in ["modified_at", "version", "deleted"] {
+            assert!(
+                columns.contains(&expected.to_string()),
+                "prices missing {expected} column"
+            );
+        }
+
+        // Pre-existing row survived, defaults applied, and modified_at backfilled
+        // from created_at.
+        let (price, modified_at, version, deleted): (String, String, i64, i64) = conn
+            .query_row(
+                "SELECT price, modified_at, version, deleted FROM prices WHERE id = 'p1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(price, "185.50");
+        assert_eq!(modified_at, "2024-01-15T00:00:00Z");
+        assert_eq!(version, 1);
+        assert_eq!(deleted, 0);
+    }
+
+    #[test]
     fn empty_db_has_version_zero() {
         let conn = memory_db();
         conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);")
@@ -451,6 +536,7 @@ mod tests {
             "idx_postings_account",
             "idx_tags_entity",
             "idx_prices_commodity_date",
+            "idx_prices_deleted",
             "idx_goals_type",
             "idx_goals_deleted",
         ] {
