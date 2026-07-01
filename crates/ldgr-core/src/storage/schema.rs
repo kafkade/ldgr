@@ -9,7 +9,7 @@ use rusqlite::Connection;
 use super::error::StorageError;
 
 /// Current schema version (incremented with each migration).
-const CURRENT_VERSION: u32 = 3;
+const CURRENT_VERSION: u32 = 4;
 
 /// Initialize the database schema, running any pending migrations.
 ///
@@ -66,6 +66,7 @@ fn run_migration(conn: &Connection, version: u32) -> Result<(), StorageError> {
         1 => migrate_v1(conn),
         2 => migrate_v2(conn),
         3 => migrate_v3(conn),
+        4 => migrate_v4(conn),
         _ => Err(StorageError::Database(rusqlite::Error::QueryReturnedNoRows)),
     }
 }
@@ -228,6 +229,35 @@ fn migrate_v3(conn: &Connection) -> Result<(), StorageError> {
     Ok(())
 }
 
+/// Migration v4: Goals — a versioned, soft-delete `goals` table so financial
+/// goal definitions become a first-class, persisted vault entity. Stores only
+/// the goal *definition* (not computed progress). `target_amount` is stored as
+/// TEXT for decimal precision; `linked_account` is a soft reference (no FK, as
+/// the referenced account may not exist on every device). See issue #214.
+fn migrate_v4(conn: &Connection) -> Result<(), StorageError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE goals (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            goal_type TEXT NOT NULL,
+            target_amount TEXT NOT NULL,
+            target_date TEXT,
+            linked_account TEXT,
+            created_at TEXT NOT NULL,
+            modified_at TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1,
+            deleted INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE INDEX idx_goals_type ON goals(goal_type);
+        CREATE INDEX idx_goals_deleted ON goals(deleted);
+        ",
+    )?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,6 +282,7 @@ mod tests {
         for expected in [
             "accounts",
             "commodities",
+            "goals",
             "postings",
             "prices",
             "schema_version",
@@ -343,6 +374,53 @@ mod tests {
     }
 
     #[test]
+    fn migrate_v4_upgrades_from_v3() {
+        // Simulate a database left at schema v3 (before issue #214) and confirm
+        // the v4 migration adds the goals table without dropping existing rows.
+        let conn = memory_db();
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);")
+            .unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        migrate_v1(&tx).unwrap();
+        migrate_v2(&tx).unwrap();
+        migrate_v3(&tx).unwrap();
+        tx.execute("INSERT INTO schema_version (version) VALUES (3)", [])
+            .unwrap();
+        tx.execute(
+            "INSERT INTO accounts (id, name, type, created_at, modified_at)
+             VALUES ('a1', 'Assets:Savings', 'asset', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+
+        // Running initialize should apply v4.
+        initialize(&conn).unwrap();
+        assert_eq!(current_version(&conn).unwrap(), CURRENT_VERSION);
+
+        // Pre-existing data survived the migration.
+        let name: String = conn
+            .query_row("SELECT name FROM accounts WHERE id = 'a1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(name, "Assets:Savings");
+
+        // The new goals table exists and is usable.
+        conn.execute(
+            "INSERT INTO goals
+                 (id, name, goal_type, target_amount, created_at, modified_at)
+             VALUES ('g1', 'Emergency Fund', 'emergency_fund', '10000', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM goals", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
     fn empty_db_has_version_zero() {
         let conn = memory_db();
         conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);")
@@ -373,6 +451,8 @@ mod tests {
             "idx_postings_account",
             "idx_tags_entity",
             "idx_prices_commodity_date",
+            "idx_goals_type",
+            "idx_goals_deleted",
         ] {
             assert!(
                 indexes.contains(&expected.to_string()),
