@@ -46,6 +46,14 @@ pub struct StoredConflict {
     pub remote_event_id: String,
     pub local_payload: Vec<u8>,
     pub remote_payload: Vec<u8>,
+    /// The remote event's operation (`create` / `update` / `delete`). Needed to
+    /// drive the correct `apply_remote_*` path when the user keeps the remote
+    /// side of a conflict.
+    pub remote_operation: String,
+    /// The remote event's entity version. Combined with the current local
+    /// version, this determines the winning version used when re-applying the
+    /// remote payload.
+    pub remote_version: u32,
     pub detected_at: String,
     pub resolved: bool,
     pub resolution: Option<String>,
@@ -128,6 +136,28 @@ pub fn mark_events_synced(conn: &Connection, event_ids: &[String]) -> Result<(),
     Ok(())
 }
 
+/// Mark all pending (unsynced) outbox events for a given entity as synced,
+/// **without** pushing them, so they are dropped from the next batch.
+///
+/// Used when a conflict is resolved as "keep remote": the local edits to that
+/// entity are superseded by the remote payload, so they must not propagate.
+/// Marking them synced (rather than deleting) preserves this device's monotonic
+/// event count, which backs its vector-clock component.
+///
+/// Returns the number of events superseded.
+pub fn supersede_pending_events(
+    conn: &Connection,
+    entity_type: &str,
+    entity_id: &str,
+) -> Result<usize, StorageError> {
+    let rows = conn.execute(
+        "UPDATE sync_events SET synced = 1
+         WHERE synced = 0 AND entity_type = ?1 AND entity_id = ?2",
+        rusqlite::params![entity_type, entity_id],
+    )?;
+    Ok(rows)
+}
+
 // ── Conflict operations ────────────────────────────────────────────────────────
 
 /// Store one or more conflicts detected during merge.
@@ -136,8 +166,8 @@ pub fn store_conflicts(
     conflicts: &[StoredConflict],
 ) -> Result<(), StorageError> {
     let mut stmt = conn.prepare(
-        "INSERT INTO sync_conflicts (id, entity_type, entity_id, local_event_id, remote_event_id, local_payload, remote_payload, detected_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO sync_conflicts (id, entity_type, entity_id, local_event_id, remote_event_id, local_payload, remote_payload, remote_operation, remote_version, detected_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )?;
 
     for c in conflicts {
@@ -149,6 +179,8 @@ pub fn store_conflicts(
             c.remote_event_id,
             c.local_payload,
             c.remote_payload,
+            c.remote_operation,
+            i64::from(c.remote_version),
             c.detected_at,
         ])?;
     }
@@ -159,7 +191,7 @@ pub fn store_conflicts(
 /// List unresolved conflicts.
 pub fn list_unresolved_conflicts(conn: &Connection) -> Result<Vec<StoredConflict>, StorageError> {
     let mut stmt = conn.prepare(
-        "SELECT id, entity_type, entity_id, local_event_id, remote_event_id, local_payload, remote_payload, detected_at, resolved, resolution
+        "SELECT id, entity_type, entity_id, local_event_id, remote_event_id, local_payload, remote_payload, remote_operation, remote_version, detected_at, resolved, resolution
          FROM sync_conflicts WHERE resolved = 0 ORDER BY detected_at ASC",
     )?;
 
@@ -168,6 +200,21 @@ pub fn list_unresolved_conflicts(conn: &Connection) -> Result<Vec<StoredConflict
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(conflicts)
+}
+
+/// Fetch a single conflict by id, regardless of resolution status.
+///
+/// Returns `None` if no conflict with that id exists. Used by the "keep remote"
+/// resolution path, which needs the stored remote operation, version, and
+/// payload to faithfully re-apply the remote side.
+pub fn get_conflict(conn: &Connection, id: &str) -> Result<Option<StoredConflict>, StorageError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, entity_type, entity_id, local_event_id, remote_event_id, local_payload, remote_payload, remote_operation, remote_version, detected_at, resolved, resolution
+         FROM sync_conflicts WHERE id = ?1",
+    )?;
+
+    let result = stmt.query_row([id], row_to_conflict).optional()?;
+    Ok(result)
 }
 
 /// Count unresolved conflicts.
@@ -298,6 +345,7 @@ fn row_to_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredSyncEvent> {
 }
 
 fn row_to_conflict(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredConflict> {
+    let remote_version_raw: i64 = row.get(8)?;
     Ok(StoredConflict {
         id: row.get(0)?,
         entity_type: row.get(1)?,
@@ -306,9 +354,12 @@ fn row_to_conflict(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredConflict> 
         remote_event_id: row.get(4)?,
         local_payload: row.get(5)?,
         remote_payload: row.get(6)?,
-        detected_at: row.get(7)?,
-        resolved: row.get::<_, i64>(8)? != 0,
-        resolution: row.get(9)?,
+        remote_operation: row.get(7)?,
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        remote_version: remote_version_raw as u32,
+        detected_at: row.get(9)?,
+        resolved: row.get::<_, i64>(10)? != 0,
+        resolution: row.get(11)?,
     })
 }
 
@@ -365,6 +416,24 @@ mod tests {
     }
 
     #[test]
+    fn supersede_pending_events_drops_only_matching_entity() {
+        let conn = setup_db();
+        record_event(&conn, "dev1", "account", "acc1", "create", b"p1", 1, 1).unwrap();
+        record_event(&conn, "dev1", "account", "acc1", "update", b"p2", 2, 2).unwrap();
+        record_event(&conn, "dev1", "account", "acc2", "create", b"p3", 3, 1).unwrap();
+
+        let superseded = supersede_pending_events(&conn, "account", "acc1").unwrap();
+        assert_eq!(superseded, 2);
+
+        // Only acc2's event remains pending; acc1's are marked synced (kept for
+        // the monotonic device event count, but never pushed).
+        let pending = pending_events(&conn).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].entity_id, "acc2");
+        assert_eq!(device_event_count(&conn, "dev1").unwrap(), 3);
+    }
+
+    #[test]
     fn store_and_resolve_conflict() {
         let conn = setup_db();
 
@@ -376,6 +445,8 @@ mod tests {
             remote_event_id: "e2".into(),
             local_payload: b"local".to_vec(),
             remote_payload: b"remote".to_vec(),
+            remote_operation: "update".into(),
+            remote_version: 3,
             detected_at: "2024-01-15T00:00:00Z".into(),
             resolved: false,
             resolution: None,
@@ -386,6 +457,15 @@ mod tests {
         let unresolved = list_unresolved_conflicts(&conn).unwrap();
         assert_eq!(unresolved.len(), 1);
         assert_eq!(unresolved[0].entity_id, "txn1");
+        assert_eq!(unresolved[0].remote_operation, "update");
+        assert_eq!(unresolved[0].remote_version, 3);
+
+        // `get_conflict` fetches the same row by id.
+        let fetched = get_conflict(&conn, "c1").unwrap().unwrap();
+        assert_eq!(fetched.remote_payload, b"remote");
+        assert_eq!(fetched.remote_operation, "update");
+        assert_eq!(fetched.remote_version, 3);
+        assert!(get_conflict(&conn, "missing").unwrap().is_none());
 
         resolve_conflict(&conn, "c1", "keep_local").unwrap();
 

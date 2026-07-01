@@ -624,7 +624,10 @@ pub fn apply_remote_account_delete(
 }
 
 /// Current version of an account row (including soft-deleted rows), if it exists.
-fn current_account_version(conn: &Connection, id: &str) -> Result<Option<i64>, StorageError> {
+pub(crate) fn current_account_version(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<i64>, StorageError> {
     let mut stmt = conn.prepare("SELECT version FROM accounts WHERE id = ?1")?;
     let result = stmt
         .query_row([id], |row| row.get::<_, i64>(0))

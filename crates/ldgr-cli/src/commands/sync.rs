@@ -467,12 +467,14 @@ pub fn run_status(vault_path: &Path) -> Result<()> {
 /// on the same entity. The pipeline keeps the **local** version materialized and
 /// records the conflict for explicit review (ADR-003: no silent last-write-wins).
 ///
-/// This minimal resolver lists each unresolved conflict and lets the user keep
-/// the local version (marking it resolved). Re-materializing the **remote**
-/// version is a scoped follow-up — it needs richer conflict metadata than is
-/// stored today — so for now choosing "remote" is reported as unsupported.
+/// This resolver lists each unresolved conflict and lets the user keep the
+/// **local** version (a metadata-only resolution) or the **remote** version
+/// (re-materialized locally and re-broadcast so every device converges — see
+/// [`ldgr_core::sync::pipeline::resolve_conflict_keep_remote`]).
 pub fn run_resolve(vault_path: &Path) -> Result<()> {
     let conn = crate::db::require_unlocked_db(vault_path)?;
+
+    let device_id = ldgr_core::storage::sync::device_id(&conn)?;
 
     let conflicts = ldgr_core::storage::sync::list_unresolved_conflicts(&conn)?;
     if conflicts.is_empty() {
@@ -489,9 +491,12 @@ pub fn run_resolve(vault_path: &Path) -> Result<()> {
         println!("  Entity:    {} {}", c.entity_type, c.entity_id);
         println!("  Detected:  {}", c.detected_at);
         println!("  Local event:  {}", c.local_event_id);
-        println!("  Remote event: {}", c.remote_event_id);
+        println!(
+            "  Remote event: {} ({}, v{})",
+            c.remote_event_id, c.remote_operation, c.remote_version
+        );
         println!();
-        print!("  Keep [l]ocal (current) or [s]kip for now? [l/s]: ");
+        print!("  Keep [l]ocal (current), keep [r]emote, or [s]kip for now? [l/r/s]: ");
         io::stdout().flush()?;
         let mut choice = String::new();
         io::stdin().read_line(&mut choice)?;
@@ -501,6 +506,11 @@ pub fn run_resolve(vault_path: &Path) -> Result<()> {
                 ldgr_core::storage::sync::resolve_conflict(&conn, &c.id, "local")?;
                 resolved += 1;
                 println!("  ✓ Kept local version.");
+            }
+            "r" | "remote" => {
+                ldgr_core::sync::pipeline::resolve_conflict_keep_remote(&conn, &device_id, &c.id)?;
+                resolved += 1;
+                println!("  ✓ Kept remote version (re-applied locally and queued for sync).");
             }
             _ => {
                 println!("  ─ Skipped (still unresolved).");
@@ -514,11 +524,6 @@ pub fn run_resolve(vault_path: &Path) -> Result<()> {
     if remaining > 0 {
         println!("{remaining} still need review.");
     }
-    println!();
-    println!(
-        "Note: keeping the *remote* version on a conflict is not yet supported \n\
-         from the CLI — that re-materialization is a tracked follow-up."
-    );
 
     Ok(())
 }

@@ -248,6 +248,96 @@ pub fn ingest_batch_with_session_key(
     )
 }
 
+// ── Conflict resolution ──────────────────────────────────────────────────────
+
+/// Resolve a persisted conflict by keeping the **remote** side.
+///
+/// Keeping local is a pure metadata update (the local state is already
+/// materialized) — see [`crate::storage::sync::resolve_conflict`] with
+/// `"local"`. Keeping remote is more involved and lives here because it must
+/// re-apply the stored remote payload against the canonical tables:
+///
+/// 1. Compute a **winning version** `max(local_version, remote_version) + 1`.
+///    A concurrent conflict usually leaves both sides at the *same* entity
+///    version, so re-applying at the stored remote version would be refused by
+///    the `apply_remote_*` staleness gate. Bumping past both sides guarantees
+///    remote wins locally and converges on every other device.
+/// 2. **Supersede** the local pending edit(s) for the entity so the discarded
+///    local change never propagates.
+/// 3. **Re-materialize** the remote payload at the winning version.
+/// 4. **Emit** a new outbox event carrying the remote payload at the winning
+///    version, so the resolution reaches other devices (not just this one).
+/// 5. Mark the conflict resolved (`"remote"`).
+///
+/// The whole operation runs in a single `SQLite` transaction, so it is atomic.
+///
+/// # Errors
+///
+/// Returns [`PipelineError::Storage`] if the conflict is unknown or already
+/// resolved, or [`PipelineError::Format`] / [`PipelineError::UnsupportedEntity`]
+/// if the stored entity type / operation / payload cannot be applied.
+pub fn resolve_conflict_keep_remote(
+    conn: &Connection,
+    local_device_id: &str,
+    conflict_id: &str,
+) -> Result<(), PipelineError> {
+    let conflict = sync_store::get_conflict(conn, conflict_id)?
+        .ok_or_else(|| StorageError::NotFound(format!("conflict '{conflict_id}'")))?;
+
+    if conflict.resolved {
+        return Err(
+            StorageError::NotFound(format!("conflict '{conflict_id}' (already resolved)")).into(),
+        );
+    }
+
+    let entity_type = EntityType::parse_str(&conflict.entity_type).ok_or_else(|| {
+        PipelineError::Format(format!("unknown entity type: {}", conflict.entity_type))
+    })?;
+    let operation = Operation::parse_str(&conflict.remote_operation).ok_or_else(|| {
+        PipelineError::Format(format!(
+            "unknown remote operation: {}",
+            conflict.remote_operation
+        ))
+    })?;
+
+    let tx = conn.unchecked_transaction().map_err(StorageError::from)?;
+
+    let local_version = current_entity_version(&tx, entity_type, &conflict.entity_id)?;
+    let winning_version = local_version.max(i64::from(conflict.remote_version)) + 1;
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    let winning_version_u32 = winning_version as u32;
+
+    // Drop the local edit so the remote side wins everywhere.
+    sync_store::supersede_pending_events(&tx, &conflict.entity_type, &conflict.entity_id)?;
+
+    // Re-materialize the remote payload at the winning version.
+    apply_remote_payload(
+        &tx,
+        entity_type,
+        operation,
+        &conflict.remote_payload,
+        winning_version,
+    )?;
+
+    // Broadcast the resolution so other devices converge onto the remote side.
+    let lamport = sync_store::tick_lamport(&tx)?;
+    sync_store::record_event(
+        &tx,
+        local_device_id,
+        entity_type.as_str(),
+        &conflict.entity_id,
+        operation.as_str(),
+        &conflict.remote_payload,
+        lamport,
+        winning_version_u32,
+    )?;
+
+    sync_store::resolve_conflict(&tx, conflict_id, "remote")?;
+
+    tx.commit().map_err(StorageError::from)?;
+    Ok(())
+}
+
 // ── Blob framing ─────────────────────────────────────────────────────────────
 
 /// Seal a batch into the canonical blob: `json(encrypt_item(vk, json(batch)))`.
@@ -272,28 +362,49 @@ fn open_batch(vault_key: &VaultKey, ciphertext: &[u8]) -> Result<EventBatch, Pip
 /// `sync_events` outbox row — applied remote events must not echo into our own
 /// outbox.
 fn apply_event(conn: &Connection, ev: &SyncEvent) -> Result<bool, PipelineError> {
-    let version = i64::from(ev.version);
-    match ev.entity_type {
-        EntityType::Account => match ev.operation {
+    apply_remote_payload(
+        conn,
+        ev.entity_type,
+        ev.operation,
+        &ev.payload,
+        i64::from(ev.version),
+    )
+}
+
+/// Deserialize a remote payload and apply it to the canonical tables via the
+/// appropriate `apply_remote_*` function at `version`.
+///
+/// Shared by clean-merge apply ([`apply_event`]) and "keep remote" conflict
+/// resolution ([`resolve_conflict_keep_remote`]). Returns `true` if a row was
+/// written, `false` if the event was stale for that `version`.
+fn apply_remote_payload(
+    conn: &Connection,
+    entity_type: EntityType,
+    operation: Operation,
+    payload: &[u8],
+    version: i64,
+) -> Result<bool, PipelineError> {
+    match entity_type {
+        EntityType::Account => match operation {
             Operation::Create | Operation::Update => {
-                let p: AccountPayload = payload::from_bytes(&ev.payload)
+                let p: AccountPayload = payload::from_bytes(payload)
                     .map_err(|e| PipelineError::Format(format!("account payload: {e}")))?;
                 Ok(accounts::apply_remote_account(conn, &p, version)?)
             }
             Operation::Delete => {
-                let p: DeletePayload = payload::from_bytes(&ev.payload)
+                let p: DeletePayload = payload::from_bytes(payload)
                     .map_err(|e| PipelineError::Format(format!("delete payload: {e}")))?;
                 Ok(accounts::apply_remote_account_delete(conn, &p.id, version)?)
             }
         },
-        EntityType::Transaction => match ev.operation {
+        EntityType::Transaction => match operation {
             Operation::Create | Operation::Update => {
-                let p: TransactionPayload = payload::from_bytes(&ev.payload)
+                let p: TransactionPayload = payload::from_bytes(payload)
                     .map_err(|e| PipelineError::Format(format!("transaction payload: {e}")))?;
                 Ok(transactions::apply_remote_transaction(conn, &p, version)?)
             }
             Operation::Delete => {
-                let p: DeletePayload = payload::from_bytes(&ev.payload)
+                let p: DeletePayload = payload::from_bytes(payload)
                     .map_err(|e| PipelineError::Format(format!("delete payload: {e}")))?;
                 Ok(transactions::apply_remote_transaction_delete(
                     conn, &p.id, version,
@@ -304,6 +415,20 @@ fn apply_event(conn: &Connection, ev: &SyncEvent) -> Result<bool, PipelineError>
         // silently drop financial data. Tracked by #203.
         other => Err(PipelineError::UnsupportedEntity(other.as_str().to_string())),
     }
+}
+
+/// Current local version of an entity row (0 if it does not exist yet).
+fn current_entity_version(
+    conn: &Connection,
+    entity_type: EntityType,
+    id: &str,
+) -> Result<i64, PipelineError> {
+    let version = match entity_type {
+        EntityType::Account => accounts::current_account_version(conn, id)?,
+        EntityType::Transaction => transactions::current_transaction_version(conn, id)?,
+        other => return Err(PipelineError::UnsupportedEntity(other.as_str().to_string())),
+    };
+    Ok(version.unwrap_or(0))
 }
 
 // ── Conversions & clock helpers ──────────────────────────────────────────────
@@ -338,6 +463,8 @@ fn conflict_to_stored(c: &super::conflicts::SyncConflict) -> sync_store::StoredC
         remote_event_id: c.remote_event.id.clone(),
         local_payload: c.local_event.payload.clone(),
         remote_payload: c.remote_event.payload.clone(),
+        remote_operation: c.remote_event.operation.as_str().to_string(),
+        remote_version: c.remote_event.version,
         detected_at: c.detected_at.clone(),
         resolved: false,
         resolution: None,
@@ -851,5 +978,173 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    // ── resolve_conflict_keep_remote (issue #211) ────────────────────────────
+
+    fn remote_account_payload(id: &str, name: &str) -> Vec<u8> {
+        payload::to_bytes(&AccountPayload {
+            id: id.into(),
+            name: name.into(),
+            account_type: "asset".into(),
+            commodity: Some("USD".into()),
+            parent_id: None,
+            note: None,
+            created_at: "2024-01-15T00:00:00Z".into(),
+            modified_at: "2024-01-15T00:00:00Z".into(),
+        })
+        .unwrap()
+    }
+
+    fn store_one_conflict(conn: &Connection, c: sync_store::StoredConflict) {
+        sync_store::store_conflicts(conn, &[c]).unwrap();
+    }
+
+    #[test]
+    fn keep_remote_update_materializes_remote_and_broadcasts() {
+        let conn = vault();
+        // Local account X (v1) with a pending local edit in the outbox.
+        let x = seed_account(&conn, "dev_b", 1, "Assets:Cash");
+        assert_eq!(pending_event_count(&conn).unwrap(), 1);
+
+        let remote_payload = remote_account_payload(&x, "Assets:Remote");
+        store_one_conflict(
+            &conn,
+            sync_store::StoredConflict {
+                id: "c1".into(),
+                entity_type: "account".into(),
+                entity_id: x.clone(),
+                local_event_id: "local-evt".into(),
+                remote_event_id: "remote-evt".into(),
+                local_payload: b"local".to_vec(),
+                remote_payload: remote_payload.clone(),
+                remote_operation: "update".into(),
+                remote_version: 1,
+                detected_at: "2024-01-15T00:00:00Z".into(),
+                resolved: false,
+                resolution: None,
+            },
+        );
+
+        resolve_conflict_keep_remote(&conn, "dev_b", "c1").unwrap();
+
+        // Local state now reflects the remote payload at the winning version
+        // (max(local 1, remote 1) + 1 = 2), not the local edit.
+        let acc = get_account(&conn, &x, &ListOptions::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(acc.name, "Assets:Remote");
+        assert_eq!(acc.version, 2);
+
+        // Conflict marked resolved as "remote".
+        assert_eq!(
+            crate::storage::sync::unresolved_conflict_count(&conn).unwrap(),
+            0
+        );
+        let stored = sync_store::get_conflict(&conn, "c1").unwrap().unwrap();
+        assert!(stored.resolved);
+        assert_eq!(stored.resolution.as_deref(), Some("remote"));
+
+        // The local edit was superseded and exactly one winning event is queued
+        // so the resolution propagates to other devices.
+        let pending = sync_store::pending_events(&conn).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].entity_id, x);
+        assert_eq!(pending[0].operation, "update");
+        assert_eq!(pending[0].version, 2);
+        assert_eq!(pending[0].payload, remote_payload);
+        assert_eq!(pending[0].device_id, "dev_b");
+    }
+
+    #[test]
+    fn keep_remote_delete_soft_deletes_locally() {
+        let conn = vault();
+        let y = seed_account(&conn, "dev_b", 1, "Assets:Bank");
+
+        let remote_payload = payload::to_bytes(&DeletePayload { id: y.clone() }).unwrap();
+        store_one_conflict(
+            &conn,
+            sync_store::StoredConflict {
+                id: "c2".into(),
+                entity_type: "account".into(),
+                entity_id: y.clone(),
+                local_event_id: "local-evt".into(),
+                remote_event_id: "remote-evt".into(),
+                local_payload: b"local".to_vec(),
+                remote_payload: remote_payload.clone(),
+                remote_operation: "delete".into(),
+                remote_version: 3,
+                detected_at: "2024-01-15T00:00:00Z".into(),
+                resolved: false,
+                resolution: None,
+            },
+        );
+
+        resolve_conflict_keep_remote(&conn, "dev_b", "c2").unwrap();
+
+        // Default options exclude deleted rows → the account is now gone.
+        assert!(
+            get_account(&conn, &y, &ListOptions::default())
+                .unwrap()
+                .is_none()
+        );
+        // It is soft-deleted at the winning version max(local 1, remote 3) + 1 = 4.
+        let deleted = get_account(
+            &conn,
+            &y,
+            &ListOptions {
+                include_deleted: true,
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert!(deleted.deleted);
+        assert_eq!(deleted.version, 4);
+
+        let pending = sync_store::pending_events(&conn).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].operation, "delete");
+        assert_eq!(pending[0].version, 4);
+        assert_eq!(pending[0].payload, remote_payload);
+    }
+
+    #[test]
+    fn keep_remote_unknown_conflict_errors() {
+        let conn = vault();
+        let err = resolve_conflict_keep_remote(&conn, "dev_b", "missing").unwrap_err();
+        assert!(matches!(
+            err,
+            PipelineError::Storage(StorageError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn keep_remote_is_idempotent_guarded() {
+        let conn = vault();
+        let x = seed_account(&conn, "dev_b", 1, "Assets:Cash");
+        store_one_conflict(
+            &conn,
+            sync_store::StoredConflict {
+                id: "c3".into(),
+                entity_type: "account".into(),
+                entity_id: x.clone(),
+                local_event_id: "l".into(),
+                remote_event_id: "r".into(),
+                local_payload: b"l".to_vec(),
+                remote_payload: remote_account_payload(&x, "Assets:Remote"),
+                remote_operation: "update".into(),
+                remote_version: 1,
+                detected_at: "2024-01-15T00:00:00Z".into(),
+                resolved: false,
+                resolution: None,
+            },
+        );
+        resolve_conflict_keep_remote(&conn, "dev_b", "c3").unwrap();
+        // A second attempt on an already-resolved conflict is rejected.
+        let err = resolve_conflict_keep_remote(&conn, "dev_b", "c3").unwrap_err();
+        assert!(matches!(
+            err,
+            PipelineError::Storage(StorageError::NotFound(_))
+        ));
     }
 }

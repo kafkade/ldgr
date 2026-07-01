@@ -9,7 +9,7 @@ use rusqlite::Connection;
 use super::error::StorageError;
 
 /// Current schema version (incremented with each migration).
-const CURRENT_VERSION: u32 = 2;
+const CURRENT_VERSION: u32 = 3;
 
 /// Initialize the database schema, running any pending migrations.
 ///
@@ -65,6 +65,7 @@ fn run_migration(conn: &Connection, version: u32) -> Result<(), StorageError> {
     match version {
         1 => migrate_v1(conn),
         2 => migrate_v2(conn),
+        3 => migrate_v3(conn),
         _ => Err(StorageError::Database(rusqlite::Error::QueryReturnedNoRows)),
     }
 }
@@ -213,6 +214,20 @@ fn migrate_v2(conn: &Connection) -> Result<(), StorageError> {
     Ok(())
 }
 
+/// Migration v3: Store the remote event's operation + version on conflicts so
+/// clients can faithfully re-apply the remote side ("keep remote"), not just
+/// keep local. See issue #211.
+fn migrate_v3(conn: &Connection) -> Result<(), StorageError> {
+    conn.execute_batch(
+        "
+        ALTER TABLE sync_conflicts ADD COLUMN remote_operation TEXT NOT NULL DEFAULT '';
+        ALTER TABLE sync_conflicts ADD COLUMN remote_version INTEGER NOT NULL DEFAULT 0;
+        ",
+    )?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,6 +281,65 @@ mod tests {
         initialize(&conn).unwrap();
         initialize(&conn).unwrap();
         assert_eq!(current_version(&conn).unwrap(), CURRENT_VERSION);
+    }
+
+    #[test]
+    fn sync_conflicts_has_remote_op_and_version_columns() {
+        let conn = memory_db();
+        initialize(&conn).unwrap();
+
+        let columns: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('sync_conflicts')")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+
+        assert!(
+            columns.contains(&"remote_operation".to_string()),
+            "sync_conflicts missing remote_operation column"
+        );
+        assert!(
+            columns.contains(&"remote_version".to_string()),
+            "sync_conflicts missing remote_version column"
+        );
+    }
+
+    #[test]
+    fn migrate_v3_upgrades_from_v2() {
+        // Simulate a database left at schema v2 (before issue #211) and confirm
+        // the v3 migration adds the columns without dropping existing rows.
+        let conn = memory_db();
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);")
+            .unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        migrate_v1(&tx).unwrap();
+        migrate_v2(&tx).unwrap();
+        tx.execute("INSERT INTO schema_version (version) VALUES (2)", [])
+            .unwrap();
+        tx.execute(
+            "INSERT INTO sync_conflicts
+                 (id, entity_type, entity_id, local_event_id, remote_event_id, local_payload, remote_payload, detected_at)
+             VALUES ('c1', 'transaction', 'txn1', 'e1', 'e2', X'00', X'01', '2024-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+
+        // Running initialize should apply v3.
+        initialize(&conn).unwrap();
+        assert_eq!(current_version(&conn).unwrap(), CURRENT_VERSION);
+
+        let (op, ver): (String, i64) = conn
+            .query_row(
+                "SELECT remote_operation, remote_version FROM sync_conflicts WHERE id = 'c1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(op, "");
+        assert_eq!(ver, 0);
     }
 
     #[test]
