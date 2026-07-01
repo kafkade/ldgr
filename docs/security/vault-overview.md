@@ -162,3 +162,6 @@ This page is the friendly overview. If you'd like to go deeper:
 - **[Vault format test vectors](./test-vectors.md)** — known-answer test vectors
   (KDF, key wrapping, envelope encryption, a full annotated vault file, and
   negative cases) for anyone building or auditing a compatible implementation.
+- **[Vault format diagrams](./diagrams/README.md)** — polished, color-coded
+  diagrams of the key hierarchy, file structure, and each crypto flow, including
+  a zero-knowledge view of what your device sees versus what the cloud sees.
