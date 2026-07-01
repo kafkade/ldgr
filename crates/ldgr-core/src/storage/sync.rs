@@ -707,4 +707,221 @@ mod tests {
         assert_eq!(events[0].entity_type, "transaction");
         assert_eq!(events[0].operation, "delete");
     }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn update_transaction_with_sync_records_event() {
+        use crate::storage::accounts::AccountType;
+        use crate::storage::accounts::{ListOptions, NewAccount, create_account};
+        use crate::storage::transactions::{
+            NewPosting, NewTransaction, TransactionStatus, TransactionUpdate,
+            create_transaction_with_sync, get_transaction, update_transaction_with_sync,
+        };
+
+        let conn = setup_db();
+
+        let a1 = create_account(
+            &conn,
+            &NewAccount {
+                name: "Assets:Cash".into(),
+                account_type: AccountType::Asset,
+                commodity: Some("USD".into()),
+                parent_id: None,
+                note: None,
+            },
+        )
+        .unwrap();
+        let a2 = create_account(
+            &conn,
+            &NewAccount {
+                name: "Expenses:Food".into(),
+                account_type: AccountType::Expense,
+                commodity: Some("USD".into()),
+                parent_id: None,
+                note: None,
+            },
+        )
+        .unwrap();
+
+        let txn = create_transaction_with_sync(
+            &conn,
+            &NewTransaction {
+                date: "2024-01-15".into(),
+                status: TransactionStatus::Cleared,
+                code: None,
+                description: "Lunch".into(),
+                comment: None,
+                postings: vec![
+                    NewPosting {
+                        account_id: a1.id.clone(),
+                        amount_quantity: Some("-10.00".into()),
+                        amount_commodity: Some("USD".into()),
+                        balance_assertion_quantity: None,
+                        balance_assertion_commodity: None,
+                    },
+                    NewPosting {
+                        account_id: a2.id.clone(),
+                        amount_quantity: Some("10.00".into()),
+                        amount_commodity: Some("USD".into()),
+                        balance_assertion_quantity: None,
+                        balance_assertion_commodity: None,
+                    },
+                ],
+            },
+            &SyncContext {
+                device_id: "dev-test".into(),
+                lamport_clock: 1,
+            },
+        )
+        .unwrap();
+
+        let updated = update_transaction_with_sync(
+            &conn,
+            &txn.id,
+            &TransactionUpdate {
+                date: "2024-01-16".into(),
+                status: TransactionStatus::Pending,
+                code: Some("42".into()),
+                description: "Brunch".into(),
+                comment: Some("edited".into()),
+                postings: vec![NewPosting {
+                    account_id: a1.id.clone(),
+                    amount_quantity: Some("0.00".into()),
+                    amount_commodity: Some("USD".into()),
+                    balance_assertion_quantity: None,
+                    balance_assertion_commodity: None,
+                }],
+                expected_version: txn.version,
+            },
+            &SyncContext {
+                device_id: "dev-test".into(),
+                lamport_clock: 2,
+            },
+        )
+        .unwrap();
+
+        // Canonical row reflects the update, keeping the original created_at.
+        assert_eq!(updated.description, "Brunch");
+        assert_eq!(updated.status, TransactionStatus::Pending);
+        assert_eq!(updated.version, txn.version + 1);
+        assert_eq!(updated.postings.len(), 1);
+        assert_eq!(updated.created_at, txn.created_at);
+
+        let fetched = get_transaction(&conn, &txn.id, &ListOptions::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(fetched.description, "Brunch");
+        assert_eq!(fetched.postings.len(), 1);
+
+        // Exactly one create + one update event landed in the outbox.
+        let events = pending_events(&conn).unwrap();
+        assert_eq!(events.len(), 2);
+        let update_ev = events
+            .iter()
+            .find(|e| e.operation == "update")
+            .expect("update event recorded");
+        assert_eq!(update_ev.entity_type, "transaction");
+        assert_eq!(update_ev.entity_id, txn.id);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let expected_version = updated.version as u32;
+        assert_eq!(update_ev.version, expected_version);
+    }
+
+    #[test]
+    fn update_transaction_with_sync_version_conflict_emits_nothing() {
+        use crate::storage::accounts::AccountType;
+        use crate::storage::accounts::{NewAccount, create_account};
+        use crate::storage::transactions::{
+            NewPosting, NewTransaction, TransactionStatus, TransactionUpdate,
+            create_transaction_with_sync, update_transaction_with_sync,
+        };
+
+        let conn = setup_db();
+
+        let a1 = create_account(
+            &conn,
+            &NewAccount {
+                name: "Assets:Cash".into(),
+                account_type: AccountType::Asset,
+                commodity: Some("USD".into()),
+                parent_id: None,
+                note: None,
+            },
+        )
+        .unwrap();
+        let a2 = create_account(
+            &conn,
+            &NewAccount {
+                name: "Expenses:Food".into(),
+                account_type: AccountType::Expense,
+                commodity: Some("USD".into()),
+                parent_id: None,
+                note: None,
+            },
+        )
+        .unwrap();
+
+        let txn = create_transaction_with_sync(
+            &conn,
+            &NewTransaction {
+                date: "2024-01-15".into(),
+                status: TransactionStatus::Cleared,
+                code: None,
+                description: "Lunch".into(),
+                comment: None,
+                postings: vec![
+                    NewPosting {
+                        account_id: a1.id.clone(),
+                        amount_quantity: Some("-10.00".into()),
+                        amount_commodity: Some("USD".into()),
+                        balance_assertion_quantity: None,
+                        balance_assertion_commodity: None,
+                    },
+                    NewPosting {
+                        account_id: a2.id.clone(),
+                        amount_quantity: Some("10.00".into()),
+                        amount_commodity: Some("USD".into()),
+                        balance_assertion_quantity: None,
+                        balance_assertion_commodity: None,
+                    },
+                ],
+            },
+            &SyncContext {
+                device_id: "dev-test".into(),
+                lamport_clock: 1,
+            },
+        )
+        .unwrap();
+
+        // Stale expected_version is rejected and records no outbox event.
+        let result = update_transaction_with_sync(
+            &conn,
+            &txn.id,
+            &TransactionUpdate {
+                date: "2024-01-16".into(),
+                status: TransactionStatus::Pending,
+                code: None,
+                description: "Stale".into(),
+                comment: None,
+                postings: vec![NewPosting {
+                    account_id: a1.id.clone(),
+                    amount_quantity: Some("0.00".into()),
+                    amount_commodity: Some("USD".into()),
+                    balance_assertion_quantity: None,
+                    balance_assertion_commodity: None,
+                }],
+                expected_version: txn.version + 99,
+            },
+            &SyncContext {
+                device_id: "dev-test".into(),
+                lamport_clock: 2,
+            },
+        );
+        assert!(matches!(result, Err(StorageError::Conflict(_))));
+
+        // Only the original create event remains; the failed update rolled back.
+        let events = pending_events(&conn).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].operation, "create");
+    }
 }
