@@ -584,7 +584,16 @@ impl LdgrVault {
         let state = self.state.lock().expect("mutex poisoned");
         let conn = require_conn(&state)?;
 
-        sync_storage::resolve_conflict(conn, &conflict_id, &resolution)?;
+        if resolution == "keep_remote" {
+            let device_id = sync_storage::device_id(conn)?;
+            ldgr_core::sync::pipeline::resolve_conflict_keep_remote(
+                conn,
+                &device_id,
+                &conflict_id,
+            )?;
+        } else {
+            sync_storage::resolve_conflict(conn, &conflict_id, &resolution)?;
+        }
         Ok(())
     }
 
@@ -603,6 +612,8 @@ impl LdgrVault {
                 remote_event_id: String::new(),
                 local_payload: c.local_payload.into_bytes(),
                 remote_payload: c.remote_payload.into_bytes(),
+                remote_operation: String::new(),
+                remote_version: 0,
                 detected_at: c.detected_at,
                 resolved: false,
                 resolution: None,

@@ -72,6 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Web sync conflict review: concurrent edits to the same account or transaction are surfaced for review (keep local or keep remote) instead of being silently overwritten
 - CLI now syncs end-to-end with a self-hosted `ldgr-server`: `ldgr sync push` exports pending changes through the encrypted batch-blob pipeline and `ldgr sync pull` applies downloaded batches into the local vault, materializing accounts and transactions and surfacing concurrent-edit conflicts for review — replacing the previous file-staging placeholder that uploaded nothing and never applied pulled changes
 - `ldgr sync resolve` to review and resolve pending sync conflicts (keep local), and `ldgr sync status` now reports the pending-push event count and unresolved conflict count
+- `ldgr sync resolve` can now keep the *remote* version of a conflict, not just the local one: the remote change is re-applied to your vault and re-broadcast so every device converges on it (previously choosing "remote" was unsupported)
 
 ### Fixed
 
@@ -79,6 +80,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI vault writes (add account, rename account, add/import/delete transaction) now record sync-outbox events, so locally created changes are actually included in the next push instead of being silently skipped
 - iOS vault writes (add account, add/delete transaction) now record sync-outbox events, so locally created changes are actually included in the next push instead of being silently skipped
 - Web vault writes (add account, add/delete transaction) now record sync-outbox events, so locally created changes are actually included in the next push instead of being silently skipped (the `sync_events`/`sync_state` tables were previously dead scaffolding)
+- Resolving a sync conflict as "keep remote" now actually re-applies the remote change (via the Swift/iOS bindings it previously only marked the conflict resolved without materializing the remote version)
 
 ## [1.2.0] - 2026-05-30
 

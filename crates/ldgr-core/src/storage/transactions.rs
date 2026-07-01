@@ -637,7 +637,10 @@ pub fn apply_remote_transaction_delete(
 }
 
 /// Current version of a transaction row (including soft-deleted rows), if any.
-fn current_transaction_version(conn: &Connection, id: &str) -> Result<Option<i64>, StorageError> {
+pub(crate) fn current_transaction_version(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<i64>, StorageError> {
     use rusqlite::OptionalExtension;
     let mut stmt = conn.prepare("SELECT version FROM transactions WHERE id = ?1")?;
     let result = stmt

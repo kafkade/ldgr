@@ -53,8 +53,8 @@ use ldgr_core::storage::accounts::{
 };
 use ldgr_core::storage::schema;
 use ldgr_core::storage::sync::{
-    SyncContext, list_unresolved_conflicts, mark_events_synced, record_event,
-    unresolved_conflict_count,
+    SyncContext, get_conflict, list_unresolved_conflicts, mark_events_synced, pending_events,
+    record_event, unresolved_conflict_count,
 };
 use ldgr_core::storage::transactions::{
     NewPosting, NewTransaction, Transaction, TransactionStatus, create_transaction_with_sync,
@@ -63,7 +63,7 @@ use ldgr_core::storage::transactions::{
 use ldgr_core::sync::payload::{self, PostingPayload, TransactionPayload};
 use ldgr_core::sync::pipeline::{
     ExportedBatch, IngestOutcome, export_pending_batch, export_pending_batch_with_session_key,
-    ingest_batch, ingest_batch_with_session_key,
+    ingest_batch, ingest_batch_with_session_key, resolve_conflict_keep_remote,
 };
 use ldgr_core::sync::server::{ListBatchesQuery, RawHttpSender, ServerSyncClient};
 
@@ -530,6 +530,10 @@ async fn concurrent_divergent_edits_surface_conflict_not_lww() {
         !conflict.local_payload.is_empty() && !conflict.remote_payload.is_empty(),
         "both payloads retained so a human can review and choose"
     );
+    // The remote side's operation + version are now captured (issue #211), so a
+    // client can faithfully re-apply the remote payload — not just keep local.
+    assert_eq!(conflict.remote_operation, "update");
+    assert_eq!(conflict.remote_version, 2);
 
     // B's local view of T was NOT overwritten by the remote edit.
     let b_after = get_transaction(&b, &txn_id, &ListOptions::default())
@@ -549,6 +553,42 @@ async fn concurrent_divergent_edits_surface_conflict_not_lww() {
     assert_eq!(a_outcome.applied, 0);
     assert_eq!(unresolved_conflict_count(&a).unwrap(), 1);
     assert_transaction_balanced(&a, &txn_id);
+
+    // ── Issue #211: A resolves the conflict by KEEPING REMOTE (B's edit). ──
+    // A's own edit (description) must be superseded by B's amount edit, and the
+    // resolution must be re-broadcast as a new pending event so every device
+    // converges — not just kept locally.
+    let a_conflict = &list_unresolved_conflicts(&a).unwrap()[0];
+    let a_conflict_id = a_conflict.id.clone();
+    resolve_conflict_keep_remote(&a, "dev_a", &a_conflict_id).unwrap();
+
+    // The conflict is now resolved as "remote".
+    assert_eq!(unresolved_conflict_count(&a).unwrap(), 0);
+    let resolved = get_conflict(&a, &a_conflict_id).unwrap().unwrap();
+    assert!(resolved.resolved);
+    assert_eq!(resolved.resolution.as_deref(), Some("remote"));
+
+    // A now shows B's version, at a winning version strictly above both sides,
+    // and it still balances (ADR-003 post-merge invariant).
+    let a_resolved = get_transaction(&a, &txn_id, &ListOptions::default())
+        .unwrap()
+        .unwrap();
+    assert!(
+        a_resolved.version > 2,
+        "keep-remote must land above both concurrent v2 edits"
+    );
+    assert_ne!(
+        a_resolved.description, "Lunch (A: client dinner)",
+        "A's local description edit must be overwritten by the remote side"
+    );
+    assert_transaction_balanced(&a, &txn_id);
+
+    // Exactly one winning event is queued so the resolution propagates.
+    let a_pending = pending_events(&a).unwrap();
+    assert_eq!(a_pending.len(), 1);
+    assert_eq!(a_pending[0].entity_id, txn_id);
+    assert_eq!(a_pending[0].operation, "update");
+    assert_eq!(i64::from(a_pending[0].version), a_resolved.version);
 }
 
 // ── 4. Fresh device onboards to consistency via batch replay ─────────────────
