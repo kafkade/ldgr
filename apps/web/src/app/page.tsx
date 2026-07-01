@@ -85,6 +85,15 @@ export default function LandingPage() {
           All encryption happens in your browser. No data is ever sent to a
           server.
         </p>
+
+        <p className="text-xs text-[var(--color-text-secondary)]">
+          <Link
+            href="/admin"
+            className="underline hover:text-[var(--color-text)]"
+          >
+            Server admin panel
+          </Link>
+        </p>
       </div>
     </div>
   );

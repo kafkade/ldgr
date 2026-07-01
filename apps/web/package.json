@@ -10,7 +10,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "node --test test/integration.mjs test/sync-wasm.mjs"
+    "test": "node --experimental-strip-types --test test/integration.mjs test/sync-wasm.mjs test/admin-api.mjs"
   },
   "dependencies": {
     "next": "^16.2.9",
