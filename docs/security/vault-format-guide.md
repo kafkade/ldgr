@@ -59,6 +59,9 @@ flowchart TD
     IKn --> Dn["Encrypted item n"]
 ```
 
+> 📊 Standalone version: **[Key hierarchy diagram](./diagrams/key-hierarchy.svg)**
+> (color-coded encrypted vs. plaintext vs. key material).
+
 The two important branches:
 
 - The **password path**: your password is stretched by Argon2id into the Master
@@ -111,6 +114,9 @@ flowchart TD
     end
     HEADER --> WRAPPED --> BODY
 ```
+
+> 📊 Standalone version: **[Vault file structure diagram](./diagrams/vault-structure.svg)**
+> (byte layout with a zoomed-in sealed envelope).
 
 What's plaintext vs. encrypted:
 
@@ -198,6 +204,9 @@ just that one wrapped-key field back. Every Item Key and every encrypted item is
 left exactly as it was. The recovery path is unaffected — your old emergency kit
 still works.
 
+> 📊 Standalone version: **[Password-change diagram](./diagrams/password-change-sequence.svg)**
+> (side-by-side "what changes" vs. "what stays the same").
+
 ---
 
 ## Recovery flow
@@ -228,6 +237,10 @@ can never be unwrapped, and the data is permanently unrecoverable. There is no
 master key and no back door, because either of those would defeat the zero-
 knowledge guarantee for everyone.
 
+> 📊 Standalone version: **[Recovery diagram](./diagrams/recovery-sequence.svg)**.
+> See also the **[create](./diagrams/create-vault-sequence.svg)** and
+> **[open](./diagrams/open-vault-sequence.svg)** vault sequences.
+
 ---
 
 ## How ldgr compares
@@ -257,7 +270,8 @@ By design, this guide stops at the conceptual level. For more depth:
 - **Exact binary layout** — field offsets, types, endianness, framing:
   [Expert specification](./vault-format-spec.md).
 - **Polished, standalone diagrams** — the rendered key-hierarchy, structure, and
-  sequence assets live in [`diagrams/`](./diagrams/).
+  sequence assets, with a color legend, live in the
+  [diagrams index](./diagrams/README.md).
 - **Full threat model** — adversary capabilities, what's in and out of scope:
   see the vault threat-model document (in progress).
 - **Interoperability test vectors** — known-answer inputs/outputs for

@@ -138,6 +138,9 @@ Notes:
 Source: `crypto/kdf.rs` (HKDF info strings), `crypto/wrap.rs` (AAD tags),
 `crypto/vault.rs` (`create_vault`).
 
+Rendered version: [key hierarchy diagram](./diagrams/key-hierarchy.svg)
+(see the [diagrams index](./diagrams/README.md) for the color legend).
+
 ---
 
 ## 4. Top-level binary layout
@@ -204,6 +207,9 @@ The body ends after the last item envelope. Trailing bytes after the final
 envelope are not produced by a conforming serializer; a parser MAY treat
 trailing bytes as an error or ignore them, but MUST NOT misinterpret them as
 items (the `item_count` is authoritative).
+
+Rendered version: [vault file structure diagram](./diagrams/vault-structure.svg),
+which also expands one `SealedEnvelope` (§8).
 
 ---
 
@@ -559,6 +565,13 @@ Source: `crypto/vault.rs` (`validate_vault`, `validate_param_bounds`,
 ---
 
 ## 13. Parsing and serialization algorithms
+
+For step-by-step visual walkthroughs of these algorithms, see the
+[create](./diagrams/create-vault-sequence.svg),
+[open](./diagrams/open-vault-sequence.svg),
+[recovery](./diagrams/recovery-sequence.svg), and
+[password-change](./diagrams/password-change-sequence.svg) sequence diagrams
+in the [diagrams index](./diagrams/README.md).
 
 ### 13.1 Parse (`data → header + items`)
 

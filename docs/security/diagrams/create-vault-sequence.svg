@@ -1,0 +1,133 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 900" width="980" height="900" role="img" aria-labelledby="t d">
+  <title id="t">Creating a vault</title>
+  <desc id="d">The steps from a password to an encrypted vault file on disk: generate a salt, derive the master key with Argon2id, derive the master encryption key, generate the vault and recovery keys, wrap the vault key twice, seal the metadata, serialize, and write the file while showing the recovery key to the user once. Keys stay in memory; only encrypted bytes reach the disk.</desc>
+  <rect x="0" y="0" width="980" height="900" fill="#ffffff"/>
+  <defs>
+    <marker id="ah" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L9,4 L0,8 Z" fill="#374151"/>
+    </marker>
+    <marker id="ahd" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L9,4 L0,8 Z" fill="#9ca3af"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; }
+    .h { font-size:21px; font-weight:700; fill:#111827; }
+    .hsub { font-size:13px; fill:#4b5563; }
+    .label { font-size:14px; font-weight:600; fill:#111827; }
+    .sub { font-size:11.5px; fill:#4b5563; }
+    .tag { font-size:10px; fill:#6b7280; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+    .step { font-size:11px; fill:#6b7280; letter-spacing:0.05em; font-weight:600; }
+    .key { fill:#fef3c7; stroke:#b45309; stroke-width:2; }
+    .enc { fill:#fee2e2; stroke:#b91c1c; stroke-width:2; }
+    .plain { fill:#dcfce7; stroke:#15803d; stroke-width:2; }
+    .op { fill:#eef2f7; stroke:#374151; stroke-width:2; }
+    .actor { fill:#dbeafe; stroke:#1d4ed8; stroke-width:2; }
+    .panel { fill:#f9fafb; stroke:#9ca3af; stroke-width:1.5; }
+    .eph { stroke-dasharray:7 4; }
+    .arrow { stroke:#374151; stroke-width:2; fill:none; }
+    .dim { stroke:#9ca3af; stroke-width:1.5; fill:none; stroke-dasharray:5 3; }
+    .divider { stroke:#d1d5db; stroke-width:1.5; }
+  </style>
+
+  <text x="28" y="34" text-anchor="start" class="h">Create vault — password → encrypted file</text>
+  <text x="28" y="54" text-anchor="start" class="hsub">Nothing secret is written in the clear: password, MK, MEK, VK and RK never touch the disk</text>
+  <rect x="95" y="84" width="470" height="58" rx="10" class="panel" />
+  <circle cx="95" cy="113.0" r="11" fill="#111827"/>
+  <text x="95" y="117.0" text-anchor="middle" font-size="12px" font-weight="700" fill="#ffffff">1</text>
+  <text x="121" y="110.0" text-anchor="start" class="label">Generate salt + KDF params</text>
+  <text x="121" y="128.0" text-anchor="start" class="sub">32-byte random salt; choose Argon2id memory / iters / parallelism</text>
+  <line x1="565" y1="113.0" x2="610" y2="113.0" class="dim" marker-end="url(#ahd)"/>
+  <rect x="610" y="91.0" width="340" height="44" rx="10" class="plain" />
+  <text x="780.0" y="109.0" text-anchor="middle" class="label">salt</text>
+  <text x="780.0" y="127.0" text-anchor="middle" class="sub">plaintext · stored in header</text>
+  <line x1="330.0" y1="142" x2="330.0" y2="162" class="arrow" marker-end="url(#ah)"/>
+  <rect x="95" y="162" width="470" height="58" rx="10" class="panel" />
+  <circle cx="95" cy="191.0" r="11" fill="#111827"/>
+  <text x="95" y="195.0" text-anchor="middle" font-size="12px" font-weight="700" fill="#ffffff">2</text>
+  <text x="121" y="188.0" text-anchor="start" class="label">Derive Master Key</text>
+  <text x="121" y="206.0" text-anchor="start" class="sub">Argon2id(password, salt) → MK (32 B)</text>
+  <line x1="565" y1="191.0" x2="610" y2="191.0" class="dim" marker-end="url(#ahd)"/>
+  <rect x="610" y="169.0" width="340" height="44" rx="10" class="key eph" />
+  <text x="780.0" y="187.0" text-anchor="middle" class="label">MK</text>
+  <text x="780.0" y="205.0" text-anchor="middle" class="sub">in memory only</text>
+  <line x1="330.0" y1="220" x2="330.0" y2="240" class="arrow" marker-end="url(#ah)"/>
+  <rect x="95" y="240" width="470" height="58" rx="10" class="panel" />
+  <circle cx="95" cy="269.0" r="11" fill="#111827"/>
+  <text x="95" y="273.0" text-anchor="middle" font-size="12px" font-weight="700" fill="#ffffff">3</text>
+  <text x="121" y="266.0" text-anchor="start" class="label">Derive subkeys (HKDF)</text>
+  <text x="121" y="284.0" text-anchor="start" class="sub">ldgr-enc-v1 → MEK   ·   ldgr-auth-v1 → AuthKey</text>
+  <line x1="565" y1="269.0" x2="610" y2="269.0" class="dim" marker-end="url(#ahd)"/>
+  <rect x="610" y="247.0" width="340" height="44" rx="10" class="key eph" />
+  <text x="780.0" y="265.0" text-anchor="middle" class="label">MEK, AuthKey</text>
+  <text x="780.0" y="283.0" text-anchor="middle" class="sub">in memory only</text>
+  <line x1="330.0" y1="298" x2="330.0" y2="318" class="arrow" marker-end="url(#ah)"/>
+  <rect x="95" y="318" width="470" height="58" rx="10" class="panel" />
+  <circle cx="95" cy="347.0" r="11" fill="#111827"/>
+  <text x="95" y="351.0" text-anchor="middle" font-size="12px" font-weight="700" fill="#ffffff">4</text>
+  <text x="121" y="344.0" text-anchor="start" class="label">Generate vault + recovery keys</text>
+  <text x="121" y="362.0" text-anchor="start" class="sub">random VK (32 B) and recovery key RK (32 B)</text>
+  <line x1="565" y1="347.0" x2="610" y2="347.0" class="dim" marker-end="url(#ahd)"/>
+  <rect x="610" y="325.0" width="340" height="44" rx="10" class="key eph" />
+  <text x="780.0" y="343.0" text-anchor="middle" class="label">VK, RK</text>
+  <text x="780.0" y="361.0" text-anchor="middle" class="sub">in memory only</text>
+  <line x1="330.0" y1="376" x2="330.0" y2="396" class="arrow" marker-end="url(#ah)"/>
+  <rect x="95" y="396" width="470" height="58" rx="10" class="panel" />
+  <circle cx="95" cy="425.0" r="11" fill="#111827"/>
+  <text x="95" y="429.0" text-anchor="middle" font-size="12px" font-weight="700" fill="#ffffff">5</text>
+  <text x="121" y="422.0" text-anchor="start" class="label">Wrap VK with MEK</text>
+  <text x="121" y="440.0" text-anchor="start" class="sub">AES-256-GCM · AAD ldgr-vault-wrap-v1</text>
+  <line x1="565" y1="425.0" x2="610" y2="425.0" class="dim" marker-end="url(#ahd)"/>
+  <rect x="610" y="403.0" width="340" height="44" rx="10" class="enc" />
+  <text x="780.0" y="421.0" text-anchor="middle" class="label">wrapped_vk</text>
+  <text x="780.0" y="439.0" text-anchor="middle" class="sub">encrypted · in file</text>
+  <line x1="330.0" y1="454" x2="330.0" y2="474" class="arrow" marker-end="url(#ah)"/>
+  <rect x="95" y="474" width="470" height="58" rx="10" class="panel" />
+  <circle cx="95" cy="503.0" r="11" fill="#111827"/>
+  <text x="95" y="507.0" text-anchor="middle" font-size="12px" font-weight="700" fill="#ffffff">6</text>
+  <text x="121" y="500.0" text-anchor="start" class="label">Wrap VK with recovery key</text>
+  <text x="121" y="518.0" text-anchor="start" class="sub">AES-256-GCM · AAD ldgr-recovery-wrap-v1</text>
+  <line x1="565" y1="503.0" x2="610" y2="503.0" class="dim" marker-end="url(#ahd)"/>
+  <rect x="610" y="481.0" width="340" height="44" rx="10" class="enc" />
+  <text x="780.0" y="499.0" text-anchor="middle" class="label">recovery_wrapped_vk</text>
+  <text x="780.0" y="517.0" text-anchor="middle" class="sub">encrypted · in file</text>
+  <line x1="330.0" y1="532" x2="330.0" y2="552" class="arrow" marker-end="url(#ah)"/>
+  <rect x="95" y="552" width="470" height="58" rx="10" class="panel" />
+  <circle cx="95" cy="581.0" r="11" fill="#111827"/>
+  <text x="95" y="585.0" text-anchor="middle" font-size="12px" font-weight="700" fill="#ffffff">7</text>
+  <text x="121" y="578.0" text-anchor="start" class="label">Seal vault metadata</text>
+  <text x="121" y="596.0" text-anchor="start" class="sub">seal {name, created_at} under VK</text>
+  <line x1="565" y1="581.0" x2="610" y2="581.0" class="dim" marker-end="url(#ahd)"/>
+  <rect x="610" y="559.0" width="340" height="44" rx="10" class="enc" />
+  <text x="780.0" y="577.0" text-anchor="middle" class="label">encrypted_metadata</text>
+  <text x="780.0" y="595.0" text-anchor="middle" class="sub">encrypted · in file</text>
+  <line x1="330.0" y1="610" x2="330.0" y2="630" class="arrow" marker-end="url(#ah)"/>
+  <rect x="95" y="630" width="470" height="58" rx="10" class="panel" />
+  <circle cx="95" cy="659.0" r="11" fill="#111827"/>
+  <text x="95" y="663.0" text-anchor="middle" font-size="12px" font-weight="700" fill="#ffffff">8</text>
+  <text x="121" y="656.0" text-anchor="start" class="label">Serialize container</text>
+  <text x="121" y="674.0" text-anchor="start" class="sub">fixed header + wrapped keys + metadata + item_count = 0</text>
+  <line x1="565" y1="659.0" x2="610" y2="659.0" class="dim" marker-end="url(#ahd)"/>
+  <rect x="610" y="637.0" width="340" height="44" rx="10" class="panel" />
+  <text x="780.0" y="655.0" text-anchor="middle" class="label">byte layout</text>
+  <text x="780.0" y="673.0" text-anchor="middle" class="sub">assembled in memory</text>
+  <line x1="330.0" y1="688" x2="330.0" y2="708" class="arrow" marker-end="url(#ah)"/>
+  <rect x="95" y="708" width="470" height="58" rx="10" class="panel" />
+  <circle cx="95" cy="737.0" r="11" fill="#111827"/>
+  <text x="95" y="741.0" text-anchor="middle" font-size="12px" font-weight="700" fill="#ffffff">9</text>
+  <text x="121" y="734.0" text-anchor="start" class="label">Persist + reveal recovery key</text>
+  <text x="121" y="752.0" text-anchor="start" class="sub">write file to disk; show recovery key to the user once</text>
+  <line x1="565" y1="737.0" x2="610" y2="737.0" class="dim" marker-end="url(#ahd)"/>
+  <rect x="610" y="715.0" width="340" height="44" rx="10" class="enc" />
+  <text x="780.0" y="733.0" text-anchor="middle" class="label">vault.ldgr on disk</text>
+  <text x="780.0" y="751.0" text-anchor="middle" class="sub">encrypted at rest</text>
+  <line x1="28" y1="862" x2="952" y2="862" class="divider"/>
+  <rect x="28" y="878" width="16" height="12" rx="3" class="plain"/>
+  <text x="50" y="889" text-anchor="start" class="sub">plaintext (at rest)</text>
+  <rect x="193.39999999999998" y="878" width="16" height="12" rx="3" class="enc"/>
+  <text x="215.39999999999998" y="889" text-anchor="start" class="sub">encrypted (at rest)</text>
+  <rect x="358.79999999999995" y="878" width="16" height="12" rx="3" class="key eph"/>
+  <text x="380.79999999999995" y="889" text-anchor="start" class="sub">key in memory</text>
+  <rect x="484.59999999999997" y="878" width="16" height="12" rx="3" class="op"/>
+  <text x="506.59999999999997" y="889" text-anchor="start" class="sub">operation</text>
+</svg>

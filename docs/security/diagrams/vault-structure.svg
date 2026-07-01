@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 900" width="1000" height="900" role="img" aria-labelledby="t d">
+  <title id="t">ldgr vault binary file structure</title>
+  <desc id="d">The on-disk byte layout of a vault file, top to bottom: a 51-byte plaintext fixed header, a variable header holding two wrapped copies of the vault key and the encrypted metadata, then the body with a plaintext item count followed by one encrypted sealed envelope per item. Green regions are plaintext; red regions are encrypted. A zoom panel expands one sealed envelope.</desc>
+  <rect x="0" y="0" width="1000" height="900" fill="#ffffff"/>
+  <defs>
+    <marker id="ah" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L9,4 L0,8 Z" fill="#374151"/>
+    </marker>
+    <marker id="ahd" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L9,4 L0,8 Z" fill="#9ca3af"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; }
+    .h { font-size:21px; font-weight:700; fill:#111827; }
+    .hsub { font-size:13px; fill:#4b5563; }
+    .label { font-size:14px; font-weight:600; fill:#111827; }
+    .sub { font-size:11.5px; fill:#4b5563; }
+    .tag { font-size:10px; fill:#6b7280; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+    .step { font-size:11px; fill:#6b7280; letter-spacing:0.05em; font-weight:600; }
+    .key { fill:#fef3c7; stroke:#b45309; stroke-width:2; }
+    .enc { fill:#fee2e2; stroke:#b91c1c; stroke-width:2; }
+    .plain { fill:#dcfce7; stroke:#15803d; stroke-width:2; }
+    .op { fill:#eef2f7; stroke:#374151; stroke-width:2; }
+    .actor { fill:#dbeafe; stroke:#1d4ed8; stroke-width:2; }
+    .panel { fill:#f9fafb; stroke:#9ca3af; stroke-width:1.5; }
+    .eph { stroke-dasharray:7 4; }
+    .arrow { stroke:#374151; stroke-width:2; fill:none; }
+    .dim { stroke:#9ca3af; stroke-width:1.5; fill:none; stroke-dasharray:5 3; }
+    .divider { stroke:#d1d5db; stroke-width:1.5; }
+  </style>
+
+  <text x="28" y="34" text-anchor="start" class="h">Vault binary file structure</text>
+  <text x="28" y="54" text-anchor="start" class="hsub">51-byte plaintext fixed header → variable header (wrapped keys + metadata) → body (count + encrypted items)</text>
+  <text x="150" y="92" text-anchor="start" class="step">FIXED HEADER · 51 bytes</text>
+  <text x="620" y="92" text-anchor="end" class="sub">plaintext</text>
+  <rect x="150" y="104" width="470" height="30" rx="6" class="plain" />
+  <text x="164" y="123.0" text-anchor="start" class="label">Magic “LDGR”</text>
+  <text x="606" y="123.0" text-anchor="end" class="tag">[u8;4]</text>
+  <text x="138" y="123.0" text-anchor="end" class="tag">[0..4]</text>
+  <rect x="150" y="137" width="470" height="30" rx="6" class="plain" />
+  <text x="164" y="156.0" text-anchor="start" class="label">Format version</text>
+  <text x="606" y="156.0" text-anchor="end" class="tag">u16 LE = 1</text>
+  <text x="138" y="156.0" text-anchor="end" class="tag">[4..6]</text>
+  <rect x="150" y="170" width="470" height="30" rx="6" class="plain" />
+  <text x="164" y="189.0" text-anchor="start" class="label">KDF version</text>
+  <text x="606" y="189.0" text-anchor="end" class="tag">u8 = 1</text>
+  <text x="138" y="189.0" text-anchor="end" class="tag">[6..7]</text>
+  <rect x="150" y="203" width="470" height="30" rx="6" class="plain" />
+  <text x="164" y="222.0" text-anchor="start" class="label">Salt</text>
+  <text x="606" y="222.0" text-anchor="end" class="tag">[u8;32] random</text>
+  <text x="138" y="222.0" text-anchor="end" class="tag">[7..39]</text>
+  <rect x="150" y="236" width="470" height="30" rx="6" class="plain" />
+  <text x="164" y="255.0" text-anchor="start" class="label">Argon2 memory cost</text>
+  <text x="606" y="255.0" text-anchor="end" class="tag">u32 LE</text>
+  <text x="138" y="255.0" text-anchor="end" class="tag">[39..43]</text>
+  <rect x="150" y="269" width="470" height="30" rx="6" class="plain" />
+  <text x="164" y="288.0" text-anchor="start" class="label">Argon2 iterations</text>
+  <text x="606" y="288.0" text-anchor="end" class="tag">u32 LE</text>
+  <text x="138" y="288.0" text-anchor="end" class="tag">[43..47]</text>
+  <rect x="150" y="302" width="470" height="30" rx="6" class="plain" />
+  <text x="164" y="321.0" text-anchor="start" class="label">Argon2 parallelism</text>
+  <text x="606" y="321.0" text-anchor="end" class="tag">u32 LE</text>
+  <text x="138" y="321.0" text-anchor="end" class="tag">[47..51]</text>
+  <text x="150" y="351" text-anchor="start" class="step">VARIABLE HEADER · length-prefixed</text>
+  <text x="620" y="351" text-anchor="end" class="sub">encrypted</text>
+  <rect x="150" y="363" width="470" height="46" rx="8" class="enc" />
+  <text x="164" y="383" text-anchor="start" class="label">wrapped_vk</text>
+  <text x="164" y="400" text-anchor="start" class="sub">WrappedKey (65 B) — VK wrapped by MEK</text>
+  <rect x="150" y="415" width="470" height="46" rx="8" class="enc" />
+  <text x="164" y="435" text-anchor="start" class="label">recovery_wrapped_vk</text>
+  <text x="164" y="452" text-anchor="start" class="sub">WrappedKey (65 B) — VK wrapped by recovery key</text>
+  <rect x="150" y="467" width="470" height="46" rx="8" class="enc" />
+  <text x="164" y="487" text-anchor="start" class="label">encrypted_metadata</text>
+  <text x="164" y="504" text-anchor="start" class="sub">SealedEnvelope — {vault name, created_at} under VK</text>
+  <text x="150" y="533" text-anchor="start" class="step">BODY</text>
+  <text x="620" y="533" text-anchor="end" class="sub">count is plaintext · items encrypted</text>
+  <rect x="150" y="545" width="470" height="30" rx="6" class="plain" />
+  <text x="164" y="565" text-anchor="start" class="label">item_count</text>
+  <text x="606" y="565" text-anchor="end" class="tag">u32 LE · ≤ 1,000,000</text>
+  <rect x="150" y="581" width="470" height="40" rx="8" class="enc" />
+  <text x="164" y="599" text-anchor="start" class="label">items[0]</text>
+  <text x="164" y="614" text-anchor="start" class="sub">SealedEnvelope — one item, sealed under VK</text>
+  <rect x="150" y="626" width="470" height="40" rx="8" class="enc" />
+  <text x="164" y="644" text-anchor="start" class="label">items[1]</text>
+  <text x="164" y="659" text-anchor="start" class="sub">SealedEnvelope — one item, sealed under VK</text>
+  <rect x="150" y="671" width="470" height="40" rx="8" class="enc" />
+  <text x="164" y="689" text-anchor="start" class="label">items[2]</text>
+  <text x="164" y="704" text-anchor="start" class="sub">SealedEnvelope — one item, sealed under VK</text>
+  <text x="385.0" y="722" text-anchor="middle" class="sub">… up to items[item_count − 1]</text>
+  <rect x="700" y="300" width="268" height="250" rx="12" class="panel" />
+  <text x="834.0" y="326" text-anchor="middle" class="label">SealedEnvelope layout</text>
+  <rect x="716" y="344" width="236" height="34" rx="6" class="plain" />
+  <text x="728" y="365" text-anchor="start" class="label">version</text>
+  <text x="940" y="365" text-anchor="end" class="tag">u8</text>
+  <rect x="716" y="383" width="236" height="34" rx="6" class="enc" />
+  <text x="728" y="404" text-anchor="start" class="label">wrapped_ik</text>
+  <text x="940" y="404" text-anchor="end" class="tag">WrappedKey (65 B)</text>
+  <rect x="716" y="422" width="236" height="34" rx="6" class="plain" />
+  <text x="728" y="443" text-anchor="start" class="label">nonce</text>
+  <text x="940" y="443" text-anchor="end" class="tag">[u8;12]</text>
+  <rect x="716" y="461" width="236" height="34" rx="6" class="plain" />
+  <text x="728" y="482" text-anchor="start" class="label">ct_len</text>
+  <text x="940" y="482" text-anchor="end" class="tag">u32 LE</text>
+  <rect x="716" y="500" width="236" height="34" rx="6" class="enc" />
+  <text x="728" y="521" text-anchor="start" class="label">ciphertext</text>
+  <text x="940" y="521" text-anchor="end" class="tag">AES-GCM + 16-B tag</text>
+  <line x1="620" y1="490" x2="700" y2="425" class="dim" marker-end="url(#ahd)"/>
+  <line x1="28" y1="858" x2="972" y2="858" class="divider"/>
+  <rect x="28" y="874" width="16" height="12" rx="3" class="plain"/>
+  <text x="50" y="885" text-anchor="start" class="sub">plaintext (at rest)</text>
+  <rect x="193.39999999999998" y="874" width="16" height="12" rx="3" class="enc"/>
+  <text x="215.39999999999998" y="885" text-anchor="start" class="sub">encrypted (at rest)</text>
+  <text x="972" y="883" text-anchor="end" class="sub">offsets shown as [start..end) byte ranges</text>
+</svg>
