@@ -87,12 +87,30 @@ ldgr lock
 The optional sync server (`crates/ldgr-server/`) is an encrypted blob relay — it
 stores and serves encrypted blobs but never decrypts them.
 
+**Self-host in one command** (Immich-style docker-compose bundle at the repo root):
+
 ```sh
-# Run with Docker
+cp .env.example .env      # review settings (registration policy, admin email)
+docker compose up -d      # pulls the published multi-arch GHCR image
+```
+
+This gives you a running server with a persistent named volume and a passing
+`/health` healthcheck. See the [Self-Hosting guide](docs/self-hosting.md) for the
+full walkthrough — configuration, TLS (Caddy), upgrades, and backup/restore.
+Published images live at `ghcr.io/kafkade/ldgr-server` (multi-arch amd64/arm64,
+versioned + `latest`).
+
+**Other ways to run it** (single container or from source):
+
+```sh
+# Single container from the published image
+docker run -p 8080:8080 -v ldgr-data:/data ghcr.io/kafkade/ldgr-server:latest
+
+# Build the image locally
 docker build -t ldgr-server -f crates/ldgr-server/Dockerfile .
 docker run -p 8080:8080 -v ldgr-data:/data ldgr-server
 
-# Or run directly
+# Or run directly from source
 cargo run -p ldgr-server
 ```
 

@@ -1,0 +1,64 @@
+# ldgr self-hosting — docker-compose bundle
+#
+# Quick start:
+#   cp .env.example .env
+#   # edit .env (at minimum review LDGR_REGISTRATION / LDGR_ADMIN_EMAIL)
+#   docker compose up -d
+#
+# The server is a zero-knowledge encrypted blob relay — it never sees your
+# plaintext financial data. See docs/self-hosting.md for the full guide,
+# including TLS, upgrades, and backups.
+
+services:
+  server:
+    # By default we pull the published multi-arch image from GHCR. Pin a version
+    # via LDGR_VERSION in .env (defaults to `latest`).
+    image: ghcr.io/kafkade/ldgr-server:${LDGR_VERSION:-latest}
+    # To build locally from source instead of pulling, comment out `image:`
+    # above and uncomment the `build:` block below, then run
+    # `docker compose up -d --build`.
+    # build:
+    #   context: .
+    #   dockerfile: crates/ldgr-server/Dockerfile
+    container_name: ldgr-server
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      # host:container — change the host port via LDGR_HOST_PORT in .env.
+      - "${LDGR_HOST_PORT:-8080}:8080"
+    volumes:
+      - ldgr-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Optional automatic-HTTPS reverse proxy. Enable with:
+  #   docker compose --profile tls up -d
+  # Set LDGR_DOMAIN (and optionally LDGR_ACME_EMAIL) in .env and point your
+  # domain's DNS at this host first. See ./Caddyfile and docs/self-hosting.md.
+  caddy:
+    image: caddy:2
+    container_name: ldgr-caddy
+    restart: unless-stopped
+    profiles: ["tls"]
+    depends_on:
+      - server
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      LDGR_DOMAIN: ${LDGR_DOMAIN:-}
+      LDGR_ACME_EMAIL: ${LDGR_ACME_EMAIL:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  ldgr-data:
+  caddy-data:
+  caddy-config:
