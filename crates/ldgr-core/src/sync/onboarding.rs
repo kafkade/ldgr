@@ -134,7 +134,8 @@ pub fn decrypt_vault_key(shared_secret: &[u8; 32], encrypted: &[u8]) -> Result<[
         return Err("encrypted data too short".into());
     }
 
-    let nonce = Nonce::try_from(&encrypted[..12]).map_err(|_| "invalid nonce length".to_string())?;
+    let nonce =
+        Nonce::try_from(&encrypted[..12]).map_err(|_| "invalid nonce length".to_string())?;
     let ciphertext = &encrypted[12..];
 
     let cipher =
