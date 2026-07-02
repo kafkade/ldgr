@@ -115,7 +115,7 @@ pub fn encrypt_vault_key(
 
     let mut nonce_bytes = [0u8; 12];
     rand::rng().fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = &Nonce::from(nonce_bytes);
 
     let ciphertext = cipher
         .encrypt(nonce, vault_key.as_ref())
@@ -134,14 +134,14 @@ pub fn decrypt_vault_key(shared_secret: &[u8; 32], encrypted: &[u8]) -> Result<[
         return Err("encrypted data too short".into());
     }
 
-    let nonce = Nonce::from_slice(&encrypted[..12]);
+    let nonce = Nonce::try_from(&encrypted[..12]).map_err(|_| "invalid nonce length".to_string())?;
     let ciphertext = &encrypted[12..];
 
     let cipher =
         Aes256Gcm::new_from_slice(shared_secret).map_err(|e| format!("cipher error: {e}"))?;
 
     let plaintext = cipher
-        .decrypt(nonce, ciphertext)
+        .decrypt(&nonce, ciphertext)
         .map_err(|_| "decryption failed (wrong shared secret or corrupted data)".to_string())?;
 
     let mut key = [0u8; 32];
