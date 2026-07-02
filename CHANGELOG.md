@@ -81,6 +81,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Financial goals are now persisted in the vault as a versioned entity (soft-delete + optimistic-concurrency `version`), so goals survive restarts and are ready to sync — previously goals existed only in memory
 - Observed price points are now persisted in the vault as a versioned entity (soft-delete + optimistic-concurrency `version`), giving prices a canonical store distinct from the transient market-data HTTP cache so they survive restarts and are ready to sync
 - Budget definitions are now persisted in the vault as a versioned entity (soft-delete + optimistic-concurrency `version`), with each budget's category allocations stored in deterministic order, so budgets survive restarts and are ready to sync — previously budgets existed only in memory
+- Financial goals now sync across your devices: creating, editing, and deleting a goal propagates through the encrypted batch-blob pipeline like accounts and transactions, with full-state events, version-gated upsert-by-id, soft-delete propagation, and concurrent-edit conflicts surfaced for review instead of silently overwritten
 
 ### Fixed
 
