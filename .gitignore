@@ -27,6 +27,7 @@ target/
 /bindings/swift/Sources/LdgrFFI/ldgr.swift
 /bindings/swift/Sources/LdgrFFI/ldgrFFI.h
 /bindings/swift/Sources/LdgrFFI/ldgrFFI.modulemap
+/bindings/swift/.build/
 
 # Environment
 .env

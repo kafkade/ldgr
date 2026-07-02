@@ -4,9 +4,14 @@ SwiftUI app for zero-knowledge personal finance on iOS and iPadOS.
 
 ## Prerequisites
 
-- Xcode 16+
+- Xcode 16+ (with the iOS, watchOS and macOS SDKs)
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen) for project generation
 - Built XCFramework from `bindings/swift/build-xcframework.sh`
+
+The generated `ldgr_ffiFFI.xcframework` bundles slices for iOS (device),
+iOS simulator (arm64 + x86_64), macOS (arm64 + x86_64), watchOS (device),
+and the watchOS simulator (arm64), so the iOS app and its watchOS target both
+link against it.
 
 ## Quick Start
 

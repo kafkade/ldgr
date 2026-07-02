@@ -175,7 +175,7 @@ jobs:
   # ── Swift / iOS ───────────────────────────────────────────────────────────────
 
   swift:
-    name: Swift (iOS)
+    name: Swift (Apple platforms)
     needs: changes
     if: github.event_name == 'push' || needs.changes.outputs.swift == 'true'
     runs-on: macos-latest
@@ -184,17 +184,22 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios,aarch64-apple-darwin,x86_64-apple-darwin,aarch64-apple-watchos,aarch64-apple-watchos-sim
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: swift-ios
+          key: swift-apple
 
       - name: Build XCFramework
         run: |
           cd bindings/swift
           chmod +x ./build-xcframework.sh
           ./build-xcframework.sh
+
+      - name: Verify LdgrSwift links against the macOS slice
+        run: |
+          cd bindings/swift
+          swift build
 
   # ── Documentation ─────────────────────────────────────────────────────────────
 
