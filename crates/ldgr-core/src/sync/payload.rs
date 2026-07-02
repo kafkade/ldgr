@@ -61,6 +61,37 @@ pub struct TransactionPayload {
     pub postings: Vec<PostingPayload>,
 }
 
+/// Full state of a single allocation within a [`BudgetPayload`].
+///
+/// Carries only the observable [`crate::budget::BudgetAllocation`] fields. The
+/// allocation row's internal id / `created_at` / `version` are regenerated on
+/// every write and never surfaced by `get_budget`, so they are re-generated on
+/// apply rather than carried across the wire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AllocationPayload {
+    pub account: String,
+    /// `Decimal` amount serialized as its canonical string form.
+    pub amount: String,
+    pub rollover: bool,
+}
+
+/// Full state of a budget (with all its allocations), carried by
+/// `Create`/`Update` budget events. The allocation list order is significant and
+/// is reproduced as the `allocation_order` on apply, exactly as
+/// [`TransactionPayload`] reproduces `posting_order`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BudgetPayload {
+    pub id: String,
+    pub name: String,
+    /// Canonical budget-method string (`envelope`/`zero_based`).
+    pub method: String,
+    /// Canonical budget-period string (`monthly`/`weekly`/`quarterly`/`annual`).
+    pub period: String,
+    pub created_at: String,
+    pub modified_at: String,
+    pub allocations: Vec<AllocationPayload>,
+}
+
 /// Payload for a `Delete` event — only the entity id is needed for a soft delete.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeletePayload {
@@ -122,6 +153,33 @@ mod tests {
         };
         let bytes = to_bytes(&p).unwrap();
         let restored: TransactionPayload = from_bytes(&bytes).unwrap();
+        assert_eq!(p, restored);
+    }
+
+    #[test]
+    fn budget_payload_round_trip() {
+        let p = BudgetPayload {
+            id: "bud1".into(),
+            name: "Monthly".into(),
+            method: "envelope".into(),
+            period: "monthly".into(),
+            created_at: "2024-01-15T00:00:00Z".into(),
+            modified_at: "2024-01-16T00:00:00Z".into(),
+            allocations: vec![
+                AllocationPayload {
+                    account: "Expenses:Food".into(),
+                    amount: "500.00".into(),
+                    rollover: true,
+                },
+                AllocationPayload {
+                    account: "Expenses:Rent".into(),
+                    amount: "1200".into(),
+                    rollover: false,
+                },
+            ],
+        };
+        let bytes = to_bytes(&p).unwrap();
+        let restored: BudgetPayload = from_bytes(&bytes).unwrap();
         assert_eq!(p, restored);
     }
 

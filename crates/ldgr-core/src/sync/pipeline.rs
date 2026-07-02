@@ -24,6 +24,8 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::crypto::{CryptoError, VaultKey};
+#[cfg(feature = "budget")]
+use crate::storage::budgets;
 use crate::storage::error::StorageError;
 use crate::storage::sync as sync_store;
 use crate::storage::{accounts, transactions};
@@ -411,7 +413,20 @@ fn apply_remote_payload(
                 )?)
             }
         },
-        // Price/Budget/Goal have no storage module yet — fail closed so we never
+        #[cfg(feature = "budget")]
+        EntityType::Budget => match operation {
+            Operation::Create | Operation::Update => {
+                let p: super::payload::BudgetPayload = payload::from_bytes(payload)
+                    .map_err(|e| PipelineError::Format(format!("budget payload: {e}")))?;
+                Ok(budgets::apply_remote_budget(conn, &p, version)?)
+            }
+            Operation::Delete => {
+                let p: DeletePayload = payload::from_bytes(payload)
+                    .map_err(|e| PipelineError::Format(format!("delete payload: {e}")))?;
+                Ok(budgets::apply_remote_budget_delete(conn, &p.id, version)?)
+            }
+        },
+        // Price/Goal have no storage module yet — fail closed so we never
         // silently drop financial data. Tracked by #203.
         other => Err(PipelineError::UnsupportedEntity(other.as_str().to_string())),
     }
@@ -426,6 +441,8 @@ fn current_entity_version(
     let version = match entity_type {
         EntityType::Account => accounts::current_account_version(conn, id)?,
         EntityType::Transaction => transactions::current_transaction_version(conn, id)?,
+        #[cfg(feature = "budget")]
+        EntityType::Budget => budgets::current_budget_version(conn, id)?,
         other => return Err(PipelineError::UnsupportedEntity(other.as_str().to_string())),
     };
     Ok(version.unwrap_or(0))
@@ -1146,5 +1163,175 @@ mod tests {
             err,
             PipelineError::Storage(StorageError::NotFound(_))
         ));
+    }
+
+    // ── Budget round-trip + conflict (feature = "budget") ────────────────────
+
+    #[cfg(feature = "budget")]
+    fn seed_budget(conn: &Connection, device: &str, lamport: u64) -> String {
+        use crate::budget::{BudgetMethod, BudgetPeriod};
+        use crate::storage::budgets::{NewBudget, NewBudgetAllocation, create_budget_with_sync};
+        create_budget_with_sync(
+            conn,
+            &NewBudget {
+                name: "Monthly".into(),
+                method: BudgetMethod::Envelope,
+                period: BudgetPeriod::Monthly,
+                allocations: vec![
+                    NewBudgetAllocation {
+                        account: "Expenses:Food".into(),
+                        amount: "500.00".parse().unwrap(),
+                        rollover: true,
+                    },
+                    NewBudgetAllocation {
+                        account: "Expenses:Rent".into(),
+                        amount: "1200".parse().unwrap(),
+                        rollover: false,
+                    },
+                ],
+            },
+            &ctx(device, lamport),
+        )
+        .unwrap()
+        .budget
+        .id
+    }
+
+    #[cfg(feature = "budget")]
+    #[test]
+    fn budget_round_trip_reproduces_on_second_vault() {
+        use crate::storage::budgets::{ListOptions as BudgetListOptions, get_budget};
+
+        let vk = VaultKey::generate();
+
+        // Device A: a budget with two ordered allocations (distinct rollover
+        // flags and decimal amounts).
+        let a = vault();
+        let bud_id = seed_budget(&a, "dev_a", 1);
+        let exported = export_pending_batch(&a, "dev_a", &vk).unwrap().unwrap();
+
+        // Device B: fresh vault, same key, no shared state.
+        let b = vault();
+        let outcome = ingest_batch(&b, "dev_b", &vk, &exported.ciphertext).unwrap();
+        assert_eq!(outcome.applied, 1);
+        assert_eq!(outcome.conflicts, 0);
+
+        // Budget (with allocations) reproduced field-for-field.
+        let ab = get_budget(&a, &bud_id, &BudgetListOptions::default())
+            .unwrap()
+            .unwrap();
+        let bb = get_budget(&b, &bud_id, &BudgetListOptions::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(ab.budget.id, bb.budget.id);
+        assert_eq!(ab.budget.name, bb.budget.name);
+        assert_eq!(ab.budget.method, bb.budget.method);
+        assert_eq!(ab.budget.period, bb.budget.period);
+        assert_eq!(ab.created_at, bb.created_at);
+        assert_eq!(ab.modified_at, bb.modified_at);
+        assert_eq!(ab.version, bb.version);
+        assert_eq!(ab.deleted, bb.deleted);
+        assert_eq!(ab.budget.allocations.len(), bb.budget.allocations.len());
+        for (aa, ba) in ab
+            .budget
+            .allocations
+            .iter()
+            .zip(bb.budget.allocations.iter())
+        {
+            assert_eq!(aa.account, ba.account);
+            assert_eq!(aa.amount, ba.amount);
+            assert_eq!(aa.rollover, ba.rollover);
+        }
+
+        // Apply did not echo into B's outbox.
+        assert_eq!(pending_event_count(&b).unwrap(), 0);
+    }
+
+    #[cfg(feature = "budget")]
+    #[test]
+    fn concurrent_budget_edit_surfaces_conflict() {
+        use crate::budget::{BudgetMethod, BudgetPeriod};
+        use crate::storage::budgets::{
+            BudgetUpdate, ListOptions as BudgetListOptions, get_budget, update_budget_with_sync,
+        };
+
+        let vk = VaultKey::generate();
+
+        // A creates a budget; B ingests it (now both know it at version 1).
+        let a = vault();
+        let bud_id = seed_budget(&a, "dev_a", 1);
+        let create_blob = export_pending_batch(&a, "dev_a", &vk).unwrap().unwrap();
+        mark_events_synced(&a, &create_blob.event_ids).unwrap();
+        let b = vault();
+        ingest_batch(&b, "dev_b", &vk, &create_blob.ciphertext).unwrap();
+
+        let update_for = |name: &str| BudgetUpdate {
+            name: name.into(),
+            method: BudgetMethod::Envelope,
+            period: BudgetPeriod::Monthly,
+            allocations: Vec::new(),
+            expected_version: 1,
+        };
+
+        // Concurrently: A renames the budget and exports; B renames it locally
+        // (a pending, unsynced edit to the same entity).
+        update_budget_with_sync(&a, &bud_id, &update_for("A-rename"), &ctx("dev_a", 2)).unwrap();
+        let a_update = export_pending_batch(&a, "dev_a", &vk).unwrap().unwrap();
+        update_budget_with_sync(&b, &bud_id, &update_for("B-rename"), &ctx("dev_b", 2)).unwrap();
+
+        let before = get_budget(&b, &bud_id, &BudgetListOptions::default())
+            .unwrap()
+            .unwrap();
+        let outcome = ingest_batch(&b, "dev_b", &vk, &a_update.ciphertext).unwrap();
+
+        // Same entity edited on both devices → conflict, not a silent apply.
+        assert_eq!(outcome.conflicts, 1);
+        assert_eq!(outcome.applied, 0);
+        assert_eq!(
+            crate::storage::sync::unresolved_conflict_count(&b).unwrap(),
+            1
+        );
+
+        // B's local view was not overwritten by the remote event.
+        let after = get_budget(&b, &bud_id, &BudgetListOptions::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(before.budget.name, after.budget.name);
+        assert_eq!(before.version, after.version);
+    }
+
+    #[cfg(feature = "budget")]
+    #[test]
+    fn budget_delete_propagates() {
+        use crate::storage::budgets::{
+            ListOptions as BudgetListOptions, get_budget, soft_delete_budget_with_sync,
+        };
+
+        let vk = VaultKey::generate();
+
+        // A creates a budget; B ingests it.
+        let a = vault();
+        let bud_id = seed_budget(&a, "dev_a", 1);
+        let create_blob = export_pending_batch(&a, "dev_a", &vk).unwrap().unwrap();
+        mark_events_synced(&a, &create_blob.event_ids).unwrap();
+        let b = vault();
+        ingest_batch(&b, "dev_b", &vk, &create_blob.ciphertext).unwrap();
+        assert!(
+            get_budget(&b, &bud_id, &BudgetListOptions::default())
+                .unwrap()
+                .is_some()
+        );
+
+        // A deletes the budget, exports; B ingests the delete.
+        soft_delete_budget_with_sync(&a, &bud_id, &ctx("dev_a", 2)).unwrap();
+        let delete_blob = export_pending_batch(&a, "dev_a", &vk).unwrap().unwrap();
+        let outcome = ingest_batch(&b, "dev_b", &vk, &delete_blob.ciphertext).unwrap();
+        assert_eq!(outcome.applied, 1);
+        assert_eq!(outcome.conflicts, 0);
+        assert!(
+            get_budget(&b, &bud_id, &BudgetListOptions::default())
+                .unwrap()
+                .is_none()
+        );
     }
 }
