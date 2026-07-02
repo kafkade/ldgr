@@ -2,11 +2,15 @@ import Foundation
 import LocalAuthentication
 import Security
 
-/// Manages secure storage of the vault session key in the iOS Keychain.
+/// Manages secure storage of the vault session key in the Apple Keychain.
 ///
-/// The session key is stored with biometric access control — the Keychain
-/// itself gates biometric authentication. We never call `LAContext.evaluatePolicy`
-/// separately; instead, `SecItemCopyMatching` triggers the biometric prompt.
+/// The session key is stored with biometric / user-presence access control —
+/// the Keychain itself gates authentication. We never call
+/// `LAContext.evaluatePolicy` separately; instead, `SecItemCopyMatching`
+/// triggers the biometric (Touch ID / Apple Watch) or password prompt.
+///
+/// On macOS every query opts into the **data protection keychain** so that
+/// generic-password items behave exactly like on iOS. See `baseQuery()`.
 enum KeychainManager {
     private static let service = "com.kafkade.ldgr"
     private static let sessionKeyAccount = "vault-session-key"
@@ -14,12 +18,57 @@ enum KeychainManager {
     private static let serverDeviceIdAccount = "server-device-id"
     private static let serverSecretKeyAccount = "server-secret-key"
 
+    // MARK: - Query base
+
+    /// Attributes shared by every Keychain query.
+    ///
+    /// On macOS this opts into the **data protection keychain**
+    /// (`kSecUseDataProtectionKeychain`) so that generic-password items honor
+    /// `kSecAttrAccessible…ThisDeviceOnly` accessibility, biometric /
+    /// user-presence access control, and app-group scoping — exactly like iOS.
+    /// The legacy file-based macOS keychain silently ignores several of these
+    /// attributes. Using the data protection keychain requires the app-group
+    /// (or keychain-access-group) entitlement, which the sandboxed macOS target
+    /// has (`group.com.kafkade.ldgr`).
+    ///
+    /// It must be applied consistently to store, retrieve, and delete queries;
+    /// otherwise items written to one keychain can't be found in the other.
+    private static func baseQuery(account: String) -> [String: Any] {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        #if os(macOS)
+        query[kSecUseDataProtectionKeychain as String] = true
+        #endif
+        return query
+    }
+
+    /// Access-control flags gating the biometric-protected session key.
+    ///
+    /// - iOS: `.biometryCurrentSet` — requires the currently-enrolled biometric
+    ///   set; adding or removing a fingerprint/face invalidates the item and
+    ///   forces a password re-entry.
+    /// - macOS: `.userPresence` — allows Touch ID, a paired Apple Watch, or the
+    ///   account password as fallback, matching native macOS unlock UX. (macOS
+    ///   does not support `.biometryCurrentSet`-style invalidation with the
+    ///   watch/password fallbacks the platform expects.)
+    private static var sessionKeyAccessControlFlags: SecAccessControlCreateFlags {
+        #if os(macOS)
+        return .userPresence
+        #else
+        return .biometryCurrentSet
+        #endif
+    }
+
     // MARK: - Store
 
     /// Store the session key with biometric protection.
     ///
-    /// Uses `.biometryCurrentSet` so the item is invalidated if the user
-    /// adds or removes a fingerprint/face — requiring a password re-entry.
+    /// On iOS uses `.biometryCurrentSet` so the item is invalidated if the user
+    /// adds or removes a fingerprint/face — requiring a password re-entry. On
+    /// macOS uses `.userPresence` (Touch ID / Apple Watch / password fallback).
     static func storeSessionKey(_ key: Data) throws {
         // Delete any existing item first
         try? deleteSessionKey()
@@ -28,7 +77,7 @@ enum KeychainManager {
         guard let access = SecAccessControlCreateWithFlags(
             nil,
             kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-            .biometryCurrentSet,
+            sessionKeyAccessControlFlags,
             &error
         ) else {
             throw KeychainError.accessControlFailed(
@@ -36,13 +85,9 @@ enum KeychainManager {
             )
         }
 
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: sessionKeyAccount,
-            kSecValueData as String: key,
-            kSecAttrAccessControl as String: access,
-        ]
+        var query = baseQuery(account: sessionKeyAccount)
+        query[kSecValueData as String] = key
+        query[kSecAttrAccessControl as String] = access
 
         let status = SecItemAdd(query as CFDictionary, nil)
         guard status == errSecSuccess else {
@@ -60,14 +105,9 @@ enum KeychainManager {
         let context = LAContext()
         context.localizedReason = prompt
 
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: sessionKeyAccount,
-            kSecReturnData as String: true,
-            kSecUseAuthenticationContext as String: context,
-            kSecUseOperationPrompt as String: prompt,
-        ]
+        var query = baseQuery(account: sessionKeyAccount)
+        query[kSecReturnData as String] = true
+        query[kSecUseAuthenticationContext as String] = context
 
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
@@ -91,11 +131,7 @@ enum KeychainManager {
 
     /// Remove the session key from the Keychain.
     static func deleteSessionKey() throws {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: sessionKeyAccount,
-        ]
+        let query = baseQuery(account: sessionKeyAccount)
 
         let status = SecItemDelete(query as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
@@ -107,12 +143,12 @@ enum KeychainManager {
 
     /// Check whether a session key exists in the Keychain (without authenticating).
     static func hasSessionKey() -> Bool {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: sessionKeyAccount,
-            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail,
-        ]
+        // A non-interactive context: the lookup must never prompt the user.
+        let context = LAContext()
+        context.interactionNotAllowed = true
+
+        var query = baseQuery(account: sessionKeyAccount)
+        query[kSecUseAuthenticationContext as String] = context
 
         let status = SecItemCopyMatching(query as CFDictionary, nil)
         // errSecInteractionNotAllowed means item exists but requires auth
@@ -198,13 +234,9 @@ enum KeychainManager {
     private static func storeServerValue(_ value: Data, account: String) throws {
         try? deleteServerValue(account: account)
 
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecValueData as String: value,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-        ]
+        var query = baseQuery(account: account)
+        query[kSecValueData as String] = value
+        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
 
         let status = SecItemAdd(query as CFDictionary, nil)
         guard status == errSecSuccess else {
@@ -213,12 +245,8 @@ enum KeychainManager {
     }
 
     private static func retrieveServerValue(account: String) -> Data? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-        ]
+        var query = baseQuery(account: account)
+        query[kSecReturnData as String] = true
 
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
@@ -227,11 +255,7 @@ enum KeychainManager {
     }
 
     private static func deleteServerValue(account: String) throws {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
+        let query = baseQuery(account: account)
 
         let status = SecItemDelete(query as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
