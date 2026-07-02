@@ -96,7 +96,9 @@ docker compose up -d      # pulls the published multi-arch GHCR image
 
 This gives you a running server with a persistent named volume and a passing
 `/health` healthcheck. See the [Self-Hosting guide](docs/self-hosting.md) for the
-full walkthrough — configuration, TLS (Caddy), upgrades, and backup/restore.
+full end-to-end walkthrough — deploy, TLS (Caddy), upgrades, backup/restore,
+**first-run admin onboarding, adding users, and the 1Password-style two-secret
+account model** (master password + Account Secret Key + Emergency Kit).
 Published images live at `ghcr.io/kafkade/ldgr-server` (multi-arch amd64/arm64,
 versioned + `latest`).
 
