@@ -9,6 +9,11 @@ ldgr-server is an **encrypted blob relay**. It stores and serves encrypted blobs
 never decrypts them — it never sees your password or your plaintext financial data.
 All encryption happens on your devices.
 
+> **Running the server for others?** This guide is the end-user client
+> walkthrough. For the operator's side — first-run admin onboarding, registration
+> policy, adding users, and the two-secret account model — see the
+> [Self-Hosting guide](self-hosting.md).
+
 > **Licensing note:** the sync server (`crates/ldgr-server/`) is licensed under
 > AGPL-3.0. The rest of ldgr is Apache-2.0.
 

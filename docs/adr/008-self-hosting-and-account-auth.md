@@ -291,3 +291,12 @@ The change is **additive and backward compatible** at the server schema level.
   (no re-encryption), reinforcing Decision 3.
 - **No forced migration**: instances may run mixed-scheme indefinitely. Admins MAY set a policy to
   require 2SKD for new accounts while grandfathering existing ones.
+
+## See also
+
+- [Self-Hosting guide](../self-hosting.md) — the operator's walkthrough that
+  applies this ADR: deploy, first-run admin onboarding, registration policy,
+  adding users, the two-secret account model + Emergency Kit, and the threat
+  model.
+- [Cross-Client Sync Setup guide](../sync-setup.md) — the end-user client
+  walkthrough for creating an account and syncing devices.
