@@ -3,7 +3,8 @@
 #
 # Prerequisites:
 #   - Xcode (with iOS SDK)
-#   - Rust targets: rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+#   - Rust targets: rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios \
+#                                     aarch64-apple-darwin x86_64-apple-darwin
 #   - uniffi-bindgen workspace crate (crates/uniffi-bindgen)
 #
 # Usage:
@@ -44,11 +45,19 @@ cargo build -p ldgr-ffi --target aarch64-apple-ios-sim $CARGO_FLAGS
 echo "▸ Building for x86_64-apple-ios (Intel simulator)…"
 cargo build -p ldgr-ffi --target x86_64-apple-ios $CARGO_FLAGS
 
+echo "▸ Building for aarch64-apple-darwin (macOS Apple Silicon)…"
+cargo build -p ldgr-ffi --target aarch64-apple-darwin $CARGO_FLAGS
+
+echo "▸ Building for x86_64-apple-darwin (macOS Intel)…"
+cargo build -p ldgr-ffi --target x86_64-apple-darwin $CARGO_FLAGS
+
 DEVICE_LIB="$REPO_ROOT/target/aarch64-apple-ios/$PROFILE/libldgr_ffi.a"
 SIM_ARM_LIB="$REPO_ROOT/target/aarch64-apple-ios-sim/$PROFILE/libldgr_ffi.a"
 SIM_X86_LIB="$REPO_ROOT/target/x86_64-apple-ios/$PROFILE/libldgr_ffi.a"
+MAC_ARM_LIB="$REPO_ROOT/target/aarch64-apple-darwin/$PROFILE/libldgr_ffi.a"
+MAC_X86_LIB="$REPO_ROOT/target/x86_64-apple-darwin/$PROFILE/libldgr_ffi.a"
 
-for lib in "$DEVICE_LIB" "$SIM_ARM_LIB" "$SIM_X86_LIB"; do
+for lib in "$DEVICE_LIB" "$SIM_ARM_LIB" "$SIM_X86_LIB" "$MAC_ARM_LIB" "$MAC_X86_LIB"; do
     if [[ ! -f "$lib" ]]; then
         echo "ERROR: Expected library not found: $lib"
         exit 1
@@ -63,6 +72,15 @@ lipo -create "$SIM_ARM_LIB" "$SIM_X86_LIB" \
      -output "$SIM_UNIVERSAL/libldgr_ffi.a"
 
 SIM_LIB="$SIM_UNIVERSAL/libldgr_ffi.a"
+
+# Create universal macOS library
+echo "▸ Creating universal macOS library (arm64 + x86_64)…"
+MAC_UNIVERSAL="$REPO_ROOT/target/universal-macos/$PROFILE"
+mkdir -p "$MAC_UNIVERSAL"
+lipo -create "$MAC_ARM_LIB" "$MAC_X86_LIB" \
+     -output "$MAC_UNIVERSAL/libldgr_ffi.a"
+
+MAC_LIB="$MAC_UNIVERSAL/libldgr_ffi.a"
 
 # ── Step 2: Generate Swift bindings ─────────────────────────────────────────────
 
@@ -97,15 +115,18 @@ rm -rf "$OUT_DIR/ldgr_ffiFFI.xcframework"
 # Prepare header directories (must be named module.modulemap for xcframework)
 DEVICE_HEADERS="$OUT_DIR/headers-device"
 SIM_HEADERS="$OUT_DIR/headers-sim"
-rm -rf "$DEVICE_HEADERS" "$SIM_HEADERS"
-mkdir -p "$DEVICE_HEADERS" "$SIM_HEADERS"
+MAC_HEADERS="$OUT_DIR/headers-macos"
+rm -rf "$DEVICE_HEADERS" "$SIM_HEADERS" "$MAC_HEADERS"
+mkdir -p "$DEVICE_HEADERS" "$SIM_HEADERS" "$MAC_HEADERS"
 
 if [[ -n "${HEADER:-}" && -f "$HEADER" ]]; then
     cp "$HEADER" "$DEVICE_HEADERS/"
     cp "$HEADER" "$SIM_HEADERS/"
+    cp "$HEADER" "$MAC_HEADERS/"
     if [[ -n "${MODULEMAP:-}" && -f "$MODULEMAP" ]]; then
         cp "$MODULEMAP" "$DEVICE_HEADERS/module.modulemap"
         cp "$MODULEMAP" "$SIM_HEADERS/module.modulemap"
+        cp "$MODULEMAP" "$MAC_HEADERS/module.modulemap"
     fi
 fi
 
@@ -114,10 +135,12 @@ xcodebuild -create-xcframework \
     -headers "$DEVICE_HEADERS" \
     -library "$SIM_LIB" \
     -headers "$SIM_HEADERS" \
+    -library "$MAC_LIB" \
+    -headers "$MAC_HEADERS" \
     -output "$OUT_DIR/ldgr_ffiFFI.xcframework"
 
 # Clean up temp dirs
-rm -rf "$DEVICE_HEADERS" "$SIM_HEADERS"
+rm -rf "$DEVICE_HEADERS" "$SIM_HEADERS" "$MAC_HEADERS"
 
 echo ""
 echo "✓ XCFramework built: $OUT_DIR/ldgr_ffiFFI.xcframework"

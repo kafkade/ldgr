@@ -19,11 +19,16 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
+use ldgr_core::crypto::{
+    Argon2Params, AuthKey, EmergencyKit, SecretKey, decode_recovery_key, derive_auth_key,
+    derive_master_key,
+};
 use ldgr_core::sync::conflicts::SyncConflict;
 use ldgr_core::sync::events::{EventBatch, SyncEvent, VectorClock};
 use ldgr_core::sync::server::{
     ListBatchesQuery, RawHttpSender, RawRequest, RawResponse, ServerSyncClient, ServerSyncError,
 };
+use uuid::Uuid;
 
 // ── Merge ────────────────────────────────────────────────────────────────────
 
@@ -255,8 +260,93 @@ impl WasmSyncClient {
         Ok(())
     }
 
-    /// Create a remote vault. Safe to call repeatedly; the server rejects
-    /// duplicates, which the caller may treat as "already exists".
+    /// Register a new **two-secret (2SKD)** account (ADR-008).
+    ///
+    /// Derives `MK_auth` from `password` + Argon2 salt/params and parses
+    /// `secret_key` (canonical text). Neither the password nor the Secret Key
+    /// leaves the browser — only `(salt, verifier)` and the `account_id` go to
+    /// the server. Returns the assigned user id.
+    #[wasm_bindgen(js_name = register2skd)]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn register_2skd(
+        &self,
+        username: String,
+        account_id: String,
+        password: String,
+        secret_key: String,
+        argon2_salt: Vec<u8>,
+        memory_cost_kib: u32,
+        iterations: u32,
+        parallelism: u32,
+    ) -> Result<String, JsError> {
+        let params = Argon2Params {
+            memory_cost_kib,
+            iterations,
+            parallelism,
+        };
+        let aid = Uuid::parse_str(&account_id)
+            .map_err(|e| JsError::new(&format!("invalid account id: {e}")))?;
+        let mk_auth = derive_mk_auth(password.as_bytes(), &argon2_salt, &params)?;
+        let sk = SecretKey::parse(&secret_key)
+            .map_err(|e| JsError::new(&format!("invalid secret key: {e}")))?;
+        let client = self.client();
+        client
+            .register_2skd(&username, &aid, &mk_auth, &sk)
+            .await
+            .map(|r| r.user_id)
+            .map_err(sync_err)
+    }
+
+    /// Perform a **two-secret (2SKD)** login and cache the session token
+    /// (ADR-008). The account id is supplied by the server at `login/init`, so
+    /// callers pass only the master `password` and the account `secret_key`.
+    #[wasm_bindgen(js_name = login2skd)]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn login_2skd(
+        &self,
+        username: String,
+        password: String,
+        secret_key: String,
+        argon2_salt: Vec<u8>,
+        memory_cost_kib: u32,
+        iterations: u32,
+        parallelism: u32,
+    ) -> Result<(), JsError> {
+        let params = Argon2Params {
+            memory_cost_kib,
+            iterations,
+            parallelism,
+        };
+        let mk_auth = derive_mk_auth(password.as_bytes(), &argon2_salt, &params)?;
+        let sk = SecretKey::parse(&secret_key)
+            .map_err(|e| JsError::new(&format!("invalid secret key: {e}")))?;
+        let mut client = self.client();
+        client
+            .login_2skd(&username, &mk_auth, &sk)
+            .await
+            .map_err(sync_err)?;
+        *self.token.borrow_mut() = client.token().map(str::to_string);
+        Ok(())
+    }
+
+    /// Fetch `GET /server/info` for server-URL validation and capability
+    /// discovery (protocol version, registration policy, `two_secret_auth`).
+    /// Returns the [`ServerInfo`] as a JSON string.
+    #[wasm_bindgen(js_name = serverInfo)]
+    pub async fn server_info(&self) -> Result<String, JsError> {
+        let client = self.client();
+        let info = client.server_info().await.map_err(sync_err)?;
+        serde_json::to_string(&info).map_err(|e| JsError::new(&format!("serialization error: {e}")))
+    }
+
+    /// Cheap liveness probe (`GET /server/ping`) for URL validation. Returns the
+    /// [`Pong`] as a JSON string.
+    #[wasm_bindgen]
+    pub async fn ping(&self) -> Result<String, JsError> {
+        let client = self.client();
+        let pong = client.ping().await.map_err(sync_err)?;
+        serde_json::to_string(&pong).map_err(|e| JsError::new(&format!("serialization error: {e}")))
+    }
     #[wasm_bindgen(js_name = createVault)]
     pub async fn create_vault(&self, vault_id: String) -> Result<(), JsError> {
         let client = self.client();
@@ -323,4 +413,71 @@ impl WasmSyncClient {
         serde_json::to_string(&metas)
             .map_err(|e| JsError::new(&format!("serialization error: {e}")))
     }
+}
+
+// ── 2SKD onboarding (ADR-008) ──────────────────────────────────────────────────
+
+/// Derive the master auth key (`MK_auth`) from a password + Argon2 salt/params.
+fn derive_mk_auth(
+    password: &[u8],
+    argon2_salt: &[u8],
+    params: &Argon2Params,
+) -> Result<AuthKey, JsError> {
+    let master_key = derive_master_key(password, argon2_salt, params)
+        .map_err(|e| JsError::new(&format!("key derivation failed: {e}")))?;
+    derive_auth_key(&master_key).map_err(|e| JsError::new(&format!("key derivation failed: {e}")))
+}
+
+/// Generate a fresh account id + account [`SecretKey`] for 2SKD sign-up
+/// (ADR-008).
+///
+/// Returns a JSON string `{ accountId, secretKey, accountHint }`. The
+/// `secretKey` is shown once (Emergency Kit) and stored securely; `accountId`
+/// is passed to [`WasmSyncClient::register_2skd`].
+#[wasm_bindgen(js_name = generateSecretKey)]
+pub fn generate_secret_key() -> Result<String, JsError> {
+    let account_id = Uuid::now_v7();
+    let sk = SecretKey::generate(account_id);
+    let out = serde_json::json!({
+        "accountId": account_id.to_string(),
+        "secretKey": sk.encode(),
+        "accountHint": sk.account_hint(),
+    });
+    serde_json::to_string(&out).map_err(|e| JsError::new(&format!("serialization error: {e}")))
+}
+
+/// Build an Emergency Kit (render-agnostic fields + QR payload) for new-device
+/// sign-in (ADR-008). `recovery_key` is an opt-in vault recovery key; pass
+/// `undefined`/`null` to keep the two recovery artifacts separate (recommended).
+///
+/// Returns a JSON string
+/// `{ version, address, email, accountHint, secretKey, recoveryKey, qrPayload }`.
+#[wasm_bindgen(js_name = buildEmergencyKit)]
+pub fn build_emergency_kit(
+    address: String,
+    email: String,
+    secret_key: String,
+    recovery_key: Option<String>,
+) -> Result<String, JsError> {
+    let sk = SecretKey::parse(&secret_key)
+        .map_err(|e| JsError::new(&format!("invalid secret key: {e}")))?;
+    let mut kit = EmergencyKit::new(address, email, &sk);
+    if let Some(rk_text) = recovery_key.as_deref() {
+        let rk = decode_recovery_key(rk_text)
+            .map_err(|e| JsError::new(&format!("invalid recovery key: {e}")))?;
+        kit = kit.with_recovery_key(&rk);
+    }
+    let qr_payload = kit
+        .to_qr_payload()
+        .map_err(|e| JsError::new(&format!("kit serialization failed: {e}")))?;
+    let out = serde_json::json!({
+        "version": kit.version(),
+        "address": kit.address(),
+        "email": kit.email(),
+        "accountHint": kit.account_hint(),
+        "secretKey": kit.secret_key_text(),
+        "recoveryKey": kit.recovery_key_text(),
+        "qrPayload": qr_payload,
+    });
+    serde_json::to_string(&out).map_err(|e| JsError::new(&format!("serialization error: {e}")))
 }

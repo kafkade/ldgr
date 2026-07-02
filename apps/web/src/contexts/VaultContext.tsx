@@ -29,6 +29,10 @@ import {
   loadToken,
   saveToken,
   clearToken,
+  loadSecretKey,
+  fetchServerInfo,
+  signUp2skd,
+  signIn2skd,
   getOrCreateDeviceId,
   listOpenConflicts,
   resolveConflict,
@@ -45,6 +49,7 @@ import type {
   RegisterReport,
   Transaction,
 } from '@/lib/types';
+import type { EmergencyKit, ServerInfo } from '@/lib/wasm';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -83,12 +88,20 @@ interface VaultContextValue {
   // ── Sync ──
   serverConfig: ServerConfig | null;
   serverAuthenticated: boolean;
+  hasSecretKey: boolean;
   syncing: boolean;
   deviceId: string | null;
   conflicts: ConflictRow[];
   configureServer: (cfg: ServerConfig) => Promise<void>;
+  checkServer: (serverUrl: string) => Promise<ServerInfo>;
   registerServer: (username: string, password: string) => Promise<void>;
   loginServer: (username: string, password: string) => Promise<void>;
+  signUpServer: (username: string, password: string) => Promise<EmergencyKit>;
+  signInServer: (
+    username: string,
+    password: string,
+    secretKey?: string | null,
+  ) => Promise<void>;
   logoutServer: () => Promise<void>;
   createRemoteVault: () => Promise<void>;
   sync: () => Promise<SyncOutcome>;
@@ -128,6 +141,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const clientRef = useRef<WasmSyncClient | null>(null);
   const [serverConfig, setServerConfig] = useState<ServerConfig | null>(null);
   const [serverAuthenticated, setServerAuthenticated] = useState(false);
+  const [hasSecretKey, setHasSecretKey] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [deviceId, setDeviceId] = useState<string | null>(null);
   const [conflicts, setConflicts] = useState<ConflictRow[]>([]);
@@ -139,6 +153,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     setDeviceId(getOrCreateDeviceId(database));
     setConflicts(listOpenConflicts(database));
     setServerAuthenticated(loadToken(database) !== null);
+    setHasSecretKey(loadSecretKey(database) !== null);
   }, []);
 
   // Load WASM on mount
@@ -388,11 +403,70 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     [db, serverConfig, buildClient, saveVault],
   );
 
+  const checkServer = useCallback(
+    async (serverUrl: string): Promise<ServerInfo> => {
+      if (!wasm) throw new Error('WASM not loaded');
+      const callback = makeFetchCallback(serverUrl);
+      const client = new wasm.WasmSyncClient(callback);
+      try {
+        return await fetchServerInfo(client);
+      } finally {
+        client.free();
+      }
+    },
+    [wasm],
+  );
+
+  const signUpServer = useCallback(
+    async (username: string, password: string): Promise<EmergencyKit> => {
+      if (!wasm || !vault || !db || !serverConfig)
+        throw new Error('Configure the server first');
+      const client = buildClient(serverConfig);
+      const { emergencyKit } = await signUp2skd(
+        db,
+        wasm,
+        vault,
+        client,
+        serverConfig.serverUrl,
+        username,
+        password,
+      );
+      clientRef.current = client;
+      setServerAuthenticated(client.isAuthenticated());
+      setHasSecretKey(true);
+      await saveVault();
+      return emergencyKit;
+    },
+    [wasm, vault, db, serverConfig, buildClient, saveVault],
+  );
+
+  const signInServer = useCallback(
+    async (
+      username: string,
+      password: string,
+      secretKey?: string | null,
+    ): Promise<void> => {
+      if (!vault || !db || !serverConfig)
+        throw new Error('Configure the server first');
+      const client = buildClient(serverConfig);
+      await signIn2skd(db, vault, client, username, password, secretKey ?? null);
+      clientRef.current = client;
+      setServerAuthenticated(client.isAuthenticated());
+      setHasSecretKey(true);
+      await saveVault();
+    },
+    [vault, db, serverConfig, buildClient, saveVault],
+  );
+
   const logoutServer = useCallback(async () => {
     if (!db) return;
     clientRef.current?.logout();
     clientRef.current = null;
     clearToken(db);
+    // Keep the account Secret Key (account-level, per ADR-008) so the user can
+    // sign back in on this device with just their master password — matching the
+    // iOS client. Clearing it would force re-entry from the Emergency Kit and push
+    // returning users into the sign-up flow.
     setServerAuthenticated(false);
     await saveVault();
   }, [db, saveVault]);
@@ -519,12 +593,16 @@ export function VaultProvider({ children }: { children: ReactNode }) {
         saveVault,
         serverConfig,
         serverAuthenticated,
+        hasSecretKey,
         syncing,
         deviceId,
         conflicts,
         configureServer,
+        checkServer,
         registerServer,
         loginServer,
+        signUpServer,
+        signInServer,
         logoutServer,
         createRemoteVault,
         sync,

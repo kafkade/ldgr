@@ -131,6 +131,25 @@ impl LdgrWasm {
     pub fn serialize_vault(&self) -> Result<Vec<u8>, JsError> {
         crypto::serialize_vault(&self.vault).map_err(crypto_err)
     }
+
+    /// The vault's Argon2id KDF salt and parameters, as a JSON string.
+    ///
+    /// Two-secret (2SKD) sign-in derives the server auth key `MK_auth` from the
+    /// master password using exactly these values (ADR-008); the salt is the
+    /// vault header salt. Shape:
+    /// `{ "salt": number[], "memoryCostKib": u32, "iterations": u32, "parallelism": u32 }`.
+    #[wasm_bindgen(js_name = kdfParams)]
+    pub fn kdf_params(&self) -> Result<String, JsError> {
+        let (salt, params) = self.vault.kdf_params();
+        let value = serde_json::json!({
+            "salt": salt.to_vec(),
+            "memoryCostKib": params.memory_cost_kib,
+            "iterations": params.iterations,
+            "parallelism": params.parallelism,
+        });
+        serde_json::to_string(&value)
+            .map_err(|e| JsError::new(&format!("failed to serialize KDF params: {e}")))
+    }
 }
 
 // ── Sync Batch Framing (sync feature) ────────────────────────────────────────────

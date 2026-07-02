@@ -179,6 +179,11 @@ pub enum SrpError {
     /// The scrambling parameter u computed to zero.
     #[error("invalid u value")]
     InvalidU,
+    /// A two-secret (2SKD) login was finished without an account id — the
+    /// server did not return one at `login/init` (e.g. a legacy/1-secret
+    /// account or an outdated server).
+    #[error("missing account id for two-secret login")]
+    MissingAccountId,
 }
 
 // ── Registration ───────────────────────────────────────────────────────────────
@@ -270,8 +275,12 @@ enum Credential {
     /// Legacy single-secret: `x = H(salt || H(username || ":" || password))`.
     Password(Zeroizing<Vec<u8>>),
     /// Two-secret (2SKD): `x = OS2IP(x_seed) mod N` (ADR-008).
+    ///
+    /// `account_id` is resolved from the server's `login/init` response
+    /// ([`ClientLogin::set_account_id`]) before [`ClientLogin::finish`], so it
+    /// starts unset.
     TwoSecret {
-        account_id: Uuid,
+        account_id: Option<Uuid>,
         mk_auth: AuthKey,
         secret_key: SecretKey,
     },
@@ -316,21 +325,39 @@ impl ClientLogin {
     /// `mk_auth` is the existing [`AuthKey`] derived from the master password;
     /// `secret_key` is the account [`SecretKey`]. Both are required to
     /// reproduce the verifier's `x` — the password or Secret Key alone cannot.
+    ///
+    /// The account id is **not** required here: it is learned from the server's
+    /// `login/init` response and injected via [`set_account_id`] before
+    /// [`finish`]. Calling `finish` without it yields
+    /// [`SrpError::MissingAccountId`].
+    ///
+    /// [`set_account_id`]: ClientLogin::set_account_id
+    /// [`finish`]: ClientLogin::finish
     #[must_use]
-    pub fn start_2skd(
-        username: &str,
-        account_id: Uuid,
-        mk_auth: AuthKey,
-        secret_key: SecretKey,
-    ) -> (Self, Vec<u8>) {
+    pub fn start_2skd(username: &str, mk_auth: AuthKey, secret_key: SecretKey) -> (Self, Vec<u8>) {
         Self::start_with_credential(
             username,
             Credential::TwoSecret {
-                account_id,
+                account_id: None,
                 mk_auth,
                 secret_key,
             },
         )
+    }
+
+    /// Inject the account id learned from the server's `login/init` response.
+    ///
+    /// No-op for a single-secret login. Must be called before [`finish`] on a
+    /// two-secret login.
+    ///
+    /// [`finish`]: ClientLogin::finish
+    pub fn set_account_id(&mut self, account_id: Uuid) {
+        if let Credential::TwoSecret {
+            account_id: slot, ..
+        } = &mut self.credential
+        {
+            *slot = Some(account_id);
+        }
     }
 
     fn start_with_credential(username: &str, credential: Credential) -> (Self, Vec<u8>) {
@@ -390,7 +417,10 @@ impl ClientLogin {
                 account_id,
                 mk_auth,
                 secret_key,
-            } => compute_x_2skd(account_id, mk_auth, secret_key, salt),
+            } => {
+                let account_id = (*account_id).ok_or(SrpError::MissingAccountId)?;
+                compute_x_2skd(&account_id, mk_auth, secret_key, salt)
+            }
         };
 
         // S = (B - k * g^x) ^ (a + u * x) mod N
@@ -625,8 +655,9 @@ mod tests {
         let salt = vec![9u8; SALT_LEN];
         let reg = register_2skd_with_salt(&account_id, mk_auth, secret_key, salt);
 
-        let (login, a_pub) =
-            ClientLogin::start_2skd(username, account_id, mk_auth.clone(), secret_key.clone());
+        let (mut login, a_pub) =
+            ClientLogin::start_2skd(username, mk_auth.clone(), secret_key.clone());
+        login.set_account_id(account_id);
         let server = ReferenceServer::initiate(username, &reg.salt, &reg.verifier, &a_pub);
 
         let session = login
@@ -680,8 +711,8 @@ mod tests {
         );
 
         // Login with the wrong Secret Key (but correct password) is rejected.
-        let (login, a_pub) =
-            ClientLogin::start_2skd("eve", account_id, mk_auth.clone(), attacker.clone());
+        let (mut login, a_pub) = ClientLogin::start_2skd("eve", mk_auth.clone(), attacker.clone());
+        login.set_account_id(account_id);
         let server = ReferenceServer::initiate("eve", &reg.salt, &reg.verifier, &a_pub);
         let session = login
             .finish(&reg.salt, &server.server_public_bytes())
@@ -698,12 +729,9 @@ mod tests {
         let reg =
             register_2skd_with_salt(&account_id, &auth_key(b"right-password"), &secret_key, salt);
 
-        let (login, a_pub) = ClientLogin::start_2skd(
-            "frank",
-            account_id,
-            auth_key(b"wrong-password"),
-            secret_key.clone(),
-        );
+        let (mut login, a_pub) =
+            ClientLogin::start_2skd("frank", auth_key(b"wrong-password"), secret_key.clone());
+        login.set_account_id(account_id);
         let server = ReferenceServer::initiate("frank", &reg.salt, &reg.verifier, &a_pub);
         let session = login
             .finish(&reg.salt, &server.server_public_bytes())
@@ -788,8 +816,9 @@ mod tests {
             let salt = vec![3u8; SALT_LEN];
 
             let reg = register_2skd_with_salt(&account_id, &mk_auth, &registered, salt);
-            let (login, a_pub) =
-                ClientLogin::start_2skd(&username, account_id, mk_auth.clone(), attacker);
+            let (mut login, a_pub) =
+                ClientLogin::start_2skd(&username, mk_auth.clone(), attacker);
+            login.set_account_id(account_id);
             let server = ReferenceServer::initiate(&username, &reg.salt, &reg.verifier, &a_pub);
             let session = login
                 .finish(&reg.salt, &server.server_public_bytes())

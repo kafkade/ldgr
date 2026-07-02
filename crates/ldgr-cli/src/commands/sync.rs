@@ -8,8 +8,12 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
-use ldgr_core::sync::server::{ServerSyncClient, ServerSyncError};
+use ldgr_core::crypto::{
+    Argon2Params, AuthKey, EmergencyKit, SecretKey, derive_auth_key, derive_master_key, open_vault,
+};
+use ldgr_core::sync::server::{PROTOCOL_VERSION, ServerInfo, ServerSyncClient, ServerSyncError};
 use ldgr_core::sync::transport::{TransportConfig, device_path};
+use uuid::Uuid;
 
 use crate::sync::dropbox::DropboxTransport;
 use crate::sync::server::{ReqwestSender, ServerTransport};
@@ -43,7 +47,7 @@ pub fn run_setup(vault_path: &Path) -> Result<()> {
     let config = match choice.trim() {
         "1" => setup_dropbox()?,
         "2" => setup_webdav()?,
-        "3" => setup_server(&db, &vault_dir)?,
+        "3" => setup_server(&db, vault_path, &vault_dir)?,
         _ => bail!("Invalid choice. Please enter 1, 2, or 3."),
     };
 
@@ -143,21 +147,21 @@ fn setup_webdav() -> Result<TransportConfig> {
 
 /// Interactive setup for the self-hosted `ldgr-server` transport.
 ///
-/// Performs a one-time SRP-6a login (registering the account first if needed),
-/// ensures the vault exists, registers this device, and persists the resulting
-/// session token to `sync-credentials.json` (a bearer secret, kept out of the
-/// non-secret `TransportConfig`). The password is used only for the handshake
-/// and is never stored.
-///
-/// Two-secret onboarding (2SKD, ADR-008 / issue #180) is a future addition: the
-/// only change required here is prompting for the account Secret Key and calling
-/// `register_2skd` / `login_2skd` in place of the single-secret calls below.
-fn setup_server(conn: &rusqlite::Connection, vault_dir: &Path) -> Result<TransportConfig> {
+/// Validates the server URL against `/server/info`, then branches on the
+/// server's advertised capabilities: a two-secret (2SKD, ADR-008) server runs
+/// the Secret Key + Emergency Kit onboarding; a legacy single-secret server
+/// falls back to the plain SRP-6a flow. The master password is used only to
+/// derive keys locally and is never stored.
+fn setup_server(
+    conn: &rusqlite::Connection,
+    vault_path: &Path,
+    vault_dir: &Path,
+) -> Result<TransportConfig> {
     println!();
     println!("ldgr-server Setup (self-hosted)");
     println!("───────────────────────────────");
-    println!("Sync to your own ldgr-server over an end-to-end encrypted SRP-6a");
-    println!("session. Your password never leaves this device and is not stored.");
+    println!("Sync to your own ldgr-server over an end-to-end encrypted session.");
+    println!("Your password never leaves this device and is not stored.");
     println!();
 
     print!("Server URL (e.g. https://sync.example.com): ");
@@ -169,6 +173,371 @@ fn setup_server(conn: &rusqlite::Connection, vault_dir: &Path) -> Result<Transpo
         bail!("Server URL cannot be empty.");
     }
 
+    let rt = tokio::runtime::Runtime::new().context("failed to create runtime")?;
+
+    // Validate the URL and discover capabilities before asking for credentials.
+    let info = rt
+        .block_on(async {
+            let sender = ReqwestSender::new(base_url.clone());
+            let client = ServerSyncClient::new(sender);
+            client.server_info().await
+        })
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "could not reach an ldgr-server at {base_url}: {e}\n\
+                 Check the URL and that the server is running."
+            )
+        })?;
+    print_server_info(&info);
+
+    if info.two_secret_auth {
+        setup_server_2skd(&rt, conn, vault_path, vault_dir, base_url, &info)
+    } else {
+        println!("This server uses single-secret authentication.");
+        println!();
+        setup_server_single_secret(&rt, conn, vault_dir, base_url)
+    }
+}
+
+/// Print the server discovery document and warn on a protocol-version mismatch.
+fn print_server_info(info: &ServerInfo) {
+    println!();
+    println!("✓ Connected to ldgr-server");
+    println!("  Name:              {}", info.name);
+    println!("  Version:           {}", info.version);
+    println!("  Protocol:          {}", info.protocol_version);
+    println!("  Registration:      {}", info.registration_policy);
+    println!(
+        "  Two-secret auth:   {}",
+        if info.two_secret_auth { "yes" } else { "no" }
+    );
+    println!();
+
+    if PROTOCOL_VERSION < info.min_protocol_version || PROTOCOL_VERSION > info.max_protocol_version
+    {
+        println!(
+            "⚠  Protocol mismatch: this client speaks v{PROTOCOL_VERSION}, but the server \
+             supports v{}–v{}.",
+            info.min_protocol_version, info.max_protocol_version
+        );
+        println!("   Sync may not work correctly. Consider updating ldgr.");
+        println!();
+    }
+}
+
+/// Two-secret (2SKD, ADR-008) onboarding: sign up (generating a Secret Key +
+/// Emergency Kit) or sign in — either on a device that already stores the
+/// Secret Key, or a new device where the user supplies it.
+fn setup_server_2skd(
+    rt: &tokio::runtime::Runtime,
+    conn: &rusqlite::Connection,
+    vault_path: &Path,
+    vault_dir: &Path,
+    base_url: String,
+    info: &ServerInfo,
+) -> Result<TransportConfig> {
+    print!("Username (email): ");
+    io::stdout().flush()?;
+    let mut username = String::new();
+    io::stdin().read_line(&mut username)?;
+    let username = username.trim().to_string();
+    if username.is_empty() {
+        bail!("Username cannot be empty.");
+    }
+
+    let password =
+        rpassword::prompt_password("Master password: ").context("failed to read password")?;
+    if password.is_empty() {
+        bail!("Password cannot be empty.");
+    }
+
+    // MK_auth = HKDF(MK) where MK is the vault master key (ADR-008). Deriving it
+    // from the vault also validates that the password matches this vault.
+    let mk_auth = derive_server_auth_key(vault_path, password.as_bytes())?;
+
+    let vault_id = get_vault_id(vault_dir);
+    let device_id = crate::sync::bridge::resolve_device_id(conn, vault_dir)?;
+
+    // If this device already stored a Secret Key, sign in with password only.
+    let existing_secret_key = load_secret_key(vault_dir)?;
+
+    let outcome = rt.block_on(async {
+        let sender = ReqwestSender::new(base_url.clone());
+        let mut client = ServerSyncClient::new(sender);
+
+        let secret_key_text = if let Some(sk_text) = existing_secret_key {
+            let sk = SecretKey::parse(&sk_text)
+                .map_err(|e| anyhow::anyhow!("stored Secret Key is invalid: {e}"))?;
+            client
+                .login_2skd(&username, &mk_auth, &sk)
+                .await
+                .map_err(|e| anyhow::anyhow!("sign-in failed: {e}"))?;
+            println!();
+            println!("✓ Signed in with the Secret Key stored on this device.");
+            sk_text
+        } else {
+            prompt_2skd_first_time(&mut client, &username, &mk_auth, &base_url, info).await?
+        };
+
+        // Ensure the vault exists (idempotent — a 409 means it already does).
+        if let Err(e) = client.create_vault(&vault_id).await {
+            match e {
+                ServerSyncError::Http { status: 409, .. } => {}
+                other => bail!("failed to create vault: {other}"),
+            }
+        }
+        // Best-effort device registration; the encrypted blob is sent on push.
+        let _ = client.put_device(&vault_id, &device_id, b"{}").await;
+
+        let token = client
+            .token()
+            .map(str::to_string)
+            .ok_or_else(|| anyhow::anyhow!("server did not return a session token"))?;
+        Ok::<(String, String), anyhow::Error>((token, secret_key_text))
+    })?;
+
+    let (session_token, secret_key_text) = outcome;
+
+    println!();
+    println!("✓ Authenticated to {base_url} and registered device {device_id}.");
+
+    store_session_token(vault_dir, &session_token)?;
+    store_secret_key(vault_dir, &secret_key_text)?;
+
+    Ok(TransportConfig::Server {
+        base_url,
+        username: Some(username),
+        vault_id,
+        device_id,
+    })
+}
+
+/// First-time 2SKD onboarding on this device: choose to create a new account
+/// (generating a Secret Key + Emergency Kit) or sign in an existing account by
+/// entering its Secret Key. Returns the account Secret Key (canonical text).
+async fn prompt_2skd_first_time(
+    client: &mut ServerSyncClient<ReqwestSender>,
+    username: &str,
+    mk_auth: &AuthKey,
+    base_url: &str,
+    info: &ServerInfo,
+) -> Result<String> {
+    println!();
+    println!("No Secret Key is stored on this device. Choose an option:");
+    println!("  1. Create a new account (generates your Secret Key + Emergency Kit)");
+    println!("  2. Sign in an existing account (enter its Secret Key)");
+    println!();
+    print!("Choice [1/2]: ");
+    io::stdout().flush()?;
+    let mut choice = String::new();
+    io::stdin().read_line(&mut choice)?;
+
+    match choice.trim() {
+        "1" => {
+            if info.registration_policy == "admin-only" {
+                bail!(
+                    "This server does not allow self-registration (policy: admin-only).\n\
+                     Ask an administrator to create your account, then choose option 2."
+                );
+            }
+            // Client-generated account id bound into the verifier (ADR-008); the
+            // server stores it and returns it at login on other devices.
+            let account_id = Uuid::now_v7();
+            let secret_key = SecretKey::generate(account_id);
+            let secret_key_text = secret_key.encode();
+
+            client
+                .register_2skd(username, &account_id, mk_auth, &secret_key)
+                .await
+                .map_err(|e| anyhow::anyhow!("registration failed: {e}"))?;
+            client
+                .login_2skd(username, mk_auth, &secret_key)
+                .await
+                .map_err(|e| anyhow::anyhow!("login after registration failed: {e}"))?;
+
+            render_emergency_kit(base_url, username, &secret_key)?;
+            Ok(secret_key_text)
+        }
+        "2" => {
+            let sk_text = rpassword::prompt_password("Account Secret Key (A1-…): ")
+                .map_err(|e| anyhow::anyhow!("failed to read Secret Key: {e}"))?;
+            let sk_text = sk_text.trim().to_string();
+            if sk_text.is_empty() {
+                bail!("Secret Key cannot be empty.");
+            }
+            let sk = SecretKey::parse(&sk_text).map_err(|e| {
+                anyhow::anyhow!(
+                    "that doesn't look like a valid Secret Key: {e}\n\
+                     Copy it exactly from your Emergency Kit (starts with `A1-`)."
+                )
+            })?;
+            client
+                .login_2skd(username, mk_auth, &sk)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "sign-in failed: {e}\n\
+                     Check the master password and Secret Key are both correct."
+                    )
+                })?;
+            Ok(sk_text)
+        }
+        other => bail!("Invalid choice `{other}`. Enter 1 or 2."),
+    }
+}
+
+/// Derive the server auth key (`MK_auth`, ADR-008) from the vault's master
+/// password, using the Argon2 salt/params stored in the vault header. Opening
+/// the vault first validates the password and yields those parameters.
+fn derive_server_auth_key(vault_path: &Path, password: &[u8]) -> Result<AuthKey> {
+    let bytes = std::fs::read(vault_path)
+        .with_context(|| format!("failed to read vault at {}", vault_path.display()))?;
+    let vault = open_vault(&bytes, password)
+        .map_err(|_| anyhow::anyhow!("Incorrect master password for this vault."))?;
+    let (salt, params) = vault.kdf_params();
+    let params: Argon2Params = params.clone();
+    let master_key = derive_master_key(password, salt, &params)
+        .map_err(|e| anyhow::anyhow!("key derivation failed: {e}"))?;
+    derive_auth_key(&master_key).map_err(|e| anyhow::anyhow!("key derivation failed: {e}"))
+}
+
+/// Render the Emergency Kit once at sign-up: human-readable details, a scannable
+/// terminal QR of the kit payload, and an optional file export.
+fn render_emergency_kit(base_url: &str, email: &str, secret_key: &SecretKey) -> Result<()> {
+    let kit = EmergencyKit::new(base_url.to_string(), email.to_string(), secret_key);
+    let qr_payload = kit
+        .to_qr_payload()
+        .map_err(|e| anyhow::anyhow!("failed to build Emergency Kit QR: {e}"))?;
+    let secret_key_text = secret_key.encode();
+
+    println!();
+    println!("╔══════════════════════════════════════════════════════════════════╗");
+    println!("║                          EMERGENCY KIT                             ║");
+    println!("╚══════════════════════════════════════════════════════════════════╝");
+    println!();
+    println!("Save this now — your Secret Key is shown ONCE and is required to");
+    println!("sign in on a NEW device (together with your master password).");
+    println!("It does NOT unlock your local vault and is never sent to the server.");
+    println!();
+    println!("  Server:       {base_url}");
+    println!("  Account:      {email}");
+    println!("  Account hint: {}", secret_key.account_hint());
+    println!("  Secret Key:   {secret_key_text}");
+    println!();
+    print_qr(&qr_payload);
+    println!("Scan the QR above with another device, or type the Secret Key.");
+    println!();
+
+    print!("Save the Emergency Kit to a file? [y/N]: ");
+    io::stdout().flush()?;
+    let mut yn = String::new();
+    io::stdin().read_line(&mut yn)?;
+    if matches!(yn.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        print!("File path [emergency-kit.txt]: ");
+        io::stdout().flush()?;
+        let mut path = String::new();
+        io::stdin().read_line(&mut path)?;
+        let path = path.trim();
+        let path = if path.is_empty() {
+            "emergency-kit.txt"
+        } else {
+            path
+        };
+        write_emergency_kit_file(
+            Path::new(path),
+            base_url,
+            email,
+            &secret_key_text,
+            &qr_payload,
+        )?;
+        println!("✓ Emergency Kit written to {path} (permissions restricted to you).");
+        println!("  Store it somewhere safe and offline, then consider deleting the file.");
+    } else {
+        println!("Not saved. Make sure you've recorded the Secret Key above.");
+    }
+    println!();
+    Ok(())
+}
+
+/// Render a QR code to the terminal using half-block characters. Colors are
+/// inverted (light modules filled) so it scans on a typical dark terminal.
+fn print_qr(payload: &str) {
+    match qrcode::QrCode::new(payload.as_bytes()) {
+        Ok(code) => {
+            let rendered = code
+                .render::<qrcode::render::unicode::Dense1x2>()
+                .dark_color(qrcode::render::unicode::Dense1x2::Light)
+                .light_color(qrcode::render::unicode::Dense1x2::Dark)
+                .quiet_zone(true)
+                .build();
+            println!("{rendered}");
+        }
+        Err(e) => {
+            println!("(could not render QR code: {e})");
+        }
+    }
+}
+
+/// Write `contents` to `path`, ensuring the file is owner-only (`0600`) on Unix
+/// from the moment it is created — so a secret is never briefly group/world
+/// readable during first creation (the old write-then-chmod pattern left a small
+/// window at the process umask, typically `0644`).
+fn write_secret_file(path: &Path, contents: &str) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .with_context(|| format!("failed to open {} for writing", path.display()))?;
+        file.write_all(contents.as_bytes())
+            .with_context(|| format!("failed to write {}", path.display()))?;
+        // Tighten perms in case the file already existed with a looser mode
+        // (`.mode()` only applies when the file is newly created).
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("failed to restrict {} permissions", path.display()))?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, contents)
+            .with_context(|| format!("failed to write {}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// Write the Emergency Kit to a file with owner-only permissions on Unix.
+fn write_emergency_kit_file(
+    path: &Path,
+    base_url: &str,
+    email: &str,
+    secret_key_text: &str,
+    qr_payload: &str,
+) -> Result<()> {
+    let contents = format!(
+        "ldgr Emergency Kit\n\
+         ==================\n\n\
+         KEEP THIS SAFE. The Secret Key below is required to sign in on a new\n\
+         device together with your master password. It does not unlock your\n\
+         local vault and is never sent to the server.\n\n\
+         Server:       {base_url}\n\
+         Account:      {email}\n\
+         Secret Key:   {secret_key_text}\n\n\
+         QR payload (for import/scan):\n{qr_payload}\n"
+    );
+    write_secret_file(path, &contents)
+}
+
+/// Single-secret SRP-6a onboarding (legacy servers without two-secret auth).
+fn setup_server_single_secret(
+    rt: &tokio::runtime::Runtime,
+    conn: &rusqlite::Connection,
+    vault_dir: &Path,
+    base_url: String,
+) -> Result<TransportConfig> {
     print!("Username (email): ");
     io::stdout().flush()?;
     let mut username = String::new();
@@ -186,7 +555,6 @@ fn setup_server(conn: &rusqlite::Connection, vault_dir: &Path) -> Result<Transpo
     let vault_id = get_vault_id(vault_dir);
     let device_id = crate::sync::bridge::resolve_device_id(conn, vault_dir)?;
 
-    let rt = tokio::runtime::Runtime::new().context("failed to create runtime")?;
     let session_token = rt.block_on(async {
         let sender = ReqwestSender::new(base_url.clone());
         let mut client = ServerSyncClient::new(sender);
@@ -269,20 +637,60 @@ fn store_session_token(vault_dir: &Path, session_token: &str) -> Result<()> {
         serde_json::json!({})
     };
     creds["session_token"] = serde_json::Value::String(session_token.to_string());
-    std::fs::write(
+    // This file holds the bearer session token — write it owner-only.
+    write_secret_file(
         &creds_path,
-        serde_json::to_string_pretty(&creds).context("failed to serialize credentials")?,
-    )
-    .context("failed to write sync credentials")?;
+        &serde_json::to_string_pretty(&creds).context("failed to serialize credentials")?,
+    )?;
 
-    // Restrict permissions on Unix — this file holds the bearer session token.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        std::fs::set_permissions(&creds_path, perms)
-            .context("failed to set credentials permissions")?;
+    Ok(())
+}
+
+/// Load the account Secret Key from `sync-credentials.json`, if present.
+///
+/// The Secret Key (ADR-008) is a per-account server-auth secret that lets this
+/// device sign in with the master password alone. It never unlocks the vault.
+fn load_secret_key(vault_dir: &Path) -> Result<Option<String>> {
+    let creds_path = vault_dir.join(CREDENTIALS_FILE);
+    if !creds_path.exists() {
+        return Ok(None);
     }
+    let existing =
+        std::fs::read_to_string(&creds_path).context("failed to read sync credentials")?;
+    if existing.trim().is_empty() {
+        return Ok(None);
+    }
+    let creds: serde_json::Value =
+        serde_json::from_str(&existing).context("failed to parse sync credentials")?;
+    Ok(creds
+        .get("secret_key")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string))
+}
+
+/// Persist the account Secret Key into `sync-credentials.json` (0600 on Unix).
+///
+/// Read-merge-write to preserve other providers' keys (e.g. `session_token`,
+/// a Dropbox `access_token`) already in the file.
+fn store_secret_key(vault_dir: &Path, secret_key: &str) -> Result<()> {
+    let creds_path = vault_dir.join(CREDENTIALS_FILE);
+    let mut creds: serde_json::Value = if creds_path.exists() {
+        let existing =
+            std::fs::read_to_string(&creds_path).context("failed to read sync credentials")?;
+        if existing.trim().is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::from_str(&existing).context("failed to parse sync credentials")?
+        }
+    } else {
+        serde_json::json!({})
+    };
+    creds["secret_key"] = serde_json::Value::String(secret_key.to_string());
+    // This file holds the account Secret Key — write it owner-only.
+    write_secret_file(
+        &creds_path,
+        &serde_json::to_string_pretty(&creds).context("failed to serialize credentials")?,
+    )?;
 
     Ok(())
 }

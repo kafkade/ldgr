@@ -160,37 +160,59 @@ A successful response confirms the server is up and the URL is correct.
 
 ## Step 2 — Create an account and register each device
 
-You authenticate to your server with a **username (your email)** and a **password**.
-Authentication uses SRP-6a: your password never leaves the device, and the server
-stores only a verifier, never the password itself (see
-[Threat-model recap](#threat-model-recap)).
+How you authenticate depends on what your server advertises at
+`GET /api/v1/server/info` (every client checks this when you enter the server URL):
+
+- **Two-secret servers (recommended, ADR-008).** You sign up with a **password**
+  **and** a generated **Account Secret Key**. At sign-up the client shows an
+  **Emergency Kit** — your address, account hint, Secret Key, and a QR code — **once**.
+  Save it: the master password alone opens your vault offline, but adding a **new
+  device** needs the Secret Key too (typed or scanned from the Kit). This means an
+  attacker who steals the server database still can't brute-force a weak password.
+- **Single-secret servers (legacy).** Password-only SRP-6a, exactly as before. Clients
+  fall back to this automatically when the server doesn't advertise two-secret auth.
+
+Either way your password never leaves the device (SRP-6a): the server stores only a
+verifier, never the password itself (see [Threat-model recap](#threat-model-recap)).
 
 Pick a **vault ID** and use the **same vault ID and the same account** on every device
 you want to keep in sync.
+
+> **Save your Emergency Kit.** The Secret Key is shown **once**, at sign-up. If you
+> lose it you can still use every device already signed in, but you won't be able to
+> add new ones. Store it in a password manager or print it.
 
 ### Web app
 
 In the vault's **Settings → Sync (ldgr-server)** panel:
 
-1. Fill in **Server URL** (e.g. `https://sync.example.com`), **Vault ID**,
-   **Username**, and **Password**.
-2. On your first device, click **Register** to create the account, then **Log in**.
-   On later devices, just **Log in**.
-3. Click **Create remote vault** once (idempotent — it's a no-op if the vault already
-   exists).
+1. Enter the **Server URL** (e.g. `https://sync.example.com`) and click **Connect**.
+   The panel shows the server name, protocol version, and whether it uses two-secret
+   auth.
+2. Fill in **Vault ID**, **Username**, and **Password**.
+3. On your first device, click **Create Account**. On a two-secret server the app
+   generates your Secret Key and shows the **Emergency Kit** — save it (copy /
+   download / print) before continuing.
+4. On later devices, click **Sign In**. On a new device the app prompts for your
+   **Secret Key** (paste it from the Kit); after that it's remembered for that device.
 
 The panel shows **🟢 Authenticated** with a short device ID when you're signed in.
 
-### iOS / iPadOS / macOS app
+### iOS / iPadOS app
 
 In **Sync** settings:
 
-1. Enter **Server URL**, **Username**, **Password**, and **Vault ID**.
-2. Tap **Create Account & Sign In** on your first device, or **Sign In** on later
-   devices.
+1. Enter the **Server URL** and tap **Connect** to validate it and read the server's
+   capabilities.
+2. Enter **Username**, **Password**, and **Vault ID**.
+3. Tap **Create Account** on your first device — the app generates your Secret Key and
+   presents the **Emergency Kit** (share sheet / screenshot / QR) to save once. On a
+   new device tap **Sign In on This Device** and enter the **Secret Key** from your
+   Kit; on a device that already has it, just tap **Sign In**.
 
-The app stores your session token in the Keychain and registers the device. **Sign
-Out** clears the stored token. macOS uses the same SwiftUI flow.
+The app stores your session token **and** Account Secret Key in the Keychain
+(device-only) and registers the device. **Sign Out** clears the session token but
+keeps the Secret Key, so you can sign back in with just your password.
 
 ### CLI
 
@@ -200,14 +222,19 @@ Run the interactive setup from your vault:
 ldgr sync setup
 ```
 
-Choose provider **3** (`ldgr-server (self-hosted, end-to-end encrypted)`), then enter:
+Enter the **Server URL**; the CLI validates it against `/server/info` and prints the
+server name, protocol version, and auth mode. Then:
 
-- **Server URL** (e.g. `https://sync.example.com`)
-- **Username (email)**
-- **Password** (entered hidden; never stored)
+- **Two-secret server, first device:** the CLI generates your Account Secret Key,
+  registers, and renders your **Emergency Kit** — boxed text **and** a scannable
+  terminal QR code, with an option to export it to a `0600` file. The Secret Key is
+  stored in `sync-credentials.json` (`0600`); your master password is never stored.
+- **Two-secret server, new device:** paste (or point the CLI at a saved Kit file
+  containing) your **Secret Key**; the CLI derives the login and signs in.
+- **Single-secret server:** enter **Username** and **Password**; if the account
+  doesn't exist the CLI offers to register it.
 
-If the account doesn't exist yet, the CLI offers to register it for you. On success it
-saves a non-secret `sync-config.json` and stores the SRP session token in
+On success it saves a non-secret `sync-config.json` and the SRP session token in
 `sync-credentials.json` (permissions `0600`). After setup:
 
 ```sh
@@ -296,14 +323,17 @@ For the full rationale see
 financial data. With SRP-6a, your password is never transmitted during sign-in — the
 server only ever checks a zero-knowledge proof against the stored verifier.
 
-**Current vs. designed authentication.** Today the apps authenticate with a **single
-secret** (your password) via SRP-6a. ldgr's design (ADR-008) additionally specifies
-**Two-Secret Key Derivation (2SKD)** — a 1Password-style **Account Secret Key** mixed
-into the SRP exponent, plus a printable **Emergency Kit** — so that even an attacker
-who steals the server database cannot brute-force a weak password offline. The 2SKD
-protocol exists in the core/server layers but is **not yet surfaced in the client
-sign-up flows**, so the Secret Key and Emergency Kit do not appear in the apps today.
-Treat them as the planned hardening, not a current step.
+**Two-secret authentication (2SKD).** When your server advertises it, sign-in uses
+**two** secrets: your **password** and a generated **Account Secret Key**, combined via
+**Two-Secret Key Derivation** (ADR-008) — a 1Password-style key mixed into the SRP
+exponent, plus a printable **Emergency Kit**. Even an attacker who steals the entire
+server database cannot brute-force a weak password offline, because the Secret Key
+(never sent to the server) is required to reconstruct the SRP verifier. The Secret Key
+is **auth/sync-only**: your vault still opens offline with the master password alone.
+The account id needed to derive the key is generated by the client at sign-up, stored
+by the server, and returned at `login/init`, so new-device sign-in stays "email +
+password + Secret Key". Servers that don't advertise two-secret auth fall back to
+single-secret (password-only) SRP-6a automatically.
 
 ---
 

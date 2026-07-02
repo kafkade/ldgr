@@ -17,8 +17,9 @@ pub use protocol::{
     BlobEntry, CreateOfferRequest, CreateOfferResponse, CreateVaultRequest, DeviceResponse,
     ErrorResponse, GetResponseResponse, HexError, ListBatchesQuery, ListBlobsResponse,
     ListSnapshotsQuery, LoginInitRequest, LoginInitResponse, LoginVerifyRequest,
-    LoginVerifyResponse, OfferResponse, PostResponseRequest, PutBlobResponse, RegisterRequest,
-    RegisterResponse, VaultResponse, hex_decode, hex_encode,
+    LoginVerifyResponse, OfferResponse, PROTOCOL_VERSION, Pong, PostResponseRequest,
+    PutBlobResponse, RegisterRequest, RegisterResponse, ServerInfo, VaultResponse, hex_decode,
+    hex_encode,
 };
 pub use srp::{
     ClientLogin, ClientSession, RegistrationVerifier, SrpError, register, register_2skd,

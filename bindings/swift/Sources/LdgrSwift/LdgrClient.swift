@@ -283,6 +283,26 @@ public final class LdgrClient: @unchecked Sendable {
         }
     }
 
+    /// The vault's Argon2id salt and parameters, for two-secret (2SKD) sign-in.
+    ///
+    /// Two-secret auth derives the server auth key `MK_auth` from the master
+    /// password using exactly these values (ADR-008). Requires the vault to be
+    /// unlocked. Pass the result to ``LdgrSyncSession/register2skd(...)`` or
+    /// ``LdgrSyncSession/login2skd(...)``.
+    public func kdfParams() throws -> KdfParams {
+        do {
+            let p = try vault.kdfParams()
+            return KdfParams(
+                salt: Data(p.salt),
+                memoryCostKib: p.memoryCostKib,
+                iterations: p.iterations,
+                parallelism: p.parallelism
+            )
+        } catch let error as LdgrError {
+            throw LdgrClientError(from: error)
+        }
+    }
+
     /// Unlock the vault using a previously exported session key.
     ///
     /// Skips Argon2id derivation — used for biometric unlock where the

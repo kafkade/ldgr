@@ -3,19 +3,29 @@ import LdgrSwift
 
 /// Full sync settings and status view.
 ///
-/// Shows sync status, server connection settings (sign in / out), device ID,
-/// pending events, conflicts, and a manual sync trigger.
+/// Shows sync status, server connection settings, device ID, pending events,
+/// conflicts, and a manual sync trigger. Onboarding is **discovery-driven**
+/// (ADR-008): after connecting, the server's `/server/info` decides between the
+/// two-secret (Secret Key + Emergency Kit) and legacy single-secret flows.
 struct SyncSettingsView: View {
     let client: LdgrClient
     let syncManager: SyncManager
 
-    // Server connection form (non-secret fields are persisted; password is not).
+    // Server connection form (non-secret fields are persisted; secrets are not).
     @State private var baseURL = ""
     @State private var username = ""
     @State private var vaultId = ""
     @State private var password = ""
-    @State private var isAuthenticated = false
+    @State private var secretKeyInput = ""
+
+    // Discovery + flow state.
+    @State private var serverInfo: ServerInfo?
+    @State private var isConnecting = false
     @State private var isAuthenticating = false
+    @State private var presentedKit: IdentifiableEmergencyKit?
+
+    /// Whether this device already holds an account Secret Key (existing device).
+    private var hasSecretKey: Bool { KeychainManager.hasSecretKey() }
 
     var body: some View {
         List {
@@ -37,6 +47,11 @@ struct SyncSettingsView: View {
         }
         .refreshable {
             await syncManager.refreshStatus(client: client)
+        }
+        .sheet(item: $presentedKit) { wrapper in
+            EmergencyKitView(kit: wrapper.kit) {
+                presentedKit = nil
+            }
         }
         .alert(
             "Sync Error",
@@ -114,49 +129,140 @@ struct SyncSettingsView: View {
     private var serverSection: some View {
         Section("Sync Server") {
             if syncManager.isServerConfigured {
-                LabeledContent("Server", value: baseURL)
-                LabeledContent("Account", value: username)
-                LabeledContent("Vault", value: vaultId)
-                Button(role: .destructive) {
-                    signOut()
-                } label: {
-                    Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
-                }
+                connectedServerView
+            } else if let info = serverInfo {
+                discoveredServerView(info)
             } else {
-                TextField("Server URL (https://…)", text: $baseURL)
-                    .textContentType(.URL)
-                    .keyboardType(.URL)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                TextField("Username", text: $username)
-                    .textContentType(.username)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                SecureField("Password", text: $password)
-                    .textContentType(.password)
-                TextField("Vault ID", text: $vaultId)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-
-                Button {
-                    Task { await authenticate(register: false) }
-                } label: {
-                    HStack {
-                        Label("Sign In", systemImage: "person.crop.circle.badge.checkmark")
-                        Spacer()
-                        if isAuthenticating { ProgressView() }
-                    }
-                }
-                .disabled(!canSubmit || isAuthenticating)
-
-                Button {
-                    Task { await authenticate(register: true) }
-                } label: {
-                    Label("Create Account & Sign In", systemImage: "person.crop.circle.badge.plus")
-                }
-                .disabled(!canSubmit || isAuthenticating)
+                connectView
             }
         }
+    }
+
+    @ViewBuilder
+    private var connectedServerView: some View {
+        LabeledContent("Server", value: baseURL)
+        LabeledContent("Account", value: username)
+        LabeledContent("Vault", value: vaultId)
+        Button(role: .destructive) {
+            signOut()
+        } label: {
+            Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
+        }
+    }
+
+    /// Step 1 — enter the server URL and validate it via `/server/info`.
+    @ViewBuilder
+    private var connectView: some View {
+        TextField("Server URL (https://…)", text: $baseURL)
+            .textContentType(.URL)
+            #if os(iOS)
+            .keyboardType(.URL)
+            .textInputAutocapitalization(.never)
+            #endif
+            .autocorrectionDisabled()
+
+        Button {
+            Task { await connect() }
+        } label: {
+            HStack {
+                Label("Connect", systemImage: "network")
+                Spacer()
+                if isConnecting { ProgressView() }
+            }
+        }
+        .disabled(baseURL.trimmingCharacters(in: .whitespaces).isEmpty || isConnecting)
+    }
+
+    /// Step 2 — the server told us its capabilities; branch on `twoSecretAuth`.
+    @ViewBuilder
+    private func discoveredServerView(_ info: ServerInfo) -> some View {
+        LabeledContent("Server", value: info.name)
+        LabeledContent("Protocol", value: "v\(info.protocolVersion)")
+        LabeledContent("Two-Secret Auth") {
+            Image(systemName: info.twoSecretAuth ? "checkmark.shield.fill" : "shield.slash")
+                .foregroundStyle(info.twoSecretAuth ? .green : .secondary)
+        }
+
+        TextField("Username", text: $username)
+            .textContentType(.username)
+            #if os(iOS)
+            .textInputAutocapitalization(.never)
+            #endif
+            .autocorrectionDisabled()
+        SecureField("Password", text: $password)
+            .textContentType(.password)
+        TextField("Vault ID", text: $vaultId)
+            #if os(iOS)
+            .textInputAutocapitalization(.never)
+            #endif
+            .autocorrectionDisabled()
+
+        if info.twoSecretAuth {
+            twoSecretButtons(info)
+        } else {
+            singleSecretButtons
+        }
+
+        Button("Change Server") {
+            serverInfo = nil
+        }
+        .font(.caption)
+    }
+
+    @ViewBuilder
+    private func twoSecretButtons(_ info: ServerInfo) -> some View {
+        // Existing device: the Secret Key is already in the Keychain, so
+        // sign-in needs only the password. New device: prompt for the Secret Key.
+        if hasSecretKey {
+            authButton(title: "Sign In", icon: "person.crop.circle.badge.checkmark") {
+                await signIn2skd(info: info, secretKey: nil)
+            }
+        } else {
+            SecureField("Secret Key (from your Emergency Kit)", text: $secretKeyInput)
+                #if os(iOS)
+                .textInputAutocapitalization(.never)
+                #endif
+                .autocorrectionDisabled()
+            authButton(
+                title: "Sign In on This Device",
+                icon: "person.crop.circle.badge.checkmark",
+                enabled: !secretKeyInput.trimmingCharacters(in: .whitespaces).isEmpty
+            ) {
+                await signIn2skd(info: info, secretKey: secretKeyInput)
+            }
+        }
+
+        authButton(title: "Create Account", icon: "person.crop.circle.badge.plus") {
+            await signUp2skd(info: info)
+        }
+    }
+
+    @ViewBuilder
+    private var singleSecretButtons: some View {
+        authButton(title: "Sign In", icon: "person.crop.circle.badge.checkmark") {
+            await authenticateSingleSecret(register: false)
+        }
+        authButton(title: "Create Account & Sign In", icon: "person.crop.circle.badge.plus") {
+            await authenticateSingleSecret(register: true)
+        }
+    }
+
+    private func authButton(
+        title: String,
+        icon: String,
+        enabled: Bool = true,
+        action: @escaping () async -> Void
+    ) -> some View {
+        Button {
+            Task { await action() }
+        } label: {
+            HStack {
+                Label(title, systemImage: icon)
+                Spacer()
+                if isAuthenticating { ProgressView() }
+            }
+        }
+        .disabled(!canSubmit || !enabled || isAuthenticating)
     }
 
     private var conflictsSection: some View {
@@ -191,11 +297,9 @@ struct SyncSettingsView: View {
     // MARK: - Form helpers
 
     private var canSubmit: Bool {
-        !baseURL.trimmingCharacters(in: .whitespaces).isEmpty
-            && !username.trimmingCharacters(in: .whitespaces).isEmpty
+        !username.trimmingCharacters(in: .whitespaces).isEmpty
             && !vaultId.trimmingCharacters(in: .whitespaces).isEmpty
             && !password.isEmpty
-            && URL(string: baseURL.trimmingCharacters(in: .whitespaces)) != nil
     }
 
     private func loadConfig() {
@@ -205,16 +309,129 @@ struct SyncSettingsView: View {
         vaultId = config.vaultId
     }
 
-    /// Authenticate against the server, persist the token + device id, and
-    /// (re)configure the sync manager. When `register` is true, create the
-    /// account first.
-    private func authenticate(register: Bool) async {
-        guard let url = URL(string: baseURL.trimmingCharacters(in: .whitespaces)) else {
+    private func trimmedURL() -> URL? {
+        URL(string: baseURL.trimmingCharacters(in: .whitespaces))
+    }
+
+    // MARK: - Discovery
+
+    /// Validate the server URL and fetch its capabilities.
+    private func connect() async {
+        guard let url = trimmedURL() else {
             syncManager.errorMessage = "Invalid server URL."
             return
         }
-        let trimmedUser = username.trimmingCharacters(in: .whitespaces)
-        let trimmedVault = vaultId.trimmingCharacters(in: .whitespaces)
+        isConnecting = true
+        defer { isConnecting = false }
+        do {
+            let session = LdgrSync.makeSession(baseURL: url)
+            serverInfo = try await session.serverInfo()
+        } catch {
+            syncManager.errorMessage = error.localizedDescription
+        }
+    }
+
+    // MARK: - Two-secret auth (ADR-008)
+
+    /// Create a new two-secret account: generate a Secret Key, register, sign
+    /// in, persist the Secret Key, and present the Emergency Kit once.
+    private func signUp2skd(info: ServerInfo) async {
+        guard let url = trimmedURL() else {
+            syncManager.errorMessage = "Invalid server URL."
+            return
+        }
+        let user = username.trimmingCharacters(in: .whitespaces)
+        let vault = vaultId.trimmingCharacters(in: .whitespaces)
+        let passwordData = Data(password.utf8)
+
+        isAuthenticating = true
+        defer { isAuthenticating = false }
+
+        do {
+            let kdf = try client.kdfParams()
+            let material = LdgrSync.generateSecretKey()
+            let session = LdgrSync.makeSession(baseURL: url)
+
+            _ = try await session.register2skd(
+                username: user,
+                accountId: material.accountId,
+                password: passwordData,
+                secretKey: material.secretKey,
+                kdfParams: kdf
+            )
+            try await session.login2skd(
+                username: user,
+                password: passwordData,
+                secretKey: material.secretKey,
+                kdfParams: kdf
+            )
+
+            try await finishSignIn(session: session, user: user, vault: vault)
+            try KeychainManager.storeSecretKey(material.secretKey)
+
+            // Build + present the Emergency Kit (shown once). The address is the
+            // sign-in server URL (baked into the QR payload for new-device recovery),
+            // NOT the operator's display name.
+            let kit = try LdgrSync.buildEmergencyKit(
+                address: url.absoluteString,
+                email: user,
+                secretKey: material.secretKey,
+                recoveryKey: nil
+            )
+            presentedKit = IdentifiableEmergencyKit(kit: kit)
+        } catch {
+            syncManager.errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Sign in with two-secret auth. `secretKey` is `nil` on an existing device
+    /// (loaded from the Keychain) or provided when onboarding a new device.
+    private func signIn2skd(info: ServerInfo, secretKey: String?) async {
+        guard let url = trimmedURL() else {
+            syncManager.errorMessage = "Invalid server URL."
+            return
+        }
+        let user = username.trimmingCharacters(in: .whitespaces)
+        let vault = vaultId.trimmingCharacters(in: .whitespaces)
+        let passwordData = Data(password.utf8)
+
+        let key = secretKey?.trimmingCharacters(in: .whitespaces)
+            ?? KeychainManager.retrieveSecretKey()
+        guard let key, !key.isEmpty else {
+            syncManager.errorMessage =
+                "Your account Secret Key is required to sign in on this device."
+            return
+        }
+
+        isAuthenticating = true
+        defer { isAuthenticating = false }
+
+        do {
+            let kdf = try client.kdfParams()
+            let session = LdgrSync.makeSession(baseURL: url)
+            try await session.login2skd(
+                username: user,
+                password: passwordData,
+                secretKey: key,
+                kdfParams: kdf
+            )
+            try await finishSignIn(session: session, user: user, vault: vault)
+            try KeychainManager.storeSecretKey(key)
+            secretKeyInput = ""
+        } catch {
+            syncManager.errorMessage = error.localizedDescription
+        }
+    }
+
+    // MARK: - Single-secret auth (legacy fallback)
+
+    private func authenticateSingleSecret(register: Bool) async {
+        guard let url = trimmedURL() else {
+            syncManager.errorMessage = "Invalid server URL."
+            return
+        }
+        let user = username.trimmingCharacters(in: .whitespaces)
+        let vault = vaultId.trimmingCharacters(in: .whitespaces)
         let passwordData = Data(password.utf8)
 
         isAuthenticating = true
@@ -223,38 +440,69 @@ struct SyncSettingsView: View {
         do {
             let session = LdgrSync.makeSession(baseURL: url)
             if register {
-                _ = try await session.register(username: trimmedUser, password: passwordData)
+                _ = try await session.register(username: user, password: passwordData)
             }
-            try await session.login(username: trimmedUser, password: passwordData)
-
-            guard let token = await session.token() else {
-                syncManager.errorMessage = "Sign in succeeded but no session token was returned."
-                return
-            }
-
-            // Best-effort enrollment: create the vault if it doesn't exist yet.
-            _ = try? await session.createVault(vaultId: trimmedVault)
-
-            let deviceId = try client.syncStatus().deviceId
-
-            try KeychainManager.storeServerAuthToken(token)
-            try KeychainManager.storeServerDeviceId(deviceId)
-            ServerConfigStore.save(
-                ServerConfig(baseURL: baseURL, username: trimmedUser, vaultId: trimmedVault)
-            )
-
-            password = ""
-            syncManager.configure(client: client)
-            await syncManager.refreshStatus(client: client)
+            try await session.login(username: user, password: passwordData)
+            try await finishSignIn(session: session, user: user, vault: vault)
         } catch {
             syncManager.errorMessage = error.localizedDescription
         }
     }
 
+    // MARK: - Shared sign-in tail
+
+    /// Persist the session token + device id, enroll the vault, save the config,
+    /// and (re)configure the sync manager. Shared by every auth path.
+    private func finishSignIn(
+        session: LdgrSyncSession,
+        user: String,
+        vault: String
+    ) async throws {
+        guard let token = await session.token() else {
+            throw SyncSettingsError.noToken
+        }
+
+        // Best-effort enrollment: create the vault if it doesn't exist yet.
+        _ = try? await session.createVault(vaultId: vault)
+
+        let deviceId = try client.syncStatus().deviceId
+
+        try KeychainManager.storeServerAuthToken(token)
+        try KeychainManager.storeServerDeviceId(deviceId)
+        ServerConfigStore.save(
+            ServerConfig(baseURL: baseURL, username: user, vaultId: vault)
+        )
+
+        password = ""
+        serverInfo = nil
+        syncManager.configure(client: client)
+        await syncManager.refreshStatus(client: client)
+    }
+
     private func signOut() {
         try? KeychainManager.deleteServerAuthToken()
         try? KeychainManager.deleteServerDeviceId()
+        // The Secret Key stays on the device: it is account-level, not
+        // session-level, so the user can sign back in with just their password.
         password = ""
+        serverInfo = nil
         syncManager.configure(client: client)
+    }
+}
+
+/// Wraps an ``EmergencyKit`` so it can drive a `.sheet(item:)` presentation.
+private struct IdentifiableEmergencyKit: Identifiable {
+    let id = UUID()
+    let kit: EmergencyKit
+}
+
+private enum SyncSettingsError: LocalizedError {
+    case noToken
+
+    var errorDescription: String? {
+        switch self {
+        case .noToken:
+            return "Sign in succeeded but no session token was returned."
+        }
     }
 }

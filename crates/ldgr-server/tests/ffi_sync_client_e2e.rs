@@ -226,16 +226,9 @@ async fn ffi_two_secret_full_round_trip() {
     .await
     .expect("register 2skd");
 
-    c.login_2skd(
-        username,
-        account_id.to_string(),
-        password,
-        secret_key,
-        SALT.to_vec(),
-        test_argon2(),
-    )
-    .await
-    .expect("login 2skd");
+    c.login_2skd(username, password, secret_key, SALT.to_vec(), test_argon2())
+        .await
+        .expect("login 2skd");
     assert!(c.is_authenticated().await);
 
     let vault = "vault-2skd".to_string();
@@ -276,14 +269,7 @@ async fn ffi_login_2skd_with_wrong_secret_key_is_rejected() {
     .expect("register 2skd");
 
     let result = c
-        .login_2skd(
-            username,
-            account_id.to_string(),
-            password,
-            attacker,
-            SALT.to_vec(),
-            test_argon2(),
-        )
+        .login_2skd(username, password, attacker, SALT.to_vec(), test_argon2())
         .await;
     assert!(
         result.is_err(),

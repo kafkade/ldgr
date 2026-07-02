@@ -100,7 +100,7 @@ async fn two_secret_full_round_trip() {
     c.register_2skd(username, &account_id, &mk_auth, &secret_key)
         .await
         .expect("register 2skd");
-    c.login_2skd(username, &account_id, &mk_auth, &secret_key)
+    c.login_2skd(username, &mk_auth, &secret_key)
         .await
         .expect("login 2skd");
     assert!(c.is_authenticated());
@@ -131,9 +131,7 @@ async fn login_2skd_with_wrong_secret_key_is_rejected() {
         .await
         .expect("register 2skd");
 
-    let result = c
-        .login_2skd(username, &account_id, &mk_auth, &attacker)
-        .await;
+    let result = c.login_2skd(username, &mk_auth, &attacker).await;
     assert!(
         result.is_err(),
         "login with the wrong Secret Key must fail, got {result:?}"
