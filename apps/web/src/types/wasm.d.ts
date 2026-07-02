@@ -18,6 +18,7 @@ declare module '*pkg/ldgr_wasm' {
     clearItems(): void;
     get itemCount(): number;
     serializeVault(): Uint8Array;
+    kdfParams(): string;
     sealBatch(eventBatchJson: string): Uint8Array;
     openBatch(ciphertext: Uint8Array): string;
     free(): void;
@@ -34,6 +35,27 @@ declare module '*pkg/ldgr_wasm' {
     logout(): void;
     register(username: string, password: string): Promise<void>;
     login(username: string, password: string): Promise<void>;
+    register2skd(
+      username: string,
+      accountId: string,
+      password: string,
+      secretKey: string,
+      argon2Salt: Uint8Array,
+      memoryCostKib: number,
+      iterations: number,
+      parallelism: number,
+    ): Promise<string>;
+    login2skd(
+      username: string,
+      password: string,
+      secretKey: string,
+      argon2Salt: Uint8Array,
+      memoryCostKib: number,
+      iterations: number,
+      parallelism: number,
+    ): Promise<void>;
+    serverInfo(): Promise<string>;
+    ping(): Promise<string>;
     createVault(vaultId: string): Promise<void>;
     putBatch(
       vaultId: string,
@@ -62,6 +84,13 @@ declare module '*pkg/ldgr_wasm' {
   }
 
   export function parseJournal(text: string): string;
+  export function generateSecretKey(): string;
+  export function buildEmergencyKit(
+    address: string,
+    email: string,
+    secretKey: string,
+    recoveryKey?: string | null,
+  ): string;
   export function mergeBatch(
     localPendingJson: string,
     remoteBatchJson: string,

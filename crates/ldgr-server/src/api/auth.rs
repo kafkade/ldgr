@@ -36,6 +36,11 @@ pub struct RegisterRequest {
     /// derived `x` so legacy accounts stay distinguishable (ADR-008 Migration).
     #[serde(default)]
     pub auth_scheme: Option<String>,
+    /// Client-generated account id (UUID string) bound into a 2SKD verifier
+    /// (ADR-008). Required for `srp-2skd-v1`; ignored otherwise. Stored and
+    /// echoed back at `login/init` so a new device can reproduce `x`.
+    #[serde(default)]
+    pub account_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -47,6 +52,28 @@ pub struct RegisterResponse {
 /// Hash an opaque token (invite/session-style) for at-rest storage.
 fn hash_token(token: &str) -> String {
     hex_encode(&Sha256::digest(token.as_bytes()))
+}
+
+/// Validate the client-supplied `account_id` against the auth scheme (ADR-008).
+///
+/// Two-secret (`srp-2skd-v1`) accounts must carry a valid UUID account id — it
+/// is bound into the verifier and echoed back at `login/init`. Single-secret
+/// accounts must not set one.
+pub(crate) fn resolve_account_id(
+    auth_scheme: &str,
+    account_id: Option<&str>,
+) -> Result<Option<String>, ServerError> {
+    match (auth_scheme, account_id) {
+        ("srp-2skd-v1", Some(aid)) => {
+            uuid::Uuid::parse_str(aid)
+                .map_err(|_| ServerError::BadRequest("invalid account_id".into()))?;
+            Ok(Some(aid.to_string()))
+        }
+        ("srp-2skd-v1", None) => Err(ServerError::BadRequest(
+            "account_id is required for srp-2skd-v1".into(),
+        )),
+        _ => Ok(None),
+    }
 }
 
 pub async fn register(
@@ -90,6 +117,11 @@ pub async fn register(
             "unsupported auth_scheme: {auth_scheme}"
         )));
     }
+
+    // Two-secret accounts (ADR-008) carry a client-generated account id bound
+    // into the verifier; it is stored and returned at `login/init`. Single-
+    // secret accounts must not set one.
+    let account_id = resolve_account_id(auth_scheme, req.account_id.as_deref())?;
 
     let user_id = uuid::Uuid::now_v7().to_string();
     let created_at = chrono::Utc::now().to_rfc3339();
@@ -165,6 +197,7 @@ pub async fn register(
             auth_scheme,
             invited_by: invited_by.as_deref(),
             created_at: &created_at,
+            account_id: account_id.as_deref(),
         })
         .await?;
 
@@ -189,6 +222,10 @@ pub struct LoginInitResponse {
     pub handshake_id: String,
     pub salt: String,          // hex-encoded
     pub server_public: String, // hex-encoded B
+    /// The account's stored account id for two-secret (2SKD) accounts, so the
+    /// client can derive `x` (ADR-008). Omitted for single-secret accounts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
 }
 
 pub async fn login_init(
@@ -212,6 +249,7 @@ pub async fn login_init(
 
     let verifier = BigUint::from_bytes_be(&user.verifier);
     let handshake_id = uuid::Uuid::now_v7().to_string();
+    let account_id = user.account_id.clone();
 
     let b_pub = state
         .srp_handshakes
@@ -228,6 +266,7 @@ pub async fn login_init(
         handshake_id,
         salt: hex_encode(&user.salt),
         server_public: hex_encode(&b_pub.to_bytes_be()),
+        account_id,
     }))
 }
 

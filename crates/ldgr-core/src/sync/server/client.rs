@@ -17,8 +17,8 @@ use super::protocol::{
     CreateOfferRequest, CreateOfferResponse, CreateVaultRequest, DeviceResponse, ErrorResponse,
     GetResponseResponse, HexError, ListBatchesQuery, ListBlobsResponse, ListSnapshotsQuery,
     LoginInitRequest, LoginInitResponse, LoginVerifyRequest, LoginVerifyResponse, OfferResponse,
-    PostResponseRequest, PutBlobResponse, RegisterRequest, RegisterResponse, VaultResponse,
-    hex_decode, hex_encode,
+    Pong, PostResponseRequest, PutBlobResponse, RegisterRequest, RegisterResponse, ServerInfo,
+    VaultResponse, hex_decode, hex_encode,
 };
 use super::srp::{ClientLogin, SrpError};
 use crate::crypto::{AuthKey, SecretKey};
@@ -194,6 +194,7 @@ impl<T: RawHttpSender> ServerSyncClient<T> {
             salt: hex_encode(&reg.salt),
             verifier: hex_encode(&reg.verifier),
             auth_scheme: None,
+            account_id: None,
         };
         self.post_json(&format!("{API_PREFIX}/auth/register"), &body, false)
             .await
@@ -227,6 +228,7 @@ impl<T: RawHttpSender> ServerSyncClient<T> {
             salt: hex_encode(&reg.salt),
             verifier: hex_encode(&reg.verifier),
             auth_scheme: Some("srp-2skd-v1".to_string()),
+            account_id: Some(account_id.to_string()),
         };
         self.post_json(&format!("{API_PREFIX}/auth/register"), &body, false)
             .await
@@ -254,7 +256,8 @@ impl<T: RawHttpSender> ServerSyncClient<T> {
     ///
     /// `mk_auth` is the master auth key derived from the password; `secret_key`
     /// is the account [`SecretKey`]. Both are required to reproduce the
-    /// verifier — neither alone authenticates.
+    /// verifier — neither alone authenticates. The account id is learned from
+    /// the server's `login/init` response, so callers need not supply it.
     ///
     /// The Secret Key is **server-auth-only** (ADR-008, Decision 3): it is used
     /// solely to prove account ownership to the server and is never used for
@@ -263,17 +266,18 @@ impl<T: RawHttpSender> ServerSyncClient<T> {
     /// # Errors
     ///
     /// Returns [`ServerSyncError::ProofMismatch`] if the server's proof fails to
-    /// verify, an SRP error for a malformed handshake, or a transport/HTTP
-    /// error.
+    /// verify, [`ServerSyncError::Srp`] with [`SrpError::MissingAccountId`] if
+    /// the server did not return an account id (e.g. a legacy single-secret
+    /// account), or a transport/HTTP error.
+    ///
+    /// [`SrpError::MissingAccountId`]: super::srp::SrpError::MissingAccountId
     pub async fn login_2skd(
         &mut self,
         username: &str,
-        account_id: &Uuid,
         mk_auth: &AuthKey,
         secret_key: &SecretKey,
     ) -> Result<(), ServerSyncError> {
-        let (login, a_pub) =
-            ClientLogin::start_2skd(username, *account_id, mk_auth.clone(), secret_key.clone());
+        let (login, a_pub) = ClientLogin::start_2skd(username, mk_auth.clone(), secret_key.clone());
         self.run_login(username, login, a_pub).await
     }
 
@@ -285,7 +289,7 @@ impl<T: RawHttpSender> ServerSyncClient<T> {
     async fn run_login(
         &mut self,
         username: &str,
-        login: ClientLogin,
+        mut login: ClientLogin,
         a_pub: Vec<u8>,
     ) -> Result<(), ServerSyncError> {
         // Step 1: init.
@@ -296,6 +300,15 @@ impl<T: RawHttpSender> ServerSyncClient<T> {
         let init: LoginInitResponse = self
             .post_json(&format!("{API_PREFIX}/auth/login/init"), &init_req, false)
             .await?;
+
+        // For two-secret accounts the server returns the stored account id,
+        // which the client needs to derive `x` (ADR-008). Inject it before
+        // finishing; a no-op for single-secret logins.
+        if let Some(account_id) = &init.account_id {
+            let account_id = Uuid::parse_str(account_id)
+                .map_err(|e| ServerSyncError::Decode(format!("invalid account_id: {e}")))?;
+            login.set_account_id(account_id);
+        }
 
         let salt = hex_decode(&init.salt)?;
         let server_public = hex_decode(&init.server_public)?;
@@ -322,6 +335,35 @@ impl<T: RawHttpSender> ServerSyncClient<T> {
         self.token = Some(verify.token);
         self.session_key = Some(Zeroizing::new(session.session_key().to_vec()));
         Ok(())
+    }
+
+    // ── Discovery (unauthenticated) ───────────────────────────────────────────
+
+    /// Fetch the server's discovery document (`GET /server/info`).
+    ///
+    /// Use before sign-in to validate a URL points at an ldgr server, learn the
+    /// wire-protocol version, and read the registration policy / auth
+    /// capabilities so the client can render the right onboarding flow (ADR-008,
+    /// #177). Unauthenticated.
+    ///
+    /// # Errors
+    ///
+    /// Returns a transport/HTTP error, or [`ServerSyncError::Decode`] if the
+    /// response is not a valid discovery document.
+    pub async fn server_info(&self) -> Result<ServerInfo, ServerSyncError> {
+        self.get_json(&format!("{API_PREFIX}/server/info"), &[], false)
+            .await
+    }
+
+    /// Cheap liveness probe (`GET /server/ping`) for URL validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a transport/HTTP error, or [`ServerSyncError::Decode`] if the
+    /// response body is not a valid pong.
+    pub async fn ping(&self) -> Result<Pong, ServerSyncError> {
+        self.get_json(&format!("{API_PREFIX}/server/ping"), &[], false)
+            .await
     }
 
     // ── Vaults ──────────────────────────────────────────────────────────────

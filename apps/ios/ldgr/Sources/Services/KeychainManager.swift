@@ -12,6 +12,7 @@ enum KeychainManager {
     private static let sessionKeyAccount = "vault-session-key"
     private static let serverAuthTokenAccount = "server-auth-token"
     private static let serverDeviceIdAccount = "server-device-id"
+    private static let serverSecretKeyAccount = "server-secret-key"
 
     // MARK: - Store
 
@@ -160,6 +161,36 @@ enum KeychainManager {
     /// Remove the stored server device id.
     static func deleteServerDeviceId() throws {
         try deleteServerValue(account: serverDeviceIdAccount)
+    }
+
+    // MARK: - Account Secret Key (two-secret auth, ADR-008)
+    //
+    // The account Secret Key is the second factor for server auth. Like the
+    // token/device-id, it is NOT biometric-gated so background sync can derive
+    // `MK_auth` without a user-presence prompt; it is device-only and readable
+    // only after first unlock. It is shown once (in the Emergency Kit) and never
+    // leaves the device except as the SRP proof. The master password is never
+    // stored — only the Secret Key, which is useless without it.
+
+    /// Store the account Secret Key (replacing any existing value).
+    static func storeSecretKey(_ secretKey: String) throws {
+        try storeServerValue(Data(secretKey.utf8), account: serverSecretKeyAccount)
+    }
+
+    /// Retrieve the account Secret Key, or `nil` if none is stored.
+    static func retrieveSecretKey() -> String? {
+        guard let data = retrieveServerValue(account: serverSecretKeyAccount) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// Remove the stored account Secret Key.
+    static func deleteSecretKey() throws {
+        try deleteServerValue(account: serverSecretKeyAccount)
+    }
+
+    /// Whether an account Secret Key is stored on this device.
+    static func hasSecretKey() -> Bool {
+        retrieveServerValue(account: serverSecretKeyAccount) != nil
     }
 
     // MARK: - Server credential helpers

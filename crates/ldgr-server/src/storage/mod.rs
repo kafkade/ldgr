@@ -16,6 +16,10 @@ pub struct User {
     pub verifier: Vec<u8>,
     pub role: String,
     pub status: String,
+    /// Client-generated account id bound into a 2SKD verifier (ADR-008).
+    /// `None` for legacy single-secret accounts. Returned at `login/init` so a
+    /// new device can reproduce `x`.
+    pub account_id: Option<String>,
 }
 
 /// Attributes set when creating an account, beyond the SRP `(salt, verifier)`.
@@ -29,6 +33,9 @@ pub struct NewUser<'a> {
     pub auth_scheme: &'a str,
     pub invited_by: Option<&'a str>,
     pub created_at: &'a str,
+    /// Client-generated account id for 2SKD accounts (ADR-008); `None` for
+    /// single-secret.
+    pub account_id: Option<&'a str>,
 }
 
 /// A redeemed invite's metadata (role granted, optional bound email, issuer).
@@ -146,6 +153,7 @@ impl ServerDb {
                 "auth_scheme TEXT NOT NULL DEFAULT 'srp-1secret'",
             ),
             ("secret_key_version", "secret_key_version INTEGER"),
+            ("account_id", "account_id TEXT"),
         ];
 
         for (name, ddl) in additions {
@@ -205,15 +213,16 @@ impl ServerDb {
         let auth_scheme = new.auth_scheme.to_string();
         let invited_by = new.invited_by.map(str::to_string);
         let created_at = new.created_at.to_string();
+        let account_id = new.account_id.map(str::to_string);
         tokio::task::spawn_blocking(move || {
             let conn = conn
                 .lock()
                 .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
             conn.execute(
                 "INSERT INTO users \
-                 (id, username, email, salt, verifier, created_at, role, status, auth_scheme, invited_by, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'active', ?8, ?9, ?6)",
-                params![id, username, email, salt, verifier, created_at, role, auth_scheme, invited_by],
+                 (id, username, email, salt, verifier, created_at, role, status, auth_scheme, invited_by, updated_at, account_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'active', ?8, ?9, ?6, ?10)",
+                params![id, username, email, salt, verifier, created_at, role, auth_scheme, invited_by, account_id],
             ).map_err(|e| match e {
                 rusqlite::Error::SqliteFailure(err, _)
                     if err.code == rusqlite::ErrorCode::ConstraintViolation =>
@@ -287,7 +296,7 @@ impl ServerDb {
                 .lock()
                 .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
             let mut stmt = conn.prepare(
-                "SELECT id, username, salt, verifier, role, status FROM users WHERE username = ?1",
+                "SELECT id, username, salt, verifier, role, status, account_id FROM users WHERE username = ?1",
             )?;
             let user = stmt
                 .query_row(params![username], |row| {
@@ -298,6 +307,7 @@ impl ServerDb {
                         verifier: row.get(3)?,
                         role: row.get(4)?,
                         status: row.get(5)?,
+                        account_id: row.get(6)?,
                     })
                 })
                 .optional()?;

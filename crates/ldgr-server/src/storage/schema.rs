@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS users (
     invited_by          TEXT,
     updated_at          TEXT,
     auth_scheme         TEXT NOT NULL DEFAULT 'srp-1secret',
-    secret_key_version  INTEGER
+    secret_key_version  INTEGER,
+    account_id          TEXT
 );
 
 -- Minimal invite mechanism for the `invite-only` registration policy. Issuing

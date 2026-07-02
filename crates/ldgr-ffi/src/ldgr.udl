@@ -19,6 +19,13 @@ dictionary FfiAccount {
     string? commodity;
 };
 
+dictionary FfiKdfParams {
+    sequence<u8> salt;
+    u32 memory_cost_kib;
+    u32 iterations;
+    u32 parallelism;
+};
+
 dictionary FfiNewPosting {
     string account_id;
     string? amount;
@@ -99,6 +106,9 @@ interface LdgrVault {
 
     [Throws=LdgrError]
     sequence<u8> export_session_key();
+
+    [Throws=LdgrError]
+    FfiKdfParams kdf_params();
 
     [Throws=LdgrError]
     void open_with_session_key(sequence<u8> key);

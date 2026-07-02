@@ -34,10 +34,12 @@ use std::sync::Arc;
 use futures::lock::Mutex;
 use uuid::Uuid;
 
-use ldgr_core::crypto::{Argon2Params, SecretKey, derive_auth_key, derive_master_key};
+use ldgr_core::crypto::{
+    Argon2Params, EmergencyKit, SecretKey, derive_auth_key, derive_master_key,
+};
 use ldgr_core::sync::server::{
-    HttpMethod, ListBatchesQuery, ListSnapshotsQuery, RawHttpSender, RawRequest, RawResponse,
-    ServerSyncClient, ServerSyncError,
+    HttpMethod, ListBatchesQuery, ListSnapshotsQuery, Pong, RawHttpSender, RawRequest, RawResponse,
+    ServerInfo, ServerSyncClient, ServerSyncError,
 };
 
 // ── Error ────────────────────────────────────────────────────────────────────
@@ -267,6 +269,80 @@ pub struct FfiDevice {
     pub encrypted_info: String,
 }
 
+/// Server discovery document (`GET /server/info`), mirrors core `ServerInfo`.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiServerInfo {
+    pub name: String,
+    pub version: String,
+    pub protocol_version: u32,
+    pub min_protocol_version: u32,
+    pub max_protocol_version: u32,
+    pub registration_policy: String,
+    pub public_registration: bool,
+    pub two_secret_auth: bool,
+}
+
+impl From<ServerInfo> for FfiServerInfo {
+    fn from(i: ServerInfo) -> Self {
+        Self {
+            name: i.name,
+            version: i.version,
+            protocol_version: i.protocol_version,
+            min_protocol_version: i.min_protocol_version,
+            max_protocol_version: i.max_protocol_version,
+            registration_policy: i.registration_policy,
+            public_registration: i.public_registration,
+            two_secret_auth: i.two_secret_auth,
+        }
+    }
+}
+
+/// Liveness/URL-validation probe result (`GET /server/ping`).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiPong {
+    pub pong: bool,
+    pub name: String,
+    pub protocol_version: u32,
+}
+
+impl From<Pong> for FfiPong {
+    fn from(p: Pong) -> Self {
+        Self {
+            pong: p.pong,
+            name: p.name,
+            protocol_version: p.protocol_version,
+        }
+    }
+}
+
+/// A freshly generated account Secret Key plus the account id it is bound to
+/// (ADR-008). The host displays/persists the `secret_key` (in the Emergency
+/// Kit + secure storage) and passes both to [`LdgrSyncClient::register_2skd`].
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiSecretKeyMaterial {
+    /// Client-generated account id (UUID string) bound into the verifier.
+    pub account_id: String,
+    /// Canonical `A1-…` Secret Key text. **Secret** — show once, store securely.
+    pub secret_key: String,
+    /// Non-secret 6-char account-id hint (for pairing a kit to an account).
+    pub account_hint: String,
+}
+
+/// Render-agnostic Emergency Kit data for new-device sign-in (ADR-008).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiEmergencyKit {
+    pub version: u32,
+    pub address: String,
+    pub email: String,
+    pub account_hint: String,
+    /// Account Secret Key text. **Secret.**
+    pub secret_key: String,
+    /// Optional vault recovery key text (opt-in). **Secret.**
+    pub recovery_key: Option<String>,
+    /// Versioned JSON payload the host renders into the kit's QR code.
+    pub qr_payload: String,
+}
+
 // ── Client ───────────────────────────────────────────────────────────────────
 
 /// FFI handle wrapping a [`ServerSyncClient`] driven by a foreign sender.
@@ -309,6 +385,22 @@ impl LdgrSyncClient {
     /// Whether the client holds a session token.
     pub async fn is_authenticated(&self) -> bool {
         self.inner.lock().await.is_authenticated()
+    }
+
+    // ── Discovery (unauthenticated) ──────────────────────────────────────────
+
+    /// Fetch the server's discovery document (`GET /server/info`). Use before
+    /// sign-in to validate the URL, check protocol compatibility, and read the
+    /// registration policy / 2SKD availability (ADR-008).
+    pub async fn server_info(&self) -> Result<FfiServerInfo, FfiSyncError> {
+        let client = self.inner.lock().await;
+        Ok(client.server_info().await?.into())
+    }
+
+    /// Cheap liveness probe (`GET /server/ping`) for URL validation.
+    pub async fn ping(&self) -> Result<FfiPong, FfiSyncError> {
+        let client = self.inner.lock().await;
+        Ok(client.ping().await?.into())
     }
 
     // ── Auth: single-secret ──────────────────────────────────────────────────
@@ -360,24 +452,23 @@ impl LdgrSyncClient {
     }
 
     /// Perform a two-secret (2SKD) SRP-6a login and store the session token.
+    ///
+    /// The account id is **not** required: the server returns the account's
+    /// stored id at `login/init` and the client uses it to derive `x`
+    /// (ADR-008). Callers on a new device supply the master `password` and the
+    /// account `secret_key` (typed or scanned from the Emergency Kit); the
+    /// Argon2 salt/params come from the local vault header.
     pub async fn login_2skd(
         &self,
         username: String,
-        account_id: String,
         password: Vec<u8>,
         secret_key: String,
         argon2_salt: Vec<u8>,
         argon2_params: FfiArgon2Params,
     ) -> Result<(), FfiSyncError> {
-        let (aid, mk_auth, sk) = derive_2skd(
-            &account_id,
-            &password,
-            &secret_key,
-            &argon2_salt,
-            argon2_params,
-        )?;
+        let (mk_auth, sk) = derive_login_2skd(&password, &secret_key, &argon2_salt, argon2_params)?;
         let mut client = self.inner.lock().await;
-        client.login_2skd(&username, &aid, &mk_auth, &sk).await?;
+        client.login_2skd(&username, &mk_auth, &sk).await?;
         Ok(())
     }
 
@@ -560,4 +651,84 @@ fn derive_2skd(
         message: format!("invalid secret key: {e}"),
     })?;
     Ok((aid, mk_auth, sk))
+}
+
+/// Derive the 2SKD **login** inputs (no account id — the server supplies it at
+/// `login/init`).
+fn derive_login_2skd(
+    password: &[u8],
+    secret_key: &str,
+    argon2_salt: &[u8],
+    argon2_params: FfiArgon2Params,
+) -> Result<(ldgr_core::crypto::AuthKey, SecretKey), FfiSyncError> {
+    let params: Argon2Params = argon2_params.into();
+    let master_key = derive_master_key(password, argon2_salt, &params).map_err(|e| {
+        FfiSyncError::InvalidInput {
+            message: format!("key derivation failed: {e}"),
+        }
+    })?;
+    let mk_auth = derive_auth_key(&master_key).map_err(|e| FfiSyncError::InvalidInput {
+        message: format!("key derivation failed: {e}"),
+    })?;
+    let sk = SecretKey::parse(secret_key).map_err(|e| FfiSyncError::InvalidInput {
+        message: format!("invalid secret key: {e}"),
+    })?;
+    Ok((mk_auth, sk))
+}
+
+/// Generate a fresh account id + account [`SecretKey`] for 2SKD sign-up
+/// (ADR-008). The Secret Key is shown once (Emergency Kit) and stored securely;
+/// the returned `account_id` is passed to [`LdgrSyncClient::register_2skd`].
+#[uniffi::export]
+pub fn generate_secret_key() -> FfiSecretKeyMaterial {
+    let account_id = Uuid::now_v7();
+    let sk = SecretKey::generate(account_id);
+    FfiSecretKeyMaterial {
+        account_id: account_id.to_string(),
+        secret_key: sk.encode(),
+        account_hint: sk.account_hint().to_string(),
+    }
+}
+
+/// Build an Emergency Kit (render-agnostic + QR payload) for new-device
+/// sign-in (ADR-008). `recovery_key` is an opt-in vault recovery key; omit it
+/// to keep the two recovery artifacts separate (recommended).
+///
+/// # Errors
+///
+/// Returns [`FfiSyncError::InvalidInput`] if `secret_key`/`recovery_key` are
+/// malformed or the QR payload cannot be serialized.
+#[uniffi::export]
+pub fn build_emergency_kit(
+    address: String,
+    email: String,
+    secret_key: String,
+    recovery_key: Option<String>,
+) -> Result<FfiEmergencyKit, FfiSyncError> {
+    let sk = SecretKey::parse(&secret_key).map_err(|e| FfiSyncError::InvalidInput {
+        message: format!("invalid secret key: {e}"),
+    })?;
+    let mut kit = EmergencyKit::new(address, email, &sk);
+    if let Some(rk_text) = recovery_key.as_deref() {
+        let rk = ldgr_core::crypto::decode_recovery_key(rk_text).map_err(|e| {
+            FfiSyncError::InvalidInput {
+                message: format!("invalid recovery key: {e}"),
+            }
+        })?;
+        kit = kit.with_recovery_key(&rk);
+    }
+    let qr_payload = kit
+        .to_qr_payload()
+        .map_err(|e| FfiSyncError::InvalidInput {
+            message: format!("kit serialization failed: {e}"),
+        })?;
+    Ok(FfiEmergencyKit {
+        version: kit.version(),
+        address: kit.address().to_string(),
+        email: kit.email().to_string(),
+        account_hint: kit.account_hint().to_string(),
+        secret_key: kit.secret_key_text().to_string(),
+        recovery_key: kit.recovery_key_text().map(str::to_string),
+        qr_payload,
+    })
 }

@@ -22,6 +22,12 @@ export interface LdgrWasm {
   clearItems(): void;
   readonly itemCount: number;
   serializeVault(): Uint8Array;
+  /**
+   * The vault's Argon2id KDF salt and parameters as a JSON string
+   * (see {@link KdfParams}). Two-secret sign-in derives `MK_auth` from the
+   * master password using exactly these values (ADR-008).
+   */
+  kdfParams(): string;
   /** Seal an EventBatch JSON string into the canonical encrypted blob. */
   sealBatch(eventBatchJson: string): Uint8Array;
   /** Decrypt a canonical blob back into an EventBatch JSON string. */
@@ -59,6 +65,34 @@ export interface WasmSyncClient {
   logout(): void;
   register(username: string, password: string): Promise<void>;
   login(username: string, password: string): Promise<void>;
+  /**
+   * Register a two-secret (2SKD) account. Returns the assigned user id.
+   * `accountId` comes from {@link WasmModule.generateSecretKey}.
+   */
+  register2skd(
+    username: string,
+    accountId: string,
+    password: string,
+    secretKey: string,
+    argon2Salt: Uint8Array,
+    memoryCostKib: number,
+    iterations: number,
+    parallelism: number,
+  ): Promise<string>;
+  /** Two-secret (2SKD) login; the account id is supplied by the server. */
+  login2skd(
+    username: string,
+    password: string,
+    secretKey: string,
+    argon2Salt: Uint8Array,
+    memoryCostKib: number,
+    iterations: number,
+    parallelism: number,
+  ): Promise<void>;
+  /** Fetch `GET /server/info`; returns a JSON string (see {@link ServerInfo}). */
+  serverInfo(): Promise<string>;
+  /** Liveness probe (`GET /server/ping`); returns a JSON string. */
+  ping(): Promise<string>;
   createVault(vaultId: string): Promise<void>;
   putBatch(
     vaultId: string,
@@ -85,10 +119,58 @@ export interface WasmSyncClientStatic {
   withToken(sendCallback: SyncSendCallback, token: string): WasmSyncClient;
 }
 
+/** Parsed shape of {@link LdgrWasm.kdfParams}'s JSON result. */
+export interface KdfParams {
+  /** Argon2id salt bytes (the vault header salt). */
+  salt: number[];
+  memoryCostKib: number;
+  iterations: number;
+  parallelism: number;
+}
+
+/** Parsed shape of {@link WasmModule.generateSecretKey}'s JSON result. */
+export interface SecretKeyMaterial {
+  accountId: string;
+  secretKey: string;
+  accountHint: string;
+}
+
+/** Parsed shape of {@link WasmModule.buildEmergencyKit}'s JSON result. */
+export interface EmergencyKit {
+  version: number;
+  address: string;
+  email: string;
+  accountHint: string;
+  secretKey: string;
+  recoveryKey: string | null;
+  qrPayload: string;
+}
+
+/** Parsed shape of {@link WasmSyncClient.serverInfo}'s JSON result. */
+export interface ServerInfo {
+  name: string;
+  version: string;
+  protocol_version: number;
+  min_protocol_version: number;
+  max_protocol_version: number;
+  registration_policy: string;
+  public_registration: boolean;
+  two_secret_auth: boolean;
+}
+
 export interface WasmModule {
   LdgrWasm: LdgrWasmStatic;
   WasmSyncClient: WasmSyncClientStatic;
   parseJournal(text: string): string;
+  /** Generate a fresh account id + Secret Key; returns JSON (see {@link SecretKeyMaterial}). */
+  generateSecretKey(): string;
+  /** Build an Emergency Kit; returns JSON (see {@link EmergencyKit}). */
+  buildEmergencyKit(
+    address: string,
+    email: string,
+    secretKey: string,
+    recoveryKey?: string | null,
+  ): string;
   computeBalance(
     transactionsJson: string,
     accountFilter?: string,

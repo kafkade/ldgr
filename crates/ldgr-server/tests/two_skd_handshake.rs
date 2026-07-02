@@ -36,12 +36,10 @@ fn handshake(
     let reg = register_2skd_with_salt(&account_id, reg_auth, reg_secret, salt);
 
     // Client login init.
-    let (login, a_pub) = ClientLogin::start_2skd(
-        username,
-        account_id,
-        login_auth.clone(),
-        login_secret.clone(),
-    );
+    let (mut login, a_pub) =
+        ClientLogin::start_2skd(username, login_auth.clone(), login_secret.clone());
+    // Server echoes the stored account_id at `login/init`; inject it here.
+    login.set_account_id(account_id);
 
     // Real server store performs initiate / verify.
     let store = SrpHandshakeStore::new(Duration::from_mins(1));

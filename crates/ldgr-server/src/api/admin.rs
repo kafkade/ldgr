@@ -161,6 +161,10 @@ pub struct CreateUserRequest {
     pub quota_bytes: Option<i64>,
     #[serde(default)]
     pub auth_scheme: Option<String>,
+    /// Client-generated account id for a 2SKD account (ADR-008). Required when
+    /// `auth_scheme = srp-2skd-v1`.
+    #[serde(default)]
+    pub account_id: Option<String>,
 }
 
 /// Admin-created account. Bypasses the registration policy (this *is* the admin
@@ -199,6 +203,8 @@ pub async fn create_user(
         )));
     }
 
+    let account_id = super::auth::resolve_account_id(auth_scheme, req.account_id.as_deref())?;
+
     let email = req
         .email
         .as_deref()
@@ -230,6 +236,7 @@ pub async fn create_user(
             auth_scheme,
             invited_by: Some(&admin),
             created_at: &created_at,
+            account_id: account_id.as_deref(),
         })
         .await?;
 

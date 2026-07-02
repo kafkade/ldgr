@@ -101,6 +101,16 @@ impl From<ldgr_core::sync::pipeline::PipelineError> for LdgrError {
 
 // ── FFI Record Types ───────────────────────────────────────────────────────────
 
+/// The vault's Argon2id salt and parameters, needed to derive `MK_auth` for
+/// two-secret (2SKD) sign-in (ADR-008). The salt is the vault header salt; it
+/// is not secret. Fields are flattened so the type stays UDL-native.
+pub struct FfiKdfParams {
+    pub salt: Vec<u8>,
+    pub memory_cost_kib: u32,
+    pub iterations: u32,
+    pub parallelism: u32,
+}
+
 pub struct FfiAccount {
     pub id: String,
     pub name: String,
@@ -289,6 +299,27 @@ impl LdgrVault {
         match &*state {
             VaultState::Locked => Err(LdgrError::VaultLocked),
             VaultState::Unlocked { vault, .. } => Ok(vault.export_session_key().to_vec()),
+        }
+    }
+
+    /// The vault's Argon2id salt and parameters (for two-secret sign-in).
+    ///
+    /// Two-secret (2SKD) auth derives the server auth key `MK_auth` from the
+    /// master password using exactly these values (ADR-008). Requires the vault
+    /// to be unlocked. The salt is the vault header salt; it is not secret.
+    pub fn kdf_params(&self) -> Result<FfiKdfParams, LdgrError> {
+        let state = self.state.lock().expect("mutex poisoned");
+        match &*state {
+            VaultState::Locked => Err(LdgrError::VaultLocked),
+            VaultState::Unlocked { vault, .. } => {
+                let (salt, params) = vault.kdf_params();
+                Ok(FfiKdfParams {
+                    salt: salt.to_vec(),
+                    memory_cost_kib: params.memory_cost_kib,
+                    iterations: params.iterations,
+                    parallelism: params.parallelism,
+                })
+            }
         }
     }
 

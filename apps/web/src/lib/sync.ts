@@ -19,7 +19,15 @@
  */
 
 import type { Database, SqlValue } from 'sql.js';
-import type { LdgrWasm, WasmModule, WasmSyncClient } from './wasm';
+import type {
+  EmergencyKit,
+  KdfParams,
+  LdgrWasm,
+  SecretKeyMaterial,
+  ServerInfo,
+  WasmModule,
+  WasmSyncClient,
+} from './wasm';
 
 // ── sync_state keys (must match ldgr-core where shared) ──────────────────────────
 
@@ -32,6 +40,7 @@ const CFG_SERVER_URL = 'sync:server_url';
 const CFG_USERNAME = 'sync:username';
 const CFG_VAULT_ID = 'sync:vault_id';
 const CFG_TOKEN = 'sync:token';
+const CFG_SECRET_KEY = 'sync:secret_key';
 
 // ── Enum wire mapping (serde variant names) ──────────────────────────────────────
 
@@ -708,6 +717,146 @@ export function saveToken(db: Database, token: string): void {
 
 export function clearToken(db: Database): void {
   db.run('DELETE FROM sync_state WHERE key = ?', [CFG_TOKEN]);
+}
+
+/**
+ * Account Secret Key persistence (two-secret / 2SKD, ADR-008).
+ *
+ * The Secret Key is a per-account **server-auth** secret: together with the
+ * master password it authenticates sign-in on this device, but it never unlocks
+ * the vault (ADR-008 Decision 3). Stored inside the encrypted vault DB
+ * (`sync_state`) so it survives reloads without a separate keychain; the master
+ * password is never stored.
+ */
+export function loadSecretKey(db: Database): string | null {
+  return getState(db, CFG_SECRET_KEY);
+}
+
+export function saveSecretKey(db: Database, secretKey: string): void {
+  setState(db, CFG_SECRET_KEY, secretKey);
+}
+
+export function clearSecretKey(db: Database): void {
+  db.run('DELETE FROM sync_state WHERE key = ?', [CFG_SECRET_KEY]);
+}
+
+// ── Two-secret (2SKD) onboarding ─────────────────────────────────────────────────
+
+/** The Emergency Kit plus session token produced by a successful sign-up. */
+export interface SignUpResult {
+  emergencyKit: EmergencyKit;
+  token: string | null;
+}
+
+/** Fetch and parse the server discovery document (`GET /server/info`). */
+export async function fetchServerInfo(
+  client: WasmSyncClient,
+): Promise<ServerInfo> {
+  return JSON.parse(await client.serverInfo()) as ServerInfo;
+}
+
+/** Read the vault's Argon2id salt/params (used to derive `MK_auth`). */
+function vaultKdfParams(vault: LdgrWasm): {
+  salt: Uint8Array;
+  memoryCostKib: number;
+  iterations: number;
+  parallelism: number;
+} {
+  const p = JSON.parse(vault.kdfParams()) as KdfParams;
+  return {
+    salt: Uint8Array.from(p.salt),
+    memoryCostKib: p.memoryCostKib,
+    iterations: p.iterations,
+    parallelism: p.parallelism,
+  };
+}
+
+/**
+ * Two-secret **sign-up**: generate the account Secret Key, register + log in,
+ * persist the token and Secret Key, and return the Emergency Kit to show once.
+ *
+ * `MK_auth` is derived inside WASM from the master `password` and the vault's
+ * own Argon2 salt/params (ADR-008); the plaintext password never leaves memory.
+ */
+export async function signUp2skd(
+  db: Database,
+  wasm: WasmModule,
+  vault: LdgrWasm,
+  client: WasmSyncClient,
+  serverUrl: string,
+  username: string,
+  password: string,
+): Promise<SignUpResult> {
+  const material = JSON.parse(wasm.generateSecretKey()) as SecretKeyMaterial;
+  const { salt, memoryCostKib, iterations, parallelism } = vaultKdfParams(vault);
+
+  await client.register2skd(
+    username,
+    material.accountId,
+    password,
+    material.secretKey,
+    salt,
+    memoryCostKib,
+    iterations,
+    parallelism,
+  );
+  await client.login2skd(
+    username,
+    password,
+    material.secretKey,
+    salt,
+    memoryCostKib,
+    iterations,
+    parallelism,
+  );
+
+  const token = client.token ?? null;
+  if (token) saveToken(db, token);
+  saveSecretKey(db, material.secretKey);
+
+  const kit = JSON.parse(
+    wasm.buildEmergencyKit(serverUrl, username, material.secretKey),
+  ) as EmergencyKit;
+
+  return { emergencyKit: kit, token };
+}
+
+/**
+ * Two-secret **sign-in**. On a device that already stored the Secret Key, pass
+ * `secretKeyOverride = null` to reuse it; on a new device, pass the Secret Key
+ * the user typed or scanned from their Emergency Kit. The account id is supplied
+ * by the server at `login/init`, so it is never entered by hand.
+ */
+export async function signIn2skd(
+  db: Database,
+  vault: LdgrWasm,
+  client: WasmSyncClient,
+  username: string,
+  password: string,
+  secretKeyOverride: string | null,
+): Promise<string | null> {
+  const secretKey = secretKeyOverride ?? loadSecretKey(db);
+  if (!secretKey) {
+    throw new Error(
+      'No Secret Key on this device. Enter the Secret Key from your Emergency Kit.',
+    );
+  }
+  const { salt, memoryCostKib, iterations, parallelism } = vaultKdfParams(vault);
+
+  await client.login2skd(
+    username,
+    password,
+    secretKey,
+    salt,
+    memoryCostKib,
+    iterations,
+    parallelism,
+  );
+
+  const token = client.token ?? null;
+  if (token) saveToken(db, token);
+  saveSecretKey(db, secretKey);
+  return token;
 }
 
 // ── Conflicts ────────────────────────────────────────────────────────────────────

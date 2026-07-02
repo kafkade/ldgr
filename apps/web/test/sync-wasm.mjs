@@ -201,6 +201,7 @@ describe('cross-language sync wire vectors (golden)', () => {
       salt: 'ffeeddccbbaa99887766554433221100',
       verifier: 'fedcba9876543210',
       auth_scheme: 'srp-2skd-v1',
+      account_id: '018f5a3c-0000-7000-8000-000000000001',
     };
     assert.equal(JSON.stringify(req), fixture('register_request_2skd_v1.json'));
   });

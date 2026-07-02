@@ -26,6 +26,7 @@ reqwest.workspace = true
 rpassword.workspace = true
 comfy-table.workspace = true
 indicatif.workspace = true
+qrcode = { version = "0.14", default-features = false }
 
 # Async
 async-trait.workspace = true

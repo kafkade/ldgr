@@ -202,16 +202,19 @@ fn register_request_vectors_are_golden() {
         salt: "00112233445566778899aabbccddeeff".into(),
         verifier: "0123456789abcdef".into(),
         auth_scheme: None,
+        account_id: None,
     };
     let bytes = serde_json::to_vec(&one_secret).expect("serialize register request");
     check_vector("register_request_1secret_v1.json", &bytes);
 
-    // Two-secret (2SKD, ADR-008): `auth_scheme` present.
+    // Two-secret (2SKD, ADR-008): `auth_scheme` and client-generated
+    // `account_id` present.
     let two_skd = RegisterRequest {
         username: "carol".into(),
         salt: "ffeeddccbbaa99887766554433221100".into(),
         verifier: "fedcba9876543210".into(),
         auth_scheme: Some("srp-2skd-v1".into()),
+        account_id: Some("018f5a3c-0000-7000-8000-000000000001".into()),
     };
     let bytes = serde_json::to_vec(&two_skd).expect("serialize 2skd register request");
     check_vector("register_request_2skd_v1.json", &bytes);

@@ -217,6 +217,13 @@ impl UnlockedVault {
     pub fn format_version(&self) -> u16 {
         self.header.format_version
     }
+
+    /// The vault's Argon2 salt and parameters (non-secret; stored in the
+    /// header). Needed to re-derive the master key for server auth
+    /// (`MK_auth`, ADR-008 two-secret sign-in) without a second password entry.
+    pub fn kdf_params(&self) -> (&[u8], &Argon2Params) {
+        (&self.header.salt, &self.header.argon2_params)
+    }
 }
 
 /// Restore an unlocked vault from a previously exported session key.

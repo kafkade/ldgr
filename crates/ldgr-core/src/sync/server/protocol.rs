@@ -68,6 +68,13 @@ pub struct RegisterRequest {
     /// byte-identical to the original protocol.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_scheme: Option<String>,
+    /// Client-generated account id (UUID string) bound into the 2SKD verifier
+    /// (ADR-008). The server persists it and echoes it back at `login/init` so a
+    /// new device can reproduce `x` without a separate account-id transport.
+    ///
+    /// `None` for single-secret registration (omitted from the wire).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
 }
 
 /// `POST /api/v1/auth/register` response body.
@@ -94,6 +101,11 @@ pub struct LoginInitResponse {
     pub salt: String,
     /// Hex-encoded server public value B.
     pub server_public: String,
+    /// The account's stored account id (UUID string), returned for two-secret
+    /// (2SKD) accounts so the client can derive `x` (ADR-008). `None` for
+    /// legacy single-secret accounts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
 }
 
 // ── Auth: Login verify (SRP step 2) ─────────────────────────────────────────────
@@ -113,6 +125,51 @@ pub struct LoginVerifyResponse {
     pub server_proof: String,
     /// Bearer session token.
     pub token: String,
+}
+
+// ── Server discovery (unauthenticated) ──────────────────────────────────────────
+
+/// The sync/auth wire-protocol version this client speaks.
+///
+/// Compared against a server's advertised
+/// `[min_protocol_version, max_protocol_version]` range (from [`ServerInfo`])
+/// during URL validation so a client can warn on an incompatible server before
+/// attempting registration or login.
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// `GET /api/v1/server/info` — discovery document (ADR-008, #177).
+///
+/// Mirrors `ldgr_server::api::server::ServerInfo`. Designed to grow: unknown
+/// fields are ignored so newer servers stay compatible with older clients.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerInfo {
+    /// Operator-chosen instance label.
+    pub name: String,
+    /// Running server software version.
+    pub version: String,
+    /// Current sync/auth wire-protocol version clients compare against.
+    pub protocol_version: u32,
+    /// Oldest protocol version this server still speaks.
+    pub min_protocol_version: u32,
+    /// Newest protocol version this server speaks.
+    pub max_protocol_version: u32,
+    /// Effective registration policy: `open` | `invite-only` | `admin-only`.
+    pub registration_policy: String,
+    /// Convenience flag: `true` only when anyone may self-register.
+    pub public_registration: bool,
+    /// Whether two-secret (2SKD) auth is available.
+    pub two_secret_auth: bool,
+}
+
+/// `GET /api/v1/server/ping` — cheap liveness/URL-validation probe.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Pong {
+    /// Always `true` — confirms "this is an ldgr server".
+    pub pong: bool,
+    /// Server name, echoed for display during URL validation.
+    pub name: String,
+    /// Protocol version, so a client can fail fast without a second request.
+    pub protocol_version: u32,
 }
 
 // ── Vaults ──────────────────────────────────────────────────────────────────────
@@ -265,6 +322,7 @@ mod tests {
             salt: "00ff".into(),
             verifier: "abcd".into(),
             auth_scheme: None,
+            account_id: None,
         });
         // `None` must omit `auth_scheme` entirely (wire-identical to legacy).
         let legacy = RegisterRequest {
@@ -272,11 +330,16 @@ mod tests {
             salt: "00ff".into(),
             verifier: "abcd".into(),
             auth_scheme: None,
+            account_id: None,
         };
         let legacy_json = serde_json::to_string(&legacy).expect("serialize");
         assert!(
             !legacy_json.contains("auth_scheme"),
             "auth_scheme must be omitted when None: {legacy_json}"
+        );
+        assert!(
+            !legacy_json.contains("account_id"),
+            "account_id must be omitted when None: {legacy_json}"
         );
         // `Some(..)` round-trips and is present on the wire.
         round_trip(&RegisterRequest {
@@ -284,12 +347,14 @@ mod tests {
             salt: "00ff".into(),
             verifier: "abcd".into(),
             auth_scheme: Some("srp-2skd-v1".into()),
+            account_id: Some("018f-account".into()),
         });
         let two_skd = RegisterRequest {
             username: "alice".into(),
             salt: "00ff".into(),
             verifier: "abcd".into(),
             auth_scheme: Some("srp-2skd-v1".into()),
+            account_id: Some("018f-account".into()),
         };
         let two_skd_json = serde_json::to_string(&two_skd).expect("serialize");
         assert!(two_skd_json.contains("\"auth_scheme\":\"srp-2skd-v1\""));
@@ -304,6 +369,7 @@ mod tests {
             handshake_id: "h1".into(),
             salt: "00ff".into(),
             server_public: "bb".into(),
+            account_id: None,
         });
         round_trip(&LoginVerifyRequest {
             handshake_id: "h1".into(),
