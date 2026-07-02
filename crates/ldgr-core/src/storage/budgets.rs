@@ -25,6 +25,7 @@ use rust_decimal::Decimal;
 use uuid::Uuid;
 
 use super::error::StorageError;
+use super::sync::SyncContext;
 use crate::budget::{Budget, BudgetAllocation, BudgetMethod, BudgetPeriod};
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -341,6 +342,398 @@ pub fn soft_delete_budget(conn: &Connection, id: &str) -> Result<(), StorageErro
         return Err(StorageError::NotFound(format!("budget '{id}'")));
     }
     Ok(())
+}
+
+// ── Sync-aware variants ────────────────────────────────────────────────────────
+
+/// Build the canonical [`BudgetPayload`] bytes for an outbox event.
+fn budget_payload_bytes(
+    id: &str,
+    name: &str,
+    method: BudgetMethod,
+    period: BudgetPeriod,
+    created_at: &str,
+    modified_at: &str,
+    allocations: &[BudgetAllocation],
+) -> Result<Vec<u8>, StorageError> {
+    crate::sync::payload::to_bytes(&crate::sync::payload::BudgetPayload {
+        id: id.to_string(),
+        name: name.to_string(),
+        method: method_as_str(method).to_string(),
+        period: period_as_str(period).to_string(),
+        created_at: created_at.to_string(),
+        modified_at: modified_at.to_string(),
+        allocations: allocations
+            .iter()
+            .map(|a| crate::sync::payload::AllocationPayload {
+                account: a.account.clone(),
+                amount: a.amount.to_string(),
+                rollover: a.rollover,
+            })
+            .collect(),
+    })
+    .map_err(|e| StorageError::InvalidInput(format!("failed to serialize budget payload: {e}")))
+}
+
+/// Create a new budget with its allocations and atomic sync event recording.
+///
+/// Mirrors [`create_budget`] but records a `create` outbox event carrying the
+/// full [`crate::sync::payload::BudgetPayload`] in the same `SQLite`
+/// transaction, so the canonical write and the outbox row commit atomically.
+pub fn create_budget_with_sync(
+    conn: &Connection,
+    input: &NewBudget,
+    ctx: &SyncContext,
+) -> Result<StoredBudget, StorageError> {
+    let budget_id = Uuid::now_v7().to_string();
+    let now = now_iso8601();
+
+    let db_tx = conn.unchecked_transaction()?;
+
+    db_tx.execute(
+        "INSERT INTO budgets (id, name, method, period, created_at, modified_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            budget_id,
+            input.name,
+            method_as_str(input.method),
+            period_as_str(input.period),
+            now,
+            now,
+        ],
+    )?;
+
+    let allocations = insert_allocations(&db_tx, &budget_id, &input.allocations, &now)?;
+
+    let payload = budget_payload_bytes(
+        &budget_id,
+        &input.name,
+        input.method,
+        input.period,
+        &now,
+        &now,
+        &allocations,
+    )?;
+
+    super::sync::record_event(
+        &db_tx,
+        &ctx.device_id,
+        "budget",
+        &budget_id,
+        "create",
+        &payload,
+        ctx.lamport_clock,
+        1,
+    )?;
+
+    db_tx.commit()?;
+
+    Ok(StoredBudget {
+        budget: Budget {
+            id: budget_id,
+            name: input.name.clone(),
+            method: input.method,
+            period: input.period,
+            allocations,
+        },
+        created_at: now.clone(),
+        modified_at: now,
+        version: 1,
+        deleted: false,
+    })
+}
+
+/// Update a budget and replace its allocations with atomic sync event recording.
+///
+/// Uses optimistic concurrency via `update.expected_version`; on a version
+/// mismatch the canonical write is rolled back and **no** outbox event is
+/// recorded. Emits an `update` event carrying the full post-update
+/// [`crate::sync::payload::BudgetPayload`], mirroring
+/// [`create_budget_with_sync`].
+///
+/// # Errors
+///
+/// Returns [`StorageError::Conflict`] on a version mismatch (or if the budget
+/// was deleted).
+pub fn update_budget_with_sync(
+    conn: &Connection,
+    id: &str,
+    update: &BudgetUpdate,
+    ctx: &SyncContext,
+) -> Result<StoredBudget, StorageError> {
+    let now = now_iso8601();
+    let new_version = update.expected_version + 1;
+
+    let db_tx = conn.unchecked_transaction()?;
+
+    // Preserve the original creation timestamp so the emitted payload (and any
+    // remote upsert it drives) keeps `created_at` stable across the update.
+    let created_at: String = db_tx
+        .query_row(
+            "SELECT created_at FROM budgets WHERE id = ?1 AND deleted = 0",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                StorageError::NotFound(format!("budget '{id}'"))
+            }
+            other => StorageError::Database(other),
+        })?;
+
+    let rows = db_tx.execute(
+        "UPDATE budgets
+         SET name = ?1, method = ?2, period = ?3, modified_at = ?4, version = ?5
+         WHERE id = ?6 AND version = ?7 AND deleted = 0",
+        rusqlite::params![
+            update.name,
+            method_as_str(update.method),
+            period_as_str(update.period),
+            now,
+            new_version,
+            id,
+            update.expected_version,
+        ],
+    )?;
+
+    if rows == 0 {
+        db_tx.rollback()?;
+        return Err(StorageError::Conflict(format!(
+            "budget '{id}' was modified or deleted (expected version {})",
+            update.expected_version
+        )));
+    }
+
+    // Replace allocations: delete old, insert new.
+    db_tx.execute("DELETE FROM budget_allocations WHERE budget_id = ?1", [id])?;
+    let allocations = insert_allocations(&db_tx, id, &update.allocations, &now)?;
+
+    let payload = budget_payload_bytes(
+        id,
+        &update.name,
+        update.method,
+        update.period,
+        &created_at,
+        &now,
+        &allocations,
+    )?;
+
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    let version_u32 = new_version as u32;
+
+    super::sync::record_event(
+        &db_tx,
+        &ctx.device_id,
+        "budget",
+        id,
+        "update",
+        &payload,
+        ctx.lamport_clock,
+        version_u32,
+    )?;
+
+    db_tx.commit()?;
+
+    Ok(StoredBudget {
+        budget: Budget {
+            id: id.to_string(),
+            name: update.name.clone(),
+            method: update.method,
+            period: update.period,
+            allocations,
+        },
+        created_at,
+        modified_at: now,
+        version: new_version,
+        deleted: false,
+    })
+}
+
+/// Soft-delete a budget with atomic sync event recording.
+///
+/// Reads the current version first so the `delete` event carries the resulting
+/// (post-delete) entity version for the remote apply path's staleness check,
+/// mirroring [`crate::storage::transactions::soft_delete_transaction_with_sync`].
+///
+/// # Errors
+///
+/// Returns [`StorageError::NotFound`] if the budget doesn't exist or is already
+/// deleted.
+pub fn soft_delete_budget_with_sync(
+    conn: &Connection,
+    id: &str,
+    ctx: &SyncContext,
+) -> Result<(), StorageError> {
+    let db_tx = conn.unchecked_transaction()?;
+
+    let current_version: i64 = db_tx
+        .query_row(
+            "SELECT version FROM budgets WHERE id = ?1 AND deleted = 0",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                StorageError::NotFound(format!("budget '{id}'"))
+            }
+            other => StorageError::Database(other),
+        })?;
+    let new_version = current_version + 1;
+
+    db_tx.execute(
+        "UPDATE budgets SET deleted = 1, version = ?1, modified_at = ?2
+         WHERE id = ?3 AND deleted = 0",
+        rusqlite::params![new_version, now_iso8601(), id],
+    )?;
+
+    let payload =
+        crate::sync::payload::to_bytes(&crate::sync::payload::DeletePayload { id: id.to_string() })
+            .map_err(|e| {
+                StorageError::InvalidInput(format!("failed to serialize delete payload: {e}"))
+            })?;
+
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    let version_u32 = new_version as u32;
+
+    super::sync::record_event(
+        &db_tx,
+        &ctx.device_id,
+        "budget",
+        id,
+        "delete",
+        &payload,
+        ctx.lamport_clock,
+        version_u32,
+    )?;
+
+    db_tx.commit()?;
+    Ok(())
+}
+
+// ── Remote apply ───────────────────────────────────────────────────────────────
+
+/// Apply a remote `Create`/`Update` budget event to the canonical tables.
+///
+/// Upserts the budget header and **replaces** its allocations (delete + insert
+/// in `allocation_order`), reproducing the remote entity exactly. Writes only
+/// the canonical tables — never records a `sync_events` outbox row, so applied
+/// remote events do not echo into our outbox.
+///
+/// Staleness rule: applied iff the budget is unknown locally **or** the incoming
+/// `version` is strictly greater than the local row's version.
+///
+/// Must be called inside an outer `SQLite` transaction (the ingest pipeline
+/// provides one) so the header + allocation writes are atomic.
+///
+/// Returns `true` if written, `false` if stale.
+pub fn apply_remote_budget(
+    conn: &Connection,
+    payload: &crate::sync::payload::BudgetPayload,
+    version: i64,
+) -> Result<bool, StorageError> {
+    // Validate the enum strings before touching the tables.
+    let method = method_from_str(&payload.method)?;
+    let period = period_from_str(&payload.period)?;
+
+    if let Some(local_version) = current_budget_version(conn, &payload.id)?
+        && local_version >= version
+    {
+        return Ok(false);
+    }
+
+    conn.execute(
+        "INSERT INTO budgets
+             (id, name, method, period, created_at, modified_at, version, deleted)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)
+         ON CONFLICT(id) DO UPDATE SET
+             name = excluded.name,
+             method = excluded.method,
+             period = excluded.period,
+             created_at = excluded.created_at,
+             modified_at = excluded.modified_at,
+             version = excluded.version,
+             deleted = 0",
+        rusqlite::params![
+            payload.id,
+            payload.name,
+            method_as_str(method),
+            period_as_str(period),
+            payload.created_at,
+            payload.modified_at,
+            version,
+        ],
+    )?;
+
+    // Replace allocations wholesale to mirror the remote budget exactly.
+    conn.execute(
+        "DELETE FROM budget_allocations WHERE budget_id = ?1",
+        [&payload.id],
+    )?;
+
+    for (i, a) in payload.allocations.iter().enumerate() {
+        // Validate the amount string before inserting so a corrupt payload
+        // fails closed instead of persisting an unparseable amount.
+        Decimal::from_str(&a.amount).map_err(|_| {
+            StorageError::InvalidInput(format!(
+                "budget '{}' allocation '{}' has invalid amount: {}",
+                payload.id, a.account, a.amount
+            ))
+        })?;
+        let allocation_id = Uuid::now_v7().to_string();
+        let order = i64::try_from(i)
+            .map_err(|_| StorageError::InvalidInput("too many allocations".into()))?;
+        conn.execute(
+            "INSERT INTO budget_allocations
+                 (id, budget_id, account, amount, rollover, allocation_order, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                allocation_id,
+                payload.id,
+                a.account,
+                a.amount,
+                i64::from(a.rollover),
+                order,
+                payload.created_at,
+            ],
+        )?;
+    }
+
+    Ok(true)
+}
+
+/// Apply a remote `Delete` budget event (soft delete by explicit id).
+///
+/// No-op (returns `false`) if the budget is unknown locally or the incoming
+/// `version` is not strictly greater than the local row's version. Allocations
+/// are preserved, matching [`soft_delete_budget`].
+pub fn apply_remote_budget_delete(
+    conn: &Connection,
+    id: &str,
+    version: i64,
+) -> Result<bool, StorageError> {
+    match current_budget_version(conn, id)? {
+        Some(local_version) if local_version < version => {
+            conn.execute(
+                "UPDATE budgets SET deleted = 1, version = ?1, modified_at = ?2 WHERE id = ?3",
+                rusqlite::params![version, now_iso8601(), id],
+            )?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// Current version of a budget row (including soft-deleted rows), if any.
+pub(crate) fn current_budget_version(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<i64>, StorageError> {
+    use rusqlite::OptionalExtension;
+    let mut stmt = conn.prepare("SELECT version FROM budgets WHERE id = ?1")?;
+    let result = stmt
+        .query_row([id], |row| row.get::<_, i64>(0))
+        .optional()?;
+    Ok(result)
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
