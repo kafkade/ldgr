@@ -73,12 +73,12 @@ struct SyncSettingsView: View {
             if let status = syncManager.status {
                 LabeledContent("Pending Changes") {
                     Text("\(status.pendingEventCount)")
-                        .foregroundStyle(status.pendingEventCount > 0 ? .blue : .secondary)
+                        .foregroundStyle(status.pendingEventCount > 0 ? AnyShapeStyle(.blue) : AnyShapeStyle(.secondary))
                 }
 
                 LabeledContent("Unresolved Conflicts") {
                     Text("\(status.unresolvedConflictCount)")
-                        .foregroundStyle(status.unresolvedConflictCount > 0 ? .orange : .secondary)
+                        .foregroundStyle(status.unresolvedConflictCount > 0 ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
                 }
 
                 if let lastSync = status.lastSyncAt {
@@ -180,7 +180,7 @@ struct SyncSettingsView: View {
         LabeledContent("Protocol", value: "v\(info.protocolVersion)")
         LabeledContent("Two-Secret Auth") {
             Image(systemName: info.twoSecretAuth ? "checkmark.shield.fill" : "shield.slash")
-                .foregroundStyle(info.twoSecretAuth ? .green : .secondary)
+                .foregroundStyle(info.twoSecretAuth ? AnyShapeStyle(.green) : AnyShapeStyle(.secondary))
         }
 
         TextField("Username", text: $username)

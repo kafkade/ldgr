@@ -10,6 +10,7 @@ import LdgrSwift
 /// is the injected ``SyncTransport`` — a real ``ServerSyncTransport`` when the
 /// user has configured + authenticated a server, otherwise ``MockSyncTransport``
 /// (the default, used for previews and tests).
+@MainActor
 @Observable
 final class SyncManager {
     private(set) var status: SyncStatus?

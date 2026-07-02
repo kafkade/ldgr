@@ -10,12 +10,12 @@ import Foundation
 /// interactively before the transaction can be created. This prevents
 /// automation from bypassing vault security.
 struct AddExpenseIntent: AppIntent {
-    static var title: LocalizedStringResource = "Add Expense"
-    static var description = IntentDescription(
+    static let title: LocalizedStringResource = "Add Expense"
+    static let description = IntentDescription(
         "Open ldgr to record a new expense."
     )
 
-    static var openAppWhenRun: Bool = true
+    static let openAppWhenRun: Bool = true
 
     @Parameter(title: "Amount", description: "Expense amount (e.g. 42.50)")
     var amount: String?

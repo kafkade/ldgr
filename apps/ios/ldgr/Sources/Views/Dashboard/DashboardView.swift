@@ -62,7 +62,7 @@ struct DashboardView: View {
                             .foregroundStyle(.secondary)
                         Text(formatDecimal(entry.amount))
                             .font(.title.weight(.bold).monospacedDigit())
-                            .foregroundStyle(entry.amount >= 0 ? .primary : .red)
+                            .foregroundStyle(entry.amount >= 0 ? AnyShapeStyle(.primary) : AnyShapeStyle(.red))
                     }
                     Spacer()
                     Text(entry.commodity)

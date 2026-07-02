@@ -5,12 +5,12 @@ import Foundation
 /// Reads the cached financial summary from the App Group.
 /// No vault decryption — all data is pre-computed.
 struct QueryNetWorthIntent: AppIntent {
-    static var title: LocalizedStringResource = "Query Net Worth"
-    static var description = IntentDescription(
+    static let title: LocalizedStringResource = "Query Net Worth"
+    static let description = IntentDescription(
         "Check your current net worth."
     )
 
-    static var openAppWhenRun: Bool = false
+    static let openAppWhenRun: Bool = false
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
         guard let defaults = UserDefaults(

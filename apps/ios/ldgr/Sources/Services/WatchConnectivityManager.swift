@@ -1,3 +1,4 @@
+#if os(iOS)
 import Foundation
 import WatchConnectivity
 import LdgrSwift
@@ -173,8 +174,9 @@ final class WatchConnectivityManager: NSObject, @preconcurrency WCSessionDelegat
         activationDidCompleteWith activationState: WCSessionActivationState,
         error: Error?
     ) {
+        let reachable = session.isReachable
         Task { @MainActor in
-            self.isReachable = session.isReachable
+            self.isReachable = reachable
         }
     }
 
@@ -189,19 +191,40 @@ final class WatchConnectivityManager: NSObject, @preconcurrency WCSessionDelegat
         didReceiveMessage message: [String: Any],
         replyHandler: @escaping ([String: Any]) -> Void
     ) {
+        // `replyHandler` is not `Sendable`, so wrap it to carry it into the
+        // main-actor task without a data-race diagnostic. Calling it is safe.
+        let reply = UncheckedSendable(replyHandler)
         Task { @MainActor in
             if let summary = self.lastSummary,
                let data = try? JSONEncoder().encode(summary) {
-                replyHandler(["summary": data])
+                reply.value(["summary": data])
             } else {
-                replyHandler([:])
+                reply.value([:])
             }
         }
     }
 
     nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
+        let reachable = session.isReachable
         Task { @MainActor in
-            self.isReachable = session.isReachable
+            self.isReachable = reachable
         }
     }
 }
+
+#else
+import Foundation
+import LdgrSwift
+
+/// macOS stub — WatchConnectivity is unavailable on macOS, so paired-watch
+/// updates are a no-op. Mirrors the iOS interface used by the shared views.
+@MainActor
+@Observable
+final class WatchConnectivityManager {
+    private(set) var isReachable = false
+
+    init() {}
+
+    func sendUpdate(from store: VaultDataStore, client: LdgrClient) async {}
+}
+#endif

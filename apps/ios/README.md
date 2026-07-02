@@ -1,6 +1,6 @@
-# ldgr iOS App
+# ldgr Apple App
 
-SwiftUI app for zero-knowledge personal finance on iOS and iPadOS.
+SwiftUI app for zero-knowledge personal finance on iOS, iPadOS and macOS.
 
 ## Prerequisites
 
@@ -27,6 +27,35 @@ xcodegen generate
 # 3. Open in Xcode
 open ldgr.xcodeproj
 ```
+
+## Targets
+
+The XcodeGen project (`project.yml`) defines these app targets:
+
+| Scheme | Platform | Notes |
+| ------ | -------- | ----- |
+| `ldgr` | iOS / iPadOS | Adaptive tab bar (iPhone) / sidebar (iPad); embeds the watch app and home-screen widgets |
+| `ldgr-macos` | macOS 14+ | Native macOS app sharing `ldgr/Sources` + `LdgrShared/Sources` with the iOS app |
+| `ldgrWatch` | watchOS | Companion Apple Watch app |
+| `ldgrWidgets` / `ldgrWatchWidgets` | iOS / watchOS | WidgetKit extensions |
+
+The iOS and macOS apps share the same SwiftUI views. Genuinely platform-specific
+APIs (UIKit colours, tab-bar toolbar placements, `UIPasteboard`, keyboard
+modifiers, WatchConnectivity) are isolated behind `#if os(iOS)` / `#if os(macOS)`
+guards, with the cross-platform shims collected in `ldgr/Sources/PlatformCompat.swift`.
+Siri App Shortcuts (`ldgr/Sources/Intents`) remain iOS-only for now and are
+excluded from the macOS target.
+
+### Building the macOS app
+
+```sh
+xcodegen generate
+xcodebuild build -scheme ldgr-macos -destination 'platform=macOS'
+# or select the "ldgr-macos" scheme in Xcode and run (⌘R)
+```
+
+The macOS app is sandboxed (`ldgr-macos/ldgr-macos.entitlements`); the vault
+lives in the app container's Documents directory, mirroring iOS.
 
 ## Architecture
 

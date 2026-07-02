@@ -25,14 +25,14 @@ struct HomeView: View {
             }
             .navigationTitle(vaultName)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .platformTrailing) {
                     Button {
                         showSettings = true
                     } label: {
                         Image(systemName: "gearshape")
                     }
                 }
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .platformLeading) {
                     Button {
                         client.close()
                         appState.transitionToLocked()

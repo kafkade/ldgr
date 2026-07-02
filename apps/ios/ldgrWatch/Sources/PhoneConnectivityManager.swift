@@ -55,9 +55,11 @@ final class PhoneConnectivityManager: NSObject, @preconcurrency WCSessionDelegat
         activationDidCompleteWith activationState: WCSessionActivationState,
         error: Error?
     ) {
+        let reachable = session.isReachable
+        let contextData = session.receivedApplicationContext["summary"] as? Data
         Task { @MainActor in
-            self.isReachable = session.isReachable
-            if let data = session.receivedApplicationContext["summary"] as? Data,
+            self.isReachable = reachable
+            if let data = contextData,
                let decoded = try? JSONDecoder().decode(WatchSummary.self, from: data) {
                 self.save(decoded)
             }
@@ -68,8 +70,9 @@ final class PhoneConnectivityManager: NSObject, @preconcurrency WCSessionDelegat
         _ session: WCSession,
         didReceiveApplicationContext applicationContext: [String: Any]
     ) {
+        let contextData = applicationContext["summary"] as? Data
         Task { @MainActor in
-            if let data = applicationContext["summary"] as? Data,
+            if let data = contextData,
                let decoded = try? JSONDecoder().decode(WatchSummary.self, from: data) {
                 self.save(decoded)
             }
@@ -77,8 +80,9 @@ final class PhoneConnectivityManager: NSObject, @preconcurrency WCSessionDelegat
     }
 
     nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
+        let reachable = session.isReachable
         Task { @MainActor in
-            self.isReachable = session.isReachable
+            self.isReachable = reachable
         }
     }
 }

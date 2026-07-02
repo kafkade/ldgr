@@ -74,10 +74,10 @@ struct MainTabView: View {
                 NavigationStack {
                     tabContent(for: tab)
                         .toolbar {
-                            ToolbarItem(placement: .topBarLeading) {
+                            ToolbarItem(placement: .platformLeading) {
                                 lockButton
                             }
-                            ToolbarItem(placement: .topBarTrailing) {
+                            ToolbarItem(placement: .platformTrailing) {
                                 HStack(spacing: 12) {
                                     SyncStatusIndicator(syncManager: syncManager)
                                     settingsButton
@@ -105,14 +105,23 @@ struct MainTabView: View {
         }
     }
 
+    /// `List` single-selection uses an optional binding on iOS; bridge our
+    /// non-optional `selectedTab` so the sidebar compiles on iOS and macOS.
+    private var sidebarSelection: Binding<Tab?> {
+        Binding(
+            get: { selectedTab },
+            set: { if let newValue = $0 { selectedTab = newValue } }
+        )
+    }
+
     private var sidebar: some View {
-        List(Tab.allCases, selection: $selectedTab) { tab in
+        List(Tab.allCases, selection: sidebarSelection) { tab in
             Label(tab.rawValue, systemImage: tab.icon)
                 .tag(tab)
         }
         .navigationTitle(store.vaultName.isEmpty ? "ldgr" : store.vaultName)
         .toolbar {
-            ToolbarItem(placement: .bottomBar) {
+            ToolbarItem(placement: .platformBottomBar) {
                 HStack {
                     lockButton
                     Spacer()
