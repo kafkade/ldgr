@@ -37,6 +37,7 @@ use rust_decimal::Decimal;
 use uuid::Uuid;
 
 use super::error::StorageError;
+use super::sync::SyncContext;
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -271,6 +272,351 @@ pub fn soft_delete_price(conn: &Connection, id: &str) -> Result<(), StorageError
         return Err(StorageError::NotFound(format!("price '{id}'")));
     }
     Ok(())
+}
+
+// ── Sync-aware variants ────────────────────────────────────────────────────────
+
+/// Create a new price with atomic sync event recording.
+///
+/// Mirrors [`create_price`] but, within the same `SQLite` transaction, also
+/// records a `create` outbox event carrying the full [`PricePayload`] so the
+/// change propagates on the next `sync push`.
+pub fn create_price_with_sync(
+    conn: &Connection,
+    input: &NewPrice,
+    ctx: &SyncContext,
+) -> Result<StoredPrice, StorageError> {
+    let db_tx = conn.unchecked_transaction()?;
+
+    let id = Uuid::now_v7().to_string();
+    let now = now_iso8601();
+
+    db_tx.execute(
+        "INSERT INTO prices
+             (id, commodity, currency, price, date, source, created_at, modified_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![
+            id,
+            input.commodity,
+            input.currency,
+            input.price.to_string(),
+            input.date,
+            input.source,
+            now,
+            now,
+        ],
+    )?;
+
+    let payload = crate::sync::payload::to_bytes(&crate::sync::payload::PricePayload {
+        id: id.clone(),
+        commodity: input.commodity.clone(),
+        currency: input.currency.clone(),
+        price: input.price.to_string(),
+        date: input.date.clone(),
+        source: input.source.clone(),
+        created_at: now.clone(),
+        modified_at: now.clone(),
+    })
+    .map_err(|e| StorageError::InvalidInput(format!("failed to serialize price payload: {e}")))?;
+
+    super::sync::record_event(
+        &db_tx,
+        &ctx.device_id,
+        "price",
+        &id,
+        "create",
+        &payload,
+        ctx.lamport_clock,
+        1,
+    )?;
+
+    db_tx.commit()?;
+
+    Ok(StoredPrice {
+        id,
+        commodity: input.commodity.clone(),
+        currency: input.currency.clone(),
+        price: input.price,
+        date: input.date.clone(),
+        source: input.source.clone(),
+        created_at: now.clone(),
+        modified_at: now,
+        version: 1,
+        deleted: false,
+    })
+}
+
+/// Update a price's mutable fields with atomic sync event recording.
+///
+/// Mirrors [`update_price`] but, within the same `SQLite` transaction, also
+/// records an `update` outbox event carrying the full post-update
+/// [`PricePayload`] so the change propagates on the next `sync push`. The
+/// emitted `event.version` is the resulting row version so the remote apply
+/// path's staleness gate works.
+pub fn update_price_with_sync(
+    conn: &Connection,
+    id: &str,
+    update: &PriceUpdate,
+    ctx: &SyncContext,
+) -> Result<StoredPrice, StorageError> {
+    let db_tx = conn.unchecked_transaction()?;
+
+    let now = now_iso8601();
+    let new_version = update.expected_version + 1;
+
+    // Preserve the original creation timestamp so the emitted payload (and any
+    // remote upsert it drives) keeps `created_at` stable across the update.
+    let created_at: String = db_tx
+        .query_row(
+            "SELECT created_at FROM prices WHERE id = ?1 AND deleted = 0",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => StorageError::Conflict(format!(
+                "price '{id}' was modified or deleted (expected version {})",
+                update.expected_version
+            )),
+            other => StorageError::Database(other),
+        })?;
+
+    let rows = db_tx.execute(
+        "UPDATE prices
+         SET commodity = ?1, currency = ?2, price = ?3, date = ?4, source = ?5,
+             modified_at = ?6, version = ?7
+         WHERE id = ?8 AND version = ?9 AND deleted = 0",
+        rusqlite::params![
+            update.commodity,
+            update.currency,
+            update.price.to_string(),
+            update.date,
+            update.source,
+            now,
+            new_version,
+            id,
+            update.expected_version,
+        ],
+    )?;
+
+    if rows == 0 {
+        return Err(StorageError::Conflict(format!(
+            "price '{id}' was modified or deleted (expected version {})",
+            update.expected_version
+        )));
+    }
+
+    let payload = crate::sync::payload::to_bytes(&crate::sync::payload::PricePayload {
+        id: id.to_string(),
+        commodity: update.commodity.clone(),
+        currency: update.currency.clone(),
+        price: update.price.to_string(),
+        date: update.date.clone(),
+        source: update.source.clone(),
+        created_at: created_at.clone(),
+        modified_at: now.clone(),
+    })
+    .map_err(|e| StorageError::InvalidInput(format!("failed to serialize price payload: {e}")))?;
+
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    let version_u32 = new_version as u32;
+
+    super::sync::record_event(
+        &db_tx,
+        &ctx.device_id,
+        "price",
+        id,
+        "update",
+        &payload,
+        ctx.lamport_clock,
+        version_u32,
+    )?;
+
+    db_tx.commit()?;
+
+    Ok(StoredPrice {
+        id: id.to_string(),
+        commodity: update.commodity.clone(),
+        currency: update.currency.clone(),
+        price: update.price,
+        date: update.date.clone(),
+        source: update.source.clone(),
+        created_at,
+        modified_at: now,
+        version: new_version,
+        deleted: false,
+    })
+}
+
+/// Soft-delete a price with atomic sync event recording.
+///
+/// Mirrors [`soft_delete_price`] but, within the same `SQLite` transaction,
+/// also records a `delete` outbox event. The emitted `event.version` is the
+/// resulting (post-delete) row version so the remote apply path's staleness
+/// check stays meaningful.
+pub fn soft_delete_price_with_sync(
+    conn: &Connection,
+    id: &str,
+    ctx: &SyncContext,
+) -> Result<(), StorageError> {
+    let db_tx = conn.unchecked_transaction()?;
+
+    // Read the current version so the emitted event carries the resulting
+    // (post-delete) entity version.
+    let current_version: i64 = db_tx
+        .query_row(
+            "SELECT version FROM prices WHERE id = ?1 AND deleted = 0",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => StorageError::NotFound(format!("price '{id}'")),
+            other => StorageError::Database(other),
+        })?;
+    let new_version = current_version + 1;
+
+    db_tx.execute(
+        "UPDATE prices SET deleted = 1, version = ?1, modified_at = ?2
+         WHERE id = ?3 AND deleted = 0",
+        rusqlite::params![new_version, now_iso8601(), id],
+    )?;
+
+    let payload =
+        crate::sync::payload::to_bytes(&crate::sync::payload::DeletePayload { id: id.to_string() })
+            .map_err(|e| {
+                StorageError::InvalidInput(format!("failed to serialize delete payload: {e}"))
+            })?;
+
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    let version_u32 = new_version as u32;
+
+    super::sync::record_event(
+        &db_tx,
+        &ctx.device_id,
+        "price",
+        id,
+        "delete",
+        &payload,
+        ctx.lamport_clock,
+        version_u32,
+    )?;
+
+    db_tx.commit()?;
+    Ok(())
+}
+
+// ── Remote apply (sync ingest) ───────────────────────────────────────────────
+
+/// Apply a remote `Create`/`Update` price event to the canonical table.
+///
+/// Upserts the price by its **explicit** `payload.id` (unlike [`create_price`],
+/// which mints a fresh id). This is the apply half of the sync pipeline: it
+/// writes only the canonical table and **never** records a `sync_events` outbox
+/// row, so applied remote events do not echo back into our own outbox.
+///
+/// Staleness rule: the event is applied iff the price does not exist locally
+/// **or** the incoming `version` is strictly greater than the local row's
+/// version. An equal-or-older version is treated as already-seen and skipped.
+///
+/// Returns `true` if the row was written, `false` if the event was stale.
+///
+/// # Errors
+///
+/// Returns [`StorageError::InvalidInput`] if `payload.price` is not a valid
+/// decimal, or [`StorageError::Database`] on write failure.
+pub fn apply_remote_price(
+    conn: &Connection,
+    payload: &crate::sync::payload::PricePayload,
+    version: i64,
+) -> Result<bool, StorageError> {
+    // Validate the decimal string before touching the table.
+    if Decimal::from_str(&payload.price).is_err() {
+        return Err(StorageError::InvalidInput(format!(
+            "remote price '{}' has invalid price: {}",
+            payload.id, payload.price
+        )));
+    }
+
+    if let Some(local_version) = current_price_version(conn, &payload.id)?
+        && local_version >= version
+    {
+        return Ok(false);
+    }
+
+    // Commodities are not a synced entity, so a remote price may reference a
+    // symbol this device has never seen. Register the bare symbol defensively
+    // (idempotent) so the price row's `commodity` foreign key is satisfied;
+    // local commodity management can enrich name/format later.
+    conn.execute(
+        "INSERT OR IGNORE INTO commodities (symbol) VALUES (?1)",
+        rusqlite::params![payload.commodity],
+    )?;
+
+    conn.execute(
+        "INSERT INTO prices
+             (id, commodity, currency, price, date, source, created_at, modified_at, version, deleted)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)
+         ON CONFLICT(id) DO UPDATE SET
+             commodity = excluded.commodity,
+             currency = excluded.currency,
+             price = excluded.price,
+             date = excluded.date,
+             source = excluded.source,
+             created_at = excluded.created_at,
+             modified_at = excluded.modified_at,
+             version = excluded.version,
+             deleted = 0",
+        rusqlite::params![
+            payload.id,
+            payload.commodity,
+            payload.currency,
+            payload.price,
+            payload.date,
+            payload.source,
+            payload.created_at,
+            payload.modified_at,
+            version,
+        ],
+    )?;
+
+    Ok(true)
+}
+
+/// Apply a remote `Delete` price event (soft delete by explicit id).
+///
+/// No-op (returns `false`) if the price is unknown locally or the incoming
+/// `version` is not strictly greater than the local row's version.
+///
+/// # Errors
+///
+/// Returns [`StorageError::Database`] on write failure.
+pub fn apply_remote_price_delete(
+    conn: &Connection,
+    id: &str,
+    version: i64,
+) -> Result<bool, StorageError> {
+    match current_price_version(conn, id)? {
+        Some(local_version) if local_version < version => {
+            conn.execute(
+                "UPDATE prices SET deleted = 1, version = ?1, modified_at = ?2 WHERE id = ?3",
+                rusqlite::params![version, now_iso8601(), id],
+            )?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// Current version of a price row (including soft-deleted rows), if it exists.
+///
+/// # Errors
+///
+/// Returns [`StorageError::Database`] on query failure.
+pub fn current_price_version(conn: &Connection, id: &str) -> Result<Option<i64>, StorageError> {
+    let mut stmt = conn.prepare("SELECT version FROM prices WHERE id = ?1")?;
+    let result = stmt
+        .query_row([id], |row| row.get::<_, i64>(0))
+        .optional()?;
+    Ok(result)
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -626,5 +972,253 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, StorageError::Conflict(_)));
+    }
+
+    // --- Sync emitters ---
+
+    fn sync_ctx(device: &str, lamport: u64) -> SyncContext {
+        SyncContext {
+            device_id: device.into(),
+            lamport_clock: lamport,
+        }
+    }
+
+    #[test]
+    fn create_price_with_sync_emits_create_event() {
+        use crate::storage::sync::pending_events;
+
+        let conn = setup();
+        let p = create_price_with_sync(&conn, &sample_price(), &sync_ctx("dev_a", 1)).unwrap();
+
+        assert_eq!(p.version, 1);
+        let pending = pending_events(&conn).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].entity_type, "price");
+        assert_eq!(pending[0].entity_id, p.id);
+        assert_eq!(pending[0].operation, "create");
+        assert_eq!(pending[0].version, 1);
+    }
+
+    #[test]
+    fn update_price_with_sync_emits_update_event() {
+        use crate::storage::sync::pending_events;
+
+        let conn = setup();
+        let created =
+            create_price_with_sync(&conn, &sample_price(), &sync_ctx("dev_a", 1)).unwrap();
+
+        let updated = update_price_with_sync(
+            &conn,
+            &created.id,
+            &PriceUpdate {
+                commodity: "AAPL".into(),
+                currency: "USD".into(),
+                price: Decimal::new(19000, 2),
+                date: "2024-01-16".into(),
+                source: Some("manual".into()),
+                expected_version: created.version,
+            },
+            &sync_ctx("dev_a", 2),
+        )
+        .unwrap();
+
+        assert_eq!(updated.version, created.version + 1);
+        assert_eq!(updated.created_at, created.created_at);
+
+        let pending = pending_events(&conn).unwrap();
+        assert_eq!(pending.len(), 2);
+        let update_ev = pending
+            .iter()
+            .find(|e| e.operation == "update")
+            .expect("update event recorded");
+        assert_eq!(update_ev.entity_type, "price");
+        assert_eq!(update_ev.entity_id, created.id);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let expected_version = updated.version as u32;
+        assert_eq!(update_ev.version, expected_version);
+    }
+
+    #[test]
+    fn update_price_with_sync_version_conflict_emits_nothing() {
+        use crate::storage::sync::pending_event_count;
+
+        let conn = setup();
+        let created =
+            create_price_with_sync(&conn, &sample_price(), &sync_ctx("dev_a", 1)).unwrap();
+
+        let result = update_price_with_sync(
+            &conn,
+            &created.id,
+            &PriceUpdate {
+                commodity: "AAPL".into(),
+                currency: "USD".into(),
+                price: Decimal::new(1, 0),
+                date: "2024-01-16".into(),
+                source: None,
+                expected_version: created.version + 99,
+            },
+            &sync_ctx("dev_a", 2),
+        );
+        assert!(matches!(result, Err(StorageError::Conflict(_))));
+
+        // Only the original create event remains; the failed update rolled back.
+        assert_eq!(pending_event_count(&conn).unwrap(), 1);
+    }
+
+    #[test]
+    fn soft_delete_price_with_sync_emits_delete_event() {
+        use crate::storage::sync::pending_events;
+
+        let conn = setup();
+        let created =
+            create_price_with_sync(&conn, &sample_price(), &sync_ctx("dev_a", 1)).unwrap();
+
+        soft_delete_price_with_sync(&conn, &created.id, &sync_ctx("dev_a", 2)).unwrap();
+
+        let pending = pending_events(&conn).unwrap();
+        let delete_ev = pending
+            .iter()
+            .find(|e| e.operation == "delete")
+            .expect("delete event recorded");
+        assert_eq!(delete_ev.entity_type, "price");
+        assert_eq!(delete_ev.entity_id, created.id);
+        assert_eq!(delete_ev.version, 2); // post-delete version
+
+        // Row is hidden from default queries.
+        assert!(
+            get_price(&conn, &created.id, &ListOptions::default())
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn soft_delete_price_with_sync_missing_emits_nothing() {
+        use crate::storage::sync::pending_event_count;
+
+        let conn = setup();
+        let err =
+            soft_delete_price_with_sync(&conn, "nonexistent", &sync_ctx("dev_a", 1)).unwrap_err();
+        assert!(matches!(err, StorageError::NotFound(_)));
+        assert_eq!(pending_event_count(&conn).unwrap(), 0);
+    }
+
+    // --- Remote apply ---
+
+    fn price_payload(id: &str, commodity: &str, price: &str) -> crate::sync::payload::PricePayload {
+        crate::sync::payload::PricePayload {
+            id: id.into(),
+            commodity: commodity.into(),
+            currency: "USD".into(),
+            price: price.into(),
+            date: "2024-01-15".into(),
+            source: Some("yahoo".into()),
+            created_at: "2024-01-15T00:00:00Z".into(),
+            modified_at: "2024-01-15T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn apply_remote_price_inserts_new_row() {
+        let conn = setup();
+        let applied = apply_remote_price(&conn, &price_payload("p1", "AAPL", "185.50"), 1).unwrap();
+        assert!(applied);
+
+        let opts = ListOptions {
+            include_deleted: true,
+        };
+        let stored = get_price(&conn, "p1", &opts).unwrap().unwrap();
+        assert_eq!(stored.price, Decimal::from_str("185.50").unwrap());
+        assert_eq!(stored.version, 1);
+    }
+
+    #[test]
+    fn apply_remote_price_registers_unknown_commodity() {
+        let conn = setup();
+        // "DOGE" is not seeded in setup(); apply must register it defensively.
+        let applied = apply_remote_price(&conn, &price_payload("p1", "DOGE", "0.12"), 1).unwrap();
+        assert!(applied);
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM commodities WHERE symbol = 'DOGE'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn apply_remote_price_upserts_newer_version() {
+        let conn = setup();
+        apply_remote_price(&conn, &price_payload("p1", "AAPL", "185.50"), 1).unwrap();
+
+        let applied = apply_remote_price(&conn, &price_payload("p1", "AAPL", "200.00"), 2).unwrap();
+        assert!(applied);
+
+        let stored = get_price(&conn, "p1", &ListOptions::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.price, Decimal::from_str("200.00").unwrap());
+        assert_eq!(stored.version, 2);
+    }
+
+    #[test]
+    fn apply_remote_price_skips_stale_version() {
+        let conn = setup();
+        apply_remote_price(&conn, &price_payload("p1", "AAPL", "200.00"), 2).unwrap();
+
+        // Equal or older version is treated as already-seen.
+        let applied = apply_remote_price(&conn, &price_payload("p1", "AAPL", "185.50"), 2).unwrap();
+        assert!(!applied);
+        let stored = get_price(&conn, "p1", &ListOptions::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.price, Decimal::from_str("200.00").unwrap());
+    }
+
+    #[test]
+    fn apply_remote_price_rejects_invalid_decimal() {
+        let conn = setup();
+        let err =
+            apply_remote_price(&conn, &price_payload("p1", "AAPL", "not-a-number"), 1).unwrap_err();
+        assert!(matches!(err, StorageError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn apply_remote_price_delete_soft_deletes_newer() {
+        let conn = setup();
+        apply_remote_price(&conn, &price_payload("p1", "AAPL", "185.50"), 1).unwrap();
+
+        let applied = apply_remote_price_delete(&conn, "p1", 2).unwrap();
+        assert!(applied);
+        assert!(
+            get_price(&conn, "p1", &ListOptions::default())
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn apply_remote_price_delete_unknown_is_noop() {
+        let conn = setup();
+        let applied = apply_remote_price_delete(&conn, "nonexistent", 1).unwrap();
+        assert!(!applied);
+    }
+
+    #[test]
+    fn apply_remote_price_delete_stale_is_noop() {
+        let conn = setup();
+        apply_remote_price(&conn, &price_payload("p1", "AAPL", "185.50"), 3).unwrap();
+
+        // Delete at an older version does not touch the row.
+        let applied = apply_remote_price_delete(&conn, "p1", 2).unwrap();
+        assert!(!applied);
+        assert!(
+            get_price(&conn, "p1", &ListOptions::default())
+                .unwrap()
+                .is_some()
+        );
     }
 }
