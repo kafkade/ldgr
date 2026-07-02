@@ -121,7 +121,7 @@ struct InvestmentsView: View {
                     Spacer()
                     Text(formatDecimal(holding.amount))
                         .font(.subheadline.monospacedDigit())
-                        .foregroundStyle(holding.amount >= 0 ? .primary : .red)
+                        .foregroundStyle(holding.amount >= 0 ? AnyShapeStyle(.primary) : AnyShapeStyle(.red))
                 }
                 .padding(.vertical, 2)
             }

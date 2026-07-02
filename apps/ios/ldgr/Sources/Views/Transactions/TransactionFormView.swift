@@ -44,7 +44,9 @@ struct TransactionFormView: View {
                 }
             }
             .navigationTitle(isEditing ? "Correct Transaction" : "New Transaction")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -216,13 +218,17 @@ private struct PostingRowView: View {
 
             HStack(spacing: 8) {
                 TextField("Amount", text: $row.amount)
+                    #if os(iOS)
                     .keyboardType(.decimalPad)
+                    #endif
                     .font(.body.monospacedDigit())
                     .frame(maxWidth: .infinity)
 
                 TextField("Commodity", text: $row.commodity)
                     .autocorrectionDisabled()
+                    #if os(iOS)
                     .textInputAutocapitalization(.characters)
+                    #endif
                     .frame(width: 60)
             }
         }

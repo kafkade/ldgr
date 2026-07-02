@@ -28,7 +28,9 @@ struct ConflictDetailView: View {
             .padding()
         }
         .navigationTitle("Conflict Detail")
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
     }
 
     // MARK: - Subviews
@@ -59,7 +61,7 @@ struct ConflictDetailView: View {
                 .font(.caption.monospaced())
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(8)
-                .background(Color(.systemGray6))
+                .background(Color.platformGroupedSecondary)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
         }
         .frame(maxWidth: .infinity)

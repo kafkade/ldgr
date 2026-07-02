@@ -8,6 +8,7 @@ import LdgrSwift
 /// Clears the cache when the vault locks to prevent stale financial
 /// data from being visible on the lock screen.
 @MainActor
+@Observable
 final class WidgetDataManager {
     private let appGroupId = WatchSummary.iosAppGroupId
     private let dataKey = WatchSummary.iosDefaultsKey

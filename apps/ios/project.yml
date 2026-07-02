@@ -12,6 +12,7 @@ options:
   deploymentTarget:
     iOS: "17.0"
     watchOS: "10.0"
+    macOS: "14.0"
   xcodeVersion: "16.0"
   generateEmptyDirectories: true
 
@@ -36,8 +37,7 @@ targets:
         DEVELOPMENT_TEAM: ""
         SWIFT_VERSION: "6.0"
         CODE_SIGN_STYLE: Automatic
-    entitlements:
-      path: ldgr/ldgr.entitlements
+        CODE_SIGN_ENTITLEMENTS: ldgr/ldgr.entitlements
     dependencies:
       - package: LdgrSwift
         product: LdgrSwift
@@ -56,6 +56,36 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+
+  ldgr-macos:
+    type: application
+    platform: macOS
+    sources:
+      - path: ldgr/Sources
+        excludes:
+          # Siri App Shortcuts are an iOS platform integration handled in a
+          # separate issue; the macOS SDK also flags the AppIntents static
+          # requirements under Swift 6 strict concurrency.
+          - "Intents/**"
+      - path: ldgr-macos/Resources
+      - path: LdgrShared/Sources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kafkade.ldgr
+        PRODUCT_NAME: ldgr
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: 1
+        INFOPLIST_FILE: ldgr-macos/Info.plist
+        DEVELOPMENT_TEAM: ""
+        SWIFT_VERSION: "6.0"
+        CODE_SIGN_STYLE: Automatic
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        LSApplicationCategoryType: public.app-category.finance
+        CODE_SIGN_ENTITLEMENTS: ldgr-macos/ldgr-macos.entitlements
+    dependencies:
+      - package: LdgrSwift
+        product: LdgrSwift
 
   ldgrWatch:
     type: application

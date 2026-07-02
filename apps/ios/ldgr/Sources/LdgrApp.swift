@@ -82,7 +82,7 @@ struct LdgrApp: App {
 struct PrivacyOverlayView: View {
     var body: some View {
         ZStack {
-            Color(.systemBackground)
+            Color.platformBackground
                 .ignoresSafeArea()
             VStack(spacing: 12) {
                 Image(systemName: "lock.shield.fill")

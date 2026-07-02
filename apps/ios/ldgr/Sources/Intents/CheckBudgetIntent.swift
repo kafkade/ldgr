@@ -4,12 +4,12 @@ import Foundation
 /// Siri Shortcut: "How much have I spent this month?"
 /// Reads the cached spending summary from the App Group.
 struct CheckBudgetIntent: AppIntent {
-    static var title: LocalizedStringResource = "Check Monthly Spending"
-    static var description = IntentDescription(
+    static let title: LocalizedStringResource = "Check Monthly Spending"
+    static let description = IntentDescription(
         "See how much you've spent this month."
     )
 
-    static var openAppWhenRun: Bool = false
+    static let openAppWhenRun: Bool = false
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
         guard let defaults = UserDefaults(

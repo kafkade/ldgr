@@ -42,7 +42,7 @@ struct RecoveryKeyView: View {
 
                         HStack(spacing: 16) {
                             Button {
-                                UIPasteboard.general.string = recoveryKey
+                                PlatformClipboard.copy(recoveryKey)
                                 hasCopied = true
                             } label: {
                                 Label(
@@ -92,7 +92,9 @@ struct RecoveryKeyView: View {
                 .padding()
             }
             .navigationTitle("Save Recovery Key")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
         }
     }
 }

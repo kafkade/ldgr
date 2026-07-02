@@ -43,7 +43,9 @@ struct AccountRegisterView: View {
             }
         }
         .navigationTitle(account.name)
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
         .refreshable {
             await store.reload(client: client)
         }

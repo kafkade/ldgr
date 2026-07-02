@@ -5,6 +5,7 @@ import LdgrSwift
 ///
 /// Centralizes vault reads so mutations (add/delete transaction) can
 /// trigger a single reload that updates every visible surface.
+@MainActor
 @Observable
 final class VaultDataStore {
     private(set) var accounts: [Account] = []
