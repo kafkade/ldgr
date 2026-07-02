@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-# build-xcframework.sh — Build XCFramework for iOS from the ldgr-ffi Rust crate.
+# build-xcframework.sh — Build XCFramework for Apple platforms from the ldgr-ffi Rust crate.
+#
+# Produces slices for: iOS (device), iOS simulator (arm64+x86_64), macOS (arm64+x86_64),
+# watchOS (device), and watchOS simulator (arm64).
 #
 # Prerequisites:
-#   - Xcode (with iOS SDK)
+#   - Xcode (with iOS, macOS and watchOS SDKs)
 #   - Rust targets: rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios \
-#                                     aarch64-apple-darwin x86_64-apple-darwin
+#                                     aarch64-apple-darwin x86_64-apple-darwin \
+#                                     aarch64-apple-watchos aarch64-apple-watchos-sim
 #   - uniffi-bindgen workspace crate (crates/uniffi-bindgen)
 #
 # Usage:
@@ -44,6 +48,8 @@ RUST_TARGETS=(
     x86_64-apple-ios
     aarch64-apple-darwin
     x86_64-apple-darwin
+    aarch64-apple-watchos
+    aarch64-apple-watchos-sim
 )
 if command -v rustup >/dev/null 2>&1; then
     echo "▸ Ensuring Rust targets are installed…"
@@ -67,13 +73,22 @@ cargo build -p ldgr-ffi --target aarch64-apple-darwin $CARGO_FLAGS
 echo "▸ Building for x86_64-apple-darwin (macOS Intel)…"
 cargo build -p ldgr-ffi --target x86_64-apple-darwin $CARGO_FLAGS
 
+echo "▸ Building for aarch64-apple-watchos (watchOS device)…"
+cargo build -p ldgr-ffi --target aarch64-apple-watchos $CARGO_FLAGS
+
+echo "▸ Building for aarch64-apple-watchos-sim (watchOS simulator)…"
+cargo build -p ldgr-ffi --target aarch64-apple-watchos-sim $CARGO_FLAGS
+
 DEVICE_LIB="$REPO_ROOT/target/aarch64-apple-ios/$PROFILE/libldgr_ffi.a"
 SIM_ARM_LIB="$REPO_ROOT/target/aarch64-apple-ios-sim/$PROFILE/libldgr_ffi.a"
 SIM_X86_LIB="$REPO_ROOT/target/x86_64-apple-ios/$PROFILE/libldgr_ffi.a"
 MAC_ARM_LIB="$REPO_ROOT/target/aarch64-apple-darwin/$PROFILE/libldgr_ffi.a"
 MAC_X86_LIB="$REPO_ROOT/target/x86_64-apple-darwin/$PROFILE/libldgr_ffi.a"
+WATCH_LIB="$REPO_ROOT/target/aarch64-apple-watchos/$PROFILE/libldgr_ffi.a"
+WATCH_SIM_LIB="$REPO_ROOT/target/aarch64-apple-watchos-sim/$PROFILE/libldgr_ffi.a"
 
-for lib in "$DEVICE_LIB" "$SIM_ARM_LIB" "$SIM_X86_LIB" "$MAC_ARM_LIB" "$MAC_X86_LIB"; do
+for lib in "$DEVICE_LIB" "$SIM_ARM_LIB" "$SIM_X86_LIB" "$MAC_ARM_LIB" "$MAC_X86_LIB" \
+           "$WATCH_LIB" "$WATCH_SIM_LIB"; do
     if [[ ! -f "$lib" ]]; then
         echo "ERROR: Expected library not found: $lib"
         exit 1
@@ -132,17 +147,23 @@ rm -rf "$OUT_DIR/ldgr_ffiFFI.xcframework"
 DEVICE_HEADERS="$OUT_DIR/headers-device"
 SIM_HEADERS="$OUT_DIR/headers-sim"
 MAC_HEADERS="$OUT_DIR/headers-macos"
-rm -rf "$DEVICE_HEADERS" "$SIM_HEADERS" "$MAC_HEADERS"
-mkdir -p "$DEVICE_HEADERS" "$SIM_HEADERS" "$MAC_HEADERS"
+WATCH_HEADERS="$OUT_DIR/headers-watchos"
+WATCH_SIM_HEADERS="$OUT_DIR/headers-watchos-sim"
+rm -rf "$DEVICE_HEADERS" "$SIM_HEADERS" "$MAC_HEADERS" "$WATCH_HEADERS" "$WATCH_SIM_HEADERS"
+mkdir -p "$DEVICE_HEADERS" "$SIM_HEADERS" "$MAC_HEADERS" "$WATCH_HEADERS" "$WATCH_SIM_HEADERS"
 
 if [[ -n "${HEADER:-}" && -f "$HEADER" ]]; then
     cp "$HEADER" "$DEVICE_HEADERS/"
     cp "$HEADER" "$SIM_HEADERS/"
     cp "$HEADER" "$MAC_HEADERS/"
+    cp "$HEADER" "$WATCH_HEADERS/"
+    cp "$HEADER" "$WATCH_SIM_HEADERS/"
     if [[ -n "${MODULEMAP:-}" && -f "$MODULEMAP" ]]; then
         cp "$MODULEMAP" "$DEVICE_HEADERS/module.modulemap"
         cp "$MODULEMAP" "$SIM_HEADERS/module.modulemap"
         cp "$MODULEMAP" "$MAC_HEADERS/module.modulemap"
+        cp "$MODULEMAP" "$WATCH_HEADERS/module.modulemap"
+        cp "$MODULEMAP" "$WATCH_SIM_HEADERS/module.modulemap"
     fi
 fi
 
@@ -153,10 +174,14 @@ xcodebuild -create-xcframework \
     -headers "$SIM_HEADERS" \
     -library "$MAC_LIB" \
     -headers "$MAC_HEADERS" \
+    -library "$WATCH_LIB" \
+    -headers "$WATCH_HEADERS" \
+    -library "$WATCH_SIM_LIB" \
+    -headers "$WATCH_SIM_HEADERS" \
     -output "$OUT_DIR/ldgr_ffiFFI.xcframework"
 
 # Clean up temp dirs
-rm -rf "$DEVICE_HEADERS" "$SIM_HEADERS" "$MAC_HEADERS"
+rm -rf "$DEVICE_HEADERS" "$SIM_HEADERS" "$MAC_HEADERS" "$WATCH_HEADERS" "$WATCH_SIM_HEADERS"
 
 echo ""
 echo "✓ XCFramework built: $OUT_DIR/ldgr_ffiFFI.xcframework"
