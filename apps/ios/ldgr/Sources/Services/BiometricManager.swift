@@ -10,6 +10,8 @@ enum BiometricManager {
         case none
         case faceID
         case touchID
+        /// A paired Apple Watch used for authorization (macOS only).
+        case watch
     }
 
     /// Returns the available biometric type, or `.none` if unavailable.
@@ -17,20 +19,29 @@ enum BiometricManager {
         let context = LAContext()
         var error: NSError?
 
-        guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else {
-            return .none
+        if context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) {
+            switch context.biometryType {
+            case .faceID:
+                return .faceID
+            case .touchID:
+                return .touchID
+            case .opticID:
+                return .faceID // Treat Vision Pro optic ID like Face ID for UI
+            default:
+                break
+            }
         }
 
-        switch context.biometryType {
-        case .faceID:
-            return .faceID
-        case .touchID:
-            return .touchID
-        case .opticID:
-            return .faceID // Treat Vision Pro optic ID like Face ID for UI
-        @unknown default:
-            return .none
+        #if os(macOS)
+        // On a Mac without Touch ID, a paired and unlocked Apple Watch can still
+        // authorize the user. `.deviceOwnerAuthenticationWithWatch` is macOS-only.
+        var watchError: NSError?
+        if context.canEvaluatePolicy(.deviceOwnerAuthenticationWithWatch, error: &watchError) {
+            return .watch
         }
+        #endif
+
+        return .none
     }
 
     /// Human-readable label for the biometric type.
@@ -39,6 +50,7 @@ enum BiometricManager {
         case .none: return "Biometrics"
         case .faceID: return "Face ID"
         case .touchID: return "Touch ID"
+        case .watch: return "Apple Watch"
         }
     }
 
@@ -48,6 +60,7 @@ enum BiometricManager {
         case .none: return "lock.shield"
         case .faceID: return "faceid"
         case .touchID: return "touchid"
+        case .watch: return "applewatch"
         }
     }
 }
