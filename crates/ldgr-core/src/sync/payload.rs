@@ -61,6 +61,29 @@ pub struct TransactionPayload {
     pub postings: Vec<PostingPayload>,
 }
 
+/// Full state of a goal definition, carried by `Create`/`Update` goal events.
+///
+/// Flat (no nested entities), mirroring [`AccountPayload`]. `goal_type` is the
+/// canonical persistence string (see `storage::goals::goal_type_as_str`) and
+/// `target_amount` is the `Decimal` rendered as a String for exact precision.
+/// The row `version` is not carried here — it travels on the enclosing
+/// [`SyncEvent`](super::events::SyncEvent) and is passed to the apply path
+/// separately, matching the account/transaction pattern.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GoalPayload {
+    pub id: String,
+    pub name: String,
+    /// Canonical goal-type string (`savings`/`debt_payoff`/`investment`/
+    /// `emergency_fund`/`retirement`/`custom`).
+    pub goal_type: String,
+    /// `Decimal` target amount rendered as a String for exact precision.
+    pub target_amount: String,
+    pub target_date: Option<String>,
+    pub linked_account: Option<String>,
+    pub created_at: String,
+    pub modified_at: String,
+}
+
 /// Payload for a `Delete` event — only the entity id is needed for a soft delete.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeletePayload {
@@ -122,6 +145,23 @@ mod tests {
         };
         let bytes = to_bytes(&p).unwrap();
         let restored: TransactionPayload = from_bytes(&bytes).unwrap();
+        assert_eq!(p, restored);
+    }
+
+    #[test]
+    fn goal_payload_round_trip() {
+        let p = GoalPayload {
+            id: "goal1".into(),
+            name: "Emergency Fund".into(),
+            goal_type: "emergency_fund".into(),
+            target_amount: "10000.00".into(),
+            target_date: Some("2025-12-31".into()),
+            linked_account: Some("acc1".into()),
+            created_at: "2024-01-15T00:00:00Z".into(),
+            modified_at: "2024-01-16T00:00:00Z".into(),
+        };
+        let bytes = to_bytes(&p).unwrap();
+        let restored: GoalPayload = from_bytes(&bytes).unwrap();
         assert_eq!(p, restored);
     }
 

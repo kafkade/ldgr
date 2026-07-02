@@ -18,6 +18,7 @@ use rust_decimal::Decimal;
 use uuid::Uuid;
 
 use super::error::StorageError;
+use super::sync::SyncContext;
 use crate::goals::{Goal, GoalType};
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -280,6 +281,370 @@ pub fn soft_delete_goal(conn: &Connection, id: &str) -> Result<(), StorageError>
         return Err(StorageError::NotFound(format!("goal '{id}'")));
     }
     Ok(())
+}
+
+// ── Sync-aware variants ────────────────────────────────────────────────────────
+
+/// Create a new goal with atomic sync event recording.
+///
+/// Mirrors [`create_goal`] but, within the same `SQLite` transaction, also
+/// records a `create` outbox event carrying the full [`GoalPayload`] so the
+/// change propagates on the next `sync push`. `event.version` is set to `1`
+/// (the resulting row version).
+///
+/// [`GoalPayload`]: crate::sync::payload::GoalPayload
+///
+/// # Errors
+///
+/// Returns [`StorageError::Database`] if the insert fails, or
+/// [`StorageError::InvalidInput`] if the payload cannot be serialized.
+pub fn create_goal_with_sync(
+    conn: &Connection,
+    input: &NewGoal,
+    ctx: &SyncContext,
+) -> Result<StoredGoal, StorageError> {
+    let db_tx = conn.unchecked_transaction()?;
+
+    let id = Uuid::now_v7().to_string();
+    let now = now_iso8601();
+
+    db_tx.execute(
+        "INSERT INTO goals
+             (id, name, goal_type, target_amount, target_date, linked_account,
+              created_at, modified_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![
+            id,
+            input.name,
+            goal_type_as_str(input.goal_type),
+            input.target_amount.to_string(),
+            input.target_date,
+            input.linked_account,
+            now,
+            now,
+        ],
+    )?;
+
+    let payload = crate::sync::payload::to_bytes(&crate::sync::payload::GoalPayload {
+        id: id.clone(),
+        name: input.name.clone(),
+        goal_type: goal_type_as_str(input.goal_type).to_string(),
+        target_amount: input.target_amount.to_string(),
+        target_date: input.target_date.clone(),
+        linked_account: input.linked_account.clone(),
+        created_at: now.clone(),
+        modified_at: now.clone(),
+    })
+    .map_err(|e| StorageError::InvalidInput(format!("failed to serialize goal payload: {e}")))?;
+
+    super::sync::record_event(
+        &db_tx,
+        &ctx.device_id,
+        "goal",
+        &id,
+        "create",
+        &payload,
+        ctx.lamport_clock,
+        1,
+    )?;
+
+    db_tx.commit()?;
+
+    Ok(StoredGoal {
+        goal: Goal {
+            id,
+            name: input.name.clone(),
+            goal_type: input.goal_type,
+            target_amount: input.target_amount,
+            target_date: input.target_date.clone(),
+            linked_account: input.linked_account.clone(),
+        },
+        created_at: now.clone(),
+        modified_at: now,
+        version: 1,
+        deleted: false,
+    })
+}
+
+/// Update an existing goal with atomic sync event recording.
+///
+/// Mirrors [`update_goal`] but, within the same `SQLite` transaction, also
+/// records an `update` outbox event carrying the full post-update
+/// [`GoalPayload`]. `event.version` is set to the resulting row version so the
+/// remote apply path's staleness check works. The original `created_at` is
+/// preserved so the emitted payload keeps it stable across the update.
+///
+/// [`GoalPayload`]: crate::sync::payload::GoalPayload
+///
+/// # Errors
+///
+/// Returns [`StorageError::Conflict`] if the version doesn't match (concurrent
+/// modification or goal was deleted), or [`StorageError::InvalidInput`] if the
+/// payload cannot be serialized.
+pub fn update_goal_with_sync(
+    conn: &Connection,
+    id: &str,
+    update: &GoalUpdate,
+    ctx: &SyncContext,
+) -> Result<StoredGoal, StorageError> {
+    let db_tx = conn.unchecked_transaction()?;
+
+    let now = now_iso8601();
+    let new_version = update.expected_version + 1;
+
+    // Preserve the original creation timestamp so the emitted payload (and any
+    // remote upsert it drives) keeps `created_at` stable across the update.
+    let created_at: String = db_tx
+        .query_row(
+            "SELECT created_at FROM goals WHERE id = ?1 AND deleted = 0",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => StorageError::NotFound(format!("goal '{id}'")),
+            other => StorageError::Database(other),
+        })?;
+
+    let rows = db_tx.execute(
+        "UPDATE goals
+         SET name = ?1, goal_type = ?2, target_amount = ?3, target_date = ?4,
+             linked_account = ?5, modified_at = ?6, version = ?7
+         WHERE id = ?8 AND version = ?9 AND deleted = 0",
+        rusqlite::params![
+            update.name,
+            goal_type_as_str(update.goal_type),
+            update.target_amount.to_string(),
+            update.target_date,
+            update.linked_account,
+            now,
+            new_version,
+            id,
+            update.expected_version,
+        ],
+    )?;
+
+    if rows == 0 {
+        return Err(StorageError::Conflict(format!(
+            "goal '{id}' was modified or deleted (expected version {})",
+            update.expected_version
+        )));
+    }
+
+    let payload = crate::sync::payload::to_bytes(&crate::sync::payload::GoalPayload {
+        id: id.to_string(),
+        name: update.name.clone(),
+        goal_type: goal_type_as_str(update.goal_type).to_string(),
+        target_amount: update.target_amount.to_string(),
+        target_date: update.target_date.clone(),
+        linked_account: update.linked_account.clone(),
+        created_at: created_at.clone(),
+        modified_at: now.clone(),
+    })
+    .map_err(|e| StorageError::InvalidInput(format!("failed to serialize goal payload: {e}")))?;
+
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    let version_u32 = new_version as u32;
+
+    super::sync::record_event(
+        &db_tx,
+        &ctx.device_id,
+        "goal",
+        id,
+        "update",
+        &payload,
+        ctx.lamport_clock,
+        version_u32,
+    )?;
+
+    db_tx.commit()?;
+
+    Ok(StoredGoal {
+        goal: Goal {
+            id: id.to_string(),
+            name: update.name.clone(),
+            goal_type: update.goal_type,
+            target_amount: update.target_amount,
+            target_date: update.target_date.clone(),
+            linked_account: update.linked_account.clone(),
+        },
+        created_at,
+        modified_at: now,
+        version: new_version,
+        deleted: false,
+    })
+}
+
+/// Soft-delete a goal with atomic sync event recording.
+///
+/// Mirrors [`soft_delete_goal`] but, within the same `SQLite` transaction, also
+/// records a `delete` outbox event. `event.version` is set to the resulting
+/// (post-delete) row version so the remote apply path's staleness check works.
+///
+/// # Errors
+///
+/// Returns [`StorageError::NotFound`] if the goal doesn't exist or is already
+/// deleted, or [`StorageError::InvalidInput`] if the payload cannot be
+/// serialized.
+pub fn soft_delete_goal_with_sync(
+    conn: &Connection,
+    id: &str,
+    ctx: &SyncContext,
+) -> Result<(), StorageError> {
+    let db_tx = conn.unchecked_transaction()?;
+
+    // Read the current version so the emitted event carries the resulting
+    // (post-delete) entity version, keeping event.version meaningful for the
+    // remote apply path's staleness check.
+    let current_version: i64 = db_tx
+        .query_row(
+            "SELECT version FROM goals WHERE id = ?1 AND deleted = 0",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => StorageError::NotFound(format!("goal '{id}'")),
+            other => StorageError::Database(other),
+        })?;
+    let new_version = current_version + 1;
+
+    db_tx.execute(
+        "UPDATE goals SET deleted = 1, version = ?1, modified_at = ?2
+         WHERE id = ?3 AND deleted = 0",
+        rusqlite::params![new_version, now_iso8601(), id],
+    )?;
+
+    let payload =
+        crate::sync::payload::to_bytes(&crate::sync::payload::DeletePayload { id: id.to_string() })
+            .map_err(|e| {
+                StorageError::InvalidInput(format!("failed to serialize delete payload: {e}"))
+            })?;
+
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    let version_u32 = new_version as u32;
+
+    super::sync::record_event(
+        &db_tx,
+        &ctx.device_id,
+        "goal",
+        id,
+        "delete",
+        &payload,
+        ctx.lamport_clock,
+        version_u32,
+    )?;
+
+    db_tx.commit()?;
+    Ok(())
+}
+
+// ── Remote apply (sync ingest) ───────────────────────────────────────────────
+
+/// Apply a remote `Create`/`Update` goal event to the canonical table.
+///
+/// Upserts the goal by its **explicit** `payload.id` (unlike [`create_goal`],
+/// which mints a fresh id). This is the apply half of the sync pipeline: it
+/// writes only the canonical table and **never** records a `sync_events` outbox
+/// row, so applied remote events do not echo back into our own outbox.
+///
+/// Staleness rule: the event is applied iff the goal does not exist locally
+/// **or** the incoming `version` is strictly greater than the local row's
+/// version. An equal-or-older version is treated as already-seen and skipped.
+///
+/// Returns `true` if the row was written, `false` if the event was stale.
+///
+/// # Errors
+///
+/// Returns [`StorageError::InvalidInput`] if the payload's `goal_type` or
+/// `target_amount` fails to parse, or [`StorageError::Database`] on write
+/// failure.
+pub fn apply_remote_goal(
+    conn: &Connection,
+    payload: &crate::sync::payload::GoalPayload,
+    version: i64,
+) -> Result<bool, StorageError> {
+    // Validate the goal-type and decimal strings before touching the table.
+    let goal_type = goal_type_from_str(&payload.goal_type)?;
+    if Decimal::from_str(&payload.target_amount).is_err() {
+        return Err(StorageError::InvalidInput(format!(
+            "remote goal '{}' has invalid target_amount: {}",
+            payload.id, payload.target_amount
+        )));
+    }
+
+    if let Some(local_version) = current_goal_version(conn, &payload.id)?
+        && local_version >= version
+    {
+        return Ok(false);
+    }
+
+    conn.execute(
+        "INSERT INTO goals
+             (id, name, goal_type, target_amount, target_date, linked_account,
+              created_at, modified_at, version, deleted)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)
+         ON CONFLICT(id) DO UPDATE SET
+             name = excluded.name,
+             goal_type = excluded.goal_type,
+             target_amount = excluded.target_amount,
+             target_date = excluded.target_date,
+             linked_account = excluded.linked_account,
+             created_at = excluded.created_at,
+             modified_at = excluded.modified_at,
+             version = excluded.version,
+             deleted = 0",
+        rusqlite::params![
+            payload.id,
+            payload.name,
+            goal_type_as_str(goal_type),
+            payload.target_amount,
+            payload.target_date,
+            payload.linked_account,
+            payload.created_at,
+            payload.modified_at,
+            version,
+        ],
+    )?;
+
+    Ok(true)
+}
+
+/// Apply a remote `Delete` goal event (soft delete by explicit id).
+///
+/// No-op (returns `false`) if the goal is unknown locally or the incoming
+/// `version` is not strictly greater than the local row's version. The
+/// unknown-id no-op, combined with batch-level vector-clock dominance in the
+/// merge step, prevents a stale create from resurrecting a deleted goal.
+///
+/// # Errors
+///
+/// Returns [`StorageError::Database`] on write failure.
+pub fn apply_remote_goal_delete(
+    conn: &Connection,
+    id: &str,
+    version: i64,
+) -> Result<bool, StorageError> {
+    match current_goal_version(conn, id)? {
+        Some(local_version) if local_version < version => {
+            conn.execute(
+                "UPDATE goals SET deleted = 1, version = ?1, modified_at = ?2 WHERE id = ?3",
+                rusqlite::params![version, now_iso8601(), id],
+            )?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// Current version of a goal row (including soft-deleted rows), if it exists.
+pub(crate) fn current_goal_version(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<i64>, StorageError> {
+    let mut stmt = conn.prepare("SELECT version FROM goals WHERE id = ?1")?;
+    let result = stmt
+        .query_row([id], |row| row.get::<_, i64>(0))
+        .optional()?;
+    Ok(result)
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────

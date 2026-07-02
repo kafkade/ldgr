@@ -28,11 +28,16 @@ use crate::storage::error::StorageError;
 use crate::storage::sync as sync_store;
 use crate::storage::{accounts, transactions};
 
+#[cfg(feature = "goals")]
+use crate::storage::goals;
+
 use super::conflicts::merge_events;
 use super::events::{
     EntityType, EventBatch, Operation, SyncEvent, VectorClock, create_batch, total_order,
 };
 use super::framing::FramingError;
+#[cfg(feature = "goals")]
+use super::payload::GoalPayload;
 use super::payload::{self, AccountPayload, DeletePayload, TransactionPayload};
 
 /// `sync_state` key holding the persisted local vector clock (JSON).
@@ -411,7 +416,20 @@ fn apply_remote_payload(
                 )?)
             }
         },
-        // Price/Budget/Goal have no storage module yet — fail closed so we never
+        #[cfg(feature = "goals")]
+        EntityType::Goal => match operation {
+            Operation::Create | Operation::Update => {
+                let p: GoalPayload = payload::from_bytes(payload)
+                    .map_err(|e| PipelineError::Format(format!("goal payload: {e}")))?;
+                Ok(goals::apply_remote_goal(conn, &p, version)?)
+            }
+            Operation::Delete => {
+                let p: DeletePayload = payload::from_bytes(payload)
+                    .map_err(|e| PipelineError::Format(format!("delete payload: {e}")))?;
+                Ok(goals::apply_remote_goal_delete(conn, &p.id, version)?)
+            }
+        },
+        // Price/Budget have no storage module yet — fail closed so we never
         // silently drop financial data. Tracked by #203.
         other => Err(PipelineError::UnsupportedEntity(other.as_str().to_string())),
     }
@@ -426,6 +444,8 @@ fn current_entity_version(
     let version = match entity_type {
         EntityType::Account => accounts::current_account_version(conn, id)?,
         EntityType::Transaction => transactions::current_transaction_version(conn, id)?,
+        #[cfg(feature = "goals")]
+        EntityType::Goal => goals::current_goal_version(conn, id)?,
         other => return Err(PipelineError::UnsupportedEntity(other.as_str().to_string())),
     };
     Ok(version.unwrap_or(0))
@@ -1146,5 +1166,192 @@ mod tests {
             err,
             PipelineError::Storage(StorageError::NotFound(_))
         ));
+    }
+
+    /// Goal is a flat vault entity (issue #217). These tests mirror the account
+    /// round-trip / conflict coverage above, gated behind the `goals` feature.
+    #[cfg(feature = "goals")]
+    mod goal_sync {
+        use std::str::FromStr;
+
+        use rust_decimal::Decimal;
+
+        use crate::crypto::VaultKey;
+        use crate::goals::GoalType;
+        use crate::storage::goals::{
+            GoalUpdate, ListOptions as GoalListOptions, NewGoal, create_goal_with_sync, get_goal,
+            list_goals, soft_delete_goal_with_sync, update_goal_with_sync,
+        };
+        use crate::storage::sync::{mark_events_synced, unresolved_conflict_count};
+        use crate::sync::pipeline::{export_pending_batch, ingest_batch};
+
+        use super::{ctx, vault};
+
+        fn sample_goal(name: &str) -> NewGoal {
+            NewGoal {
+                name: name.into(),
+                goal_type: GoalType::EmergencyFund,
+                target_amount: Decimal::from_str("10000.00").unwrap(),
+                target_date: Some("2025-12-31".into()),
+                linked_account: Some("acct-ref-1".into()),
+            }
+        }
+
+        #[test]
+        fn round_trip_reproduces_goals_on_second_vault() {
+            let vk = VaultKey::generate();
+
+            // Device A: create a goal, then update it (exercises create + update
+            // events and version bump), and create a second goal.
+            let a = vault();
+            let g1 = create_goal_with_sync(&a, &sample_goal("Emergency Fund"), &ctx("dev_a", 1))
+                .unwrap();
+            let g1 = update_goal_with_sync(
+                &a,
+                &g1.goal.id,
+                &GoalUpdate {
+                    name: "Rainy Day".into(),
+                    goal_type: GoalType::Savings,
+                    target_amount: Decimal::from_str("12500.50").unwrap(),
+                    target_date: None,
+                    linked_account: None,
+                    expected_version: g1.version,
+                },
+                &ctx("dev_a", 2),
+            )
+            .unwrap();
+            let g2 = create_goal_with_sync(&a, &sample_goal("New Car"), &ctx("dev_a", 3)).unwrap();
+
+            let exported = export_pending_batch(&a, "dev_a", &vk).unwrap().unwrap();
+
+            // Device B: fresh vault, same key.
+            let b = vault();
+            let outcome = ingest_batch(&b, "dev_b", &vk, &exported.ciphertext).unwrap();
+            // Two entities (g1 create+update collapse to its latest state, g2).
+            assert_eq!(outcome.conflicts, 0);
+
+            let a_goals = list_goals(&a, &GoalListOptions::default()).unwrap();
+            let b_goals = list_goals(&b, &GoalListOptions::default()).unwrap();
+            assert_eq!(a_goals.len(), 2);
+            assert_eq!(a_goals.len(), b_goals.len());
+            for (ax, bx) in a_goals.iter().zip(b_goals.iter()) {
+                assert_eq!(ax.goal.id, bx.goal.id);
+                assert_eq!(ax.goal.name, bx.goal.name);
+                assert_eq!(ax.goal.goal_type, bx.goal.goal_type);
+                assert_eq!(ax.goal.target_amount, bx.goal.target_amount);
+                assert_eq!(ax.goal.target_date, bx.goal.target_date);
+                assert_eq!(ax.goal.linked_account, bx.goal.linked_account);
+                assert_eq!(ax.created_at, bx.created_at);
+                assert_eq!(ax.modified_at, bx.modified_at);
+                assert_eq!(ax.version, bx.version);
+                assert_eq!(ax.deleted, bx.deleted);
+            }
+
+            // The updated goal reproduced its post-update state (version 2).
+            let b_g1 = get_goal(&b, &g1.goal.id, &GoalListOptions::default())
+                .unwrap()
+                .unwrap();
+            assert_eq!(b_g1.version, 2);
+            assert_eq!(b_g1.goal.name, "Rainy Day");
+            assert_eq!(b_g1.goal.goal_type, GoalType::Savings);
+            assert_eq!(
+                b_g1.goal.target_amount,
+                Decimal::from_str("12500.50").unwrap()
+            );
+            assert!(b_g1.goal.target_date.is_none());
+            let _ = g2;
+        }
+
+        #[test]
+        fn delete_propagates_to_second_vault() {
+            let vk = VaultKey::generate();
+
+            // A creates a goal; B ingests it.
+            let a = vault();
+            let g = create_goal_with_sync(&a, &sample_goal("Emergency Fund"), &ctx("dev_a", 1))
+                .unwrap();
+            let create_blob = export_pending_batch(&a, "dev_a", &vk).unwrap().unwrap();
+            mark_events_synced(&a, &create_blob.event_ids).unwrap();
+
+            let b = vault();
+            ingest_batch(&b, "dev_b", &vk, &create_blob.ciphertext).unwrap();
+            assert!(
+                get_goal(&b, &g.goal.id, &GoalListOptions::default())
+                    .unwrap()
+                    .is_some()
+            );
+
+            // A deletes the goal; B ingests the delete.
+            soft_delete_goal_with_sync(&a, &g.goal.id, &ctx("dev_a", 2)).unwrap();
+            let delete_blob = export_pending_batch(&a, "dev_a", &vk).unwrap().unwrap();
+            let outcome = ingest_batch(&b, "dev_b", &vk, &delete_blob.ciphertext).unwrap();
+            assert_eq!(outcome.applied, 1);
+            assert!(
+                get_goal(&b, &g.goal.id, &GoalListOptions::default())
+                    .unwrap()
+                    .is_none()
+            );
+        }
+
+        #[test]
+        fn concurrent_goal_edit_surfaces_conflict() {
+            let vk = VaultKey::generate();
+
+            // A creates goal X; B ingests it (both know X).
+            let a = vault();
+            let g = create_goal_with_sync(&a, &sample_goal("Emergency Fund"), &ctx("dev_a", 1))
+                .unwrap();
+            let create_blob = export_pending_batch(&a, "dev_a", &vk).unwrap().unwrap();
+            mark_events_synced(&a, &create_blob.event_ids).unwrap();
+            let b = vault();
+            ingest_batch(&b, "dev_b", &vk, &create_blob.ciphertext).unwrap();
+
+            // Concurrently: A edits X and exports; B also edits X locally (a
+            // pending, unsynced edit to the same entity).
+            update_goal_with_sync(
+                &a,
+                &g.goal.id,
+                &GoalUpdate {
+                    name: "A's Rename".into(),
+                    goal_type: g.goal.goal_type,
+                    target_amount: g.goal.target_amount,
+                    target_date: g.goal.target_date.clone(),
+                    linked_account: g.goal.linked_account.clone(),
+                    expected_version: g.version,
+                },
+                &ctx("dev_a", 2),
+            )
+            .unwrap();
+            let a_edit = export_pending_batch(&a, "dev_a", &vk).unwrap().unwrap();
+            update_goal_with_sync(
+                &b,
+                &g.goal.id,
+                &GoalUpdate {
+                    name: "B's Rename".into(),
+                    goal_type: g.goal.goal_type,
+                    target_amount: g.goal.target_amount,
+                    target_date: g.goal.target_date.clone(),
+                    linked_account: g.goal.linked_account.clone(),
+                    expected_version: g.version,
+                },
+                &ctx("dev_b", 2),
+            )
+            .unwrap();
+
+            let before = get_goal(&b, &g.goal.id, &GoalListOptions::default()).unwrap();
+            let outcome = ingest_batch(&b, "dev_b", &vk, &a_edit.ciphertext).unwrap();
+
+            // Same entity touched on both devices → conflict, not a silent apply.
+            assert_eq!(outcome.conflicts, 1);
+            assert_eq!(outcome.applied, 0);
+            assert_eq!(unresolved_conflict_count(&b).unwrap(), 1);
+
+            // B's local view of X was not overwritten by the remote event.
+            let after = get_goal(&b, &g.goal.id, &GoalListOptions::default()).unwrap();
+            assert_eq!(
+                before.map(|v| (v.version, v.goal.name.clone())),
+                after.map(|v| (v.version, v.goal.name.clone()))
+            );
+        }
     }
 }
