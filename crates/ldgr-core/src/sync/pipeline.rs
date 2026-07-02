@@ -28,14 +28,14 @@ use crate::crypto::{CryptoError, VaultKey};
 use crate::storage::budgets;
 use crate::storage::error::StorageError;
 use crate::storage::sync as sync_store;
-use crate::storage::{accounts, transactions};
+use crate::storage::{accounts, prices, transactions};
 
 use super::conflicts::merge_events;
 use super::events::{
     EntityType, EventBatch, Operation, SyncEvent, VectorClock, create_batch, total_order,
 };
 use super::framing::FramingError;
-use super::payload::{self, AccountPayload, DeletePayload, TransactionPayload};
+use super::payload::{self, AccountPayload, DeletePayload, PricePayload, TransactionPayload};
 
 /// `sync_state` key holding the persisted local vector clock (JSON).
 const VECTOR_CLOCK_KEY: &str = "sync:vector_clock";
@@ -426,8 +426,20 @@ fn apply_remote_payload(
                 Ok(budgets::apply_remote_budget_delete(conn, &p.id, version)?)
             }
         },
-        // Price/Goal have no storage module yet — fail closed so we never
-        // silently drop financial data. Tracked by #203.
+        EntityType::Price => match operation {
+            Operation::Create | Operation::Update => {
+                let p: PricePayload = payload::from_bytes(payload)
+                    .map_err(|e| PipelineError::Format(format!("price payload: {e}")))?;
+                Ok(prices::apply_remote_price(conn, &p, version)?)
+            }
+            Operation::Delete => {
+                let p: DeletePayload = payload::from_bytes(payload)
+                    .map_err(|e| PipelineError::Format(format!("delete payload: {e}")))?;
+                Ok(prices::apply_remote_price_delete(conn, &p.id, version)?)
+            }
+        },
+        // Goal has no sync wiring yet — fail closed so we never silently drop
+        // financial data. Tracked by #203.
         other => Err(PipelineError::UnsupportedEntity(other.as_str().to_string())),
     }
 }
@@ -443,6 +455,7 @@ fn current_entity_version(
         EntityType::Transaction => transactions::current_transaction_version(conn, id)?,
         #[cfg(feature = "budget")]
         EntityType::Budget => budgets::current_budget_version(conn, id)?,
+        EntityType::Price => prices::current_price_version(conn, id)?,
         other => return Err(PipelineError::UnsupportedEntity(other.as_str().to_string())),
     };
     Ok(version.unwrap_or(0))
@@ -520,6 +533,10 @@ mod tests {
         AccountType, ListOptions, NewAccount, create_account_with_sync, get_account, list_accounts,
         soft_delete_account_with_sync,
     };
+    use crate::storage::prices::{
+        ListOptions as PriceListOptions, NewPrice, PriceUpdate, create_price_with_sync, get_price,
+        soft_delete_price_with_sync, update_price_with_sync,
+    };
     use crate::storage::schema;
     use crate::storage::sync::{SyncContext, mark_events_synced, pending_event_count};
     use crate::storage::transactions::{
@@ -527,6 +544,7 @@ mod tests {
         get_transaction,
     };
     use crate::sync::events::deserialize_batch;
+    use std::str::FromStr;
 
     fn vault() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -550,6 +568,29 @@ mod tests {
                 commodity: Some("USD".into()),
                 parent_id: None,
                 note: Some("seed note".into()),
+            },
+            &ctx(device, lamport),
+        )
+        .unwrap()
+        .id
+    }
+
+    fn seed_price(conn: &Connection, device: &str, lamport: u64, commodity: &str) -> String {
+        // Local price creation assumes the referenced commodity already exists
+        // (mirrors production and the prices.rs unit-test convention).
+        conn.execute(
+            "INSERT OR IGNORE INTO commodities (symbol) VALUES (?1)",
+            [commodity],
+        )
+        .unwrap();
+        create_price_with_sync(
+            conn,
+            &NewPrice {
+                commodity: commodity.into(),
+                currency: "USD".into(),
+                price: rust_decimal::Decimal::from_str("185.50").unwrap(),
+                date: "2024-01-15".into(),
+                source: Some("yahoo".into()),
             },
             &ctx(device, lamport),
         )
@@ -833,6 +874,168 @@ mod tests {
         assert_eq!(before.map(|v| v.version), after.map(|v| v.version));
     }
 
+    // ── Price entity sync ────────────────────────────────────────────────────
+
+    #[test]
+    fn price_round_trips_on_second_vault() {
+        let vk = VaultKey::generate();
+
+        // Device A: create a price and export it.
+        let a = vault();
+        let id = seed_price(&a, "dev_a", 1, "AAPL");
+        let exported = export_pending_batch(&a, "dev_a", &vk).unwrap().unwrap();
+
+        // Device B: fresh vault, same key, ingests the price.
+        let b = vault();
+        let outcome = ingest_batch(&b, "dev_b", &vk, &exported.ciphertext).unwrap();
+        assert_eq!(outcome.applied, 1);
+        assert_eq!(outcome.conflicts, 0);
+
+        // Reproduced field-for-field on B.
+        let ap = get_price(&a, &id, &PriceListOptions::default())
+            .unwrap()
+            .unwrap();
+        let bp = get_price(&b, &id, &PriceListOptions::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(ap, bp);
+        assert_eq!(bp.commodity, "AAPL");
+        assert_eq!(bp.price, rust_decimal::Decimal::from_str("185.50").unwrap());
+        assert_eq!(bp.version, 1);
+        assert!(!bp.deleted);
+    }
+
+    #[test]
+    fn price_update_propagates_via_upsert() {
+        let vk = VaultKey::generate();
+
+        // A creates a price; B ingests it.
+        let a = vault();
+        let id = seed_price(&a, "dev_a", 1, "AAPL");
+        let create_blob = export_pending_batch(&a, "dev_a", &vk).unwrap().unwrap();
+        mark_events_synced(&a, &create_blob.event_ids).unwrap();
+        let b = vault();
+        ingest_batch(&b, "dev_b", &vk, &create_blob.ciphertext).unwrap();
+
+        // A updates the price and exports; B applies the update.
+        update_price_with_sync(
+            &a,
+            &id,
+            &PriceUpdate {
+                commodity: "AAPL".into(),
+                currency: "USD".into(),
+                price: rust_decimal::Decimal::from_str("190.25").unwrap(),
+                date: "2024-01-16".into(),
+                source: Some("manual".into()),
+                expected_version: 1,
+            },
+            &ctx("dev_a", 2),
+        )
+        .unwrap();
+        let update_blob = export_pending_batch(&a, "dev_a", &vk).unwrap().unwrap();
+        let outcome = ingest_batch(&b, "dev_b", &vk, &update_blob.ciphertext).unwrap();
+        assert_eq!(outcome.applied, 1);
+
+        let bp = get_price(&b, &id, &PriceListOptions::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(bp.price, rust_decimal::Decimal::from_str("190.25").unwrap());
+        assert_eq!(bp.date, "2024-01-16");
+        assert_eq!(bp.source.as_deref(), Some("manual"));
+        assert_eq!(bp.version, 2);
+    }
+
+    #[test]
+    fn price_delete_propagates() {
+        let vk = VaultKey::generate();
+        let a = vault();
+        let id = seed_price(&a, "dev_a", 1, "AAPL");
+        let create_blob = export_pending_batch(&a, "dev_a", &vk).unwrap().unwrap();
+        mark_events_synced(&a, &create_blob.event_ids).unwrap();
+
+        let b = vault();
+        ingest_batch(&b, "dev_b", &vk, &create_blob.ciphertext).unwrap();
+        assert!(
+            get_price(&b, &id, &PriceListOptions::default())
+                .unwrap()
+                .is_some()
+        );
+
+        // A deletes the price, exports; B ingests the delete.
+        soft_delete_price_with_sync(&a, &id, &ctx("dev_a", 2)).unwrap();
+        let delete_blob = export_pending_batch(&a, "dev_a", &vk).unwrap().unwrap();
+        let outcome = ingest_batch(&b, "dev_b", &vk, &delete_blob.ciphertext).unwrap();
+        assert_eq!(outcome.applied, 1);
+        assert!(
+            get_price(&b, &id, &PriceListOptions::default())
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn concurrent_price_edit_surfaces_conflict() {
+        let vk = VaultKey::generate();
+
+        // A creates price X; B ingests it (both know X).
+        let a = vault();
+        let x = seed_price(&a, "dev_a", 1, "AAPL");
+        let create_blob = export_pending_batch(&a, "dev_a", &vk).unwrap().unwrap();
+        mark_events_synced(&a, &create_blob.event_ids).unwrap();
+        let b = vault();
+        ingest_batch(&b, "dev_b", &vk, &create_blob.ciphertext).unwrap();
+
+        // Concurrently: A updates X and exports; B also updates X locally
+        // (a pending, unsynced edit to the same entity).
+        update_price_with_sync(
+            &a,
+            &x,
+            &PriceUpdate {
+                commodity: "AAPL".into(),
+                currency: "USD".into(),
+                price: rust_decimal::Decimal::from_str("190.00").unwrap(),
+                date: "2024-01-16".into(),
+                source: None,
+                expected_version: 1,
+            },
+            &ctx("dev_a", 2),
+        )
+        .unwrap();
+        let a_update = export_pending_batch(&a, "dev_a", &vk).unwrap().unwrap();
+        update_price_with_sync(
+            &b,
+            &x,
+            &PriceUpdate {
+                commodity: "AAPL".into(),
+                currency: "EUR".into(),
+                price: rust_decimal::Decimal::from_str("175.00").unwrap(),
+                date: "2024-01-16".into(),
+                source: None,
+                expected_version: 1,
+            },
+            &ctx("dev_b", 2),
+        )
+        .unwrap();
+
+        let before = get_price(&b, &x, &PriceListOptions::default()).unwrap();
+        let outcome = ingest_batch(&b, "dev_b", &vk, &a_update.ciphertext).unwrap();
+
+        // Same entity touched on both devices → conflict, not a silent apply.
+        assert_eq!(outcome.conflicts, 1);
+        assert_eq!(outcome.applied, 0);
+        assert_eq!(
+            crate::storage::sync::unresolved_conflict_count(&b).unwrap(),
+            1
+        );
+
+        // B's local view of X was not overwritten by the remote event.
+        let after = get_price(&b, &x, &PriceListOptions::default()).unwrap();
+        assert_eq!(
+            before.map(|v| (v.version, v.currency.clone())),
+            after.map(|v| (v.version, v.currency.clone()))
+        );
+    }
+
     #[test]
     fn wrong_vault_key_fails_to_ingest() {
         let vk = VaultKey::generate();
@@ -873,14 +1076,15 @@ mod tests {
 
     #[test]
     fn unsupported_entity_type_fails_closed() {
-        // Hand-build a batch with a Price event and seal it; ingest must error.
+        // Hand-build a batch with a Goal event (still unsupported) and seal it;
+        // ingest must error rather than silently drop financial data.
         let vk = VaultKey::generate();
         let ev = SyncEvent {
             id: "evt".into(),
             device_id: "dev_a".into(),
             lamport_clock: 1,
-            entity_type: EntityType::Price,
-            entity_id: "p1".into(),
+            entity_type: EntityType::Goal,
+            entity_id: "g1".into(),
             operation: Operation::Create,
             payload: b"{}".to_vec(),
             version: 1,

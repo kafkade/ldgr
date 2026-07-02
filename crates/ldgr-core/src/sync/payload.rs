@@ -92,6 +92,23 @@ pub struct BudgetPayload {
     pub allocations: Vec<AllocationPayload>,
 }
 
+/// Full state of a price, carried by `Create`/`Update` price events.
+///
+/// The `price` decimal is carried as a **String** (never a float) to preserve
+/// exact precision across devices, matching the canonical `prices.price` TEXT
+/// column.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PricePayload {
+    pub id: String,
+    pub commodity: String,
+    pub currency: String,
+    pub price: String,
+    pub date: String,
+    pub source: Option<String>,
+    pub created_at: String,
+    pub modified_at: String,
+}
+
 /// Payload for a `Delete` event — only the entity id is needed for a soft delete.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeletePayload {
@@ -180,6 +197,23 @@ mod tests {
         };
         let bytes = to_bytes(&p).unwrap();
         let restored: BudgetPayload = from_bytes(&bytes).unwrap();
+        assert_eq!(p, restored);
+    }
+
+    #[test]
+    fn price_payload_round_trip() {
+        let p = PricePayload {
+            id: "price1".into(),
+            commodity: "AAPL".into(),
+            currency: "USD".into(),
+            price: "185.50".into(),
+            date: "2024-01-15".into(),
+            source: Some("yahoo".into()),
+            created_at: "2024-01-15T00:00:00Z".into(),
+            modified_at: "2024-01-16T00:00:00Z".into(),
+        };
+        let bytes = to_bytes(&p).unwrap();
+        let restored: PricePayload = from_bytes(&bytes).unwrap();
         assert_eq!(p, restored);
     }
 
