@@ -121,7 +121,7 @@ pub fn encrypt_item(vault_key: &VaultKey, plaintext: &[u8]) -> Result<SealedEnve
 
     let mut nonce_bytes = [0u8; NONCE_LEN];
     rand::rng().fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = &Nonce::from(nonce_bytes);
 
     let payload = aes_gcm::aead::Payload {
         msg: &padded,
@@ -169,7 +169,7 @@ pub fn decrypt_item(
 
     let cipher = Aes256Gcm::new_from_slice(item_key.as_bytes())
         .map_err(|e| CryptoError::DecryptionFailed(e.to_string()))?;
-    let nonce = Nonce::from_slice(&envelope.nonce);
+    let nonce = &Nonce::from(envelope.nonce);
 
     let payload = aes_gcm::aead::Payload {
         msg: &envelope.ciphertext,
@@ -203,7 +203,7 @@ pub fn encrypt_item_with(
 
     let cipher = Aes256Gcm::new_from_slice(item_key.as_bytes())
         .map_err(|e| CryptoError::EncryptionFailed(e.to_string()))?;
-    let nonce = Nonce::from_slice(seal_nonce);
+    let nonce = &Nonce::from(*seal_nonce);
 
     let payload = aes_gcm::aead::Payload {
         msg: &padded,

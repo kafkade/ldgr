@@ -38,7 +38,7 @@ fn wrap_key_raw(
 
     let mut nonce_bytes = [0u8; NONCE_LEN];
     rand::rng().fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = &Nonce::from(nonce_bytes);
 
     let payload = aes_gcm::aead::Payload {
         msg: plaintext_key,
@@ -68,7 +68,7 @@ fn wrap_key_raw_with_nonce(
 ) -> Result<WrappedKey, CryptoError> {
     let cipher = Aes256Gcm::new_from_slice(wrapping_key)
         .map_err(|e| CryptoError::WrapFailed(e.to_string()))?;
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let nonce = &Nonce::from(*nonce_bytes);
 
     let payload = aes_gcm::aead::Payload {
         msg: plaintext_key,
@@ -101,7 +101,7 @@ fn unwrap_key_raw(
 
     let cipher = Aes256Gcm::new_from_slice(wrapping_key)
         .map_err(|e| CryptoError::WrapFailed(e.to_string()))?;
-    let nonce = Nonce::from_slice(&wrapped.nonce);
+    let nonce = &Nonce::from(wrapped.nonce);
 
     let payload = aes_gcm::aead::Payload {
         msg: &wrapped.ciphertext,

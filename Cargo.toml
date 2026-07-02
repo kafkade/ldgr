@@ -24,7 +24,7 @@ categories = ["command-line-utilities", "cryptography", "finance"]
 
 [workspace.dependencies]
 # Crypto (RustCrypto)
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 argon2 = "0.5"
 hkdf = "0.13"
 sha2 = "0.11"
@@ -58,7 +58,7 @@ async-trait = "0.1"
 futures = "0.3"
 
 # FFI
-uniffi = "0.31"
+uniffi = "0.32"
 
 # Server
 axum = "0.8"
