@@ -34,6 +34,22 @@ echo "║  ldgr — Building XCFramework ($PROFILE)         ║"
 echo "╚══════════════════════════════════════════════════╝"
 echo ""
 
+# ── Step 0: Ensure required Rust targets are installed ──────────────────────────
+# Self-sufficient so this works both locally and in CI (the CI toolchain step only
+# pre-installs the iOS targets). `rustup target add` is idempotent — a no-op when
+# a target is already present.
+RUST_TARGETS=(
+    aarch64-apple-ios
+    aarch64-apple-ios-sim
+    x86_64-apple-ios
+    aarch64-apple-darwin
+    x86_64-apple-darwin
+)
+if command -v rustup >/dev/null 2>&1; then
+    echo "▸ Ensuring Rust targets are installed…"
+    rustup target add "${RUST_TARGETS[@]}"
+fi
+
 # ── Step 1: Build for iOS targets ───────────────────────────────────────────────
 
 echo "▸ Building for aarch64-apple-ios (device)…"
