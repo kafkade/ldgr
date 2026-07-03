@@ -27,6 +27,32 @@ use crate::sync::transport::{
 };
 use uuid::Uuid;
 
+// ── Paginated list results ──────────────────────────────────────────────────────
+
+/// One page of batch metadata plus the keyset cursor to fetch the next page.
+#[derive(Debug, Clone)]
+pub struct RemoteBatchPage {
+    /// Parsed batch metadata for this page.
+    pub metas: Vec<RemoteBatchMeta>,
+    /// Whether the server has more pages beyond this one.
+    pub has_more: bool,
+    /// Opaque cursor to pass as the next query's `since` when `has_more` is
+    /// true. `None` on the final page.
+    pub next_cursor: Option<String>,
+}
+
+/// One page of snapshot metadata plus the keyset cursor to fetch the next page.
+#[derive(Debug, Clone)]
+pub struct RemoteSnapshotPage {
+    /// Parsed snapshot metadata for this page.
+    pub metas: Vec<RemoteSnapshotMeta>,
+    /// Whether the server has more pages beyond this one.
+    pub has_more: bool,
+    /// Opaque cursor to pass as the next query's `since` when `has_more` is
+    /// true. `None` on the final page.
+    pub next_cursor: Option<String>,
+}
+
 // ── Raw transport contract ──────────────────────────────────────────────────────
 
 /// HTTP method for a raw request.
@@ -434,12 +460,32 @@ impl<T: RawHttpSender> ServerSyncClient<T> {
 
     /// List batch blobs as parsed [`RemoteBatchMeta`], skipping any paths that
     /// don't match the canonical batch layout.
+    ///
+    /// Returns a single page. Callers that need every batch in a large vault
+    /// should use [`Self::list_remote_batches_page`] and follow the returned
+    /// cursor until `has_more` is false.
     pub async fn list_remote_batches(
         &self,
         vault_id: &str,
         query: &ListBatchesQuery,
     ) -> Result<Vec<RemoteBatchMeta>, ServerSyncError> {
+        Ok(self.list_remote_batches_page(vault_id, query).await?.metas)
+    }
+
+    /// List a single page of batch blobs, exposing the pagination cursor.
+    ///
+    /// When `has_more` is true, pass `next_cursor` as the `since` field of the
+    /// next query to continue from where this page ended. The cursor is an
+    /// opaque keyset token over `(created_at, path)`, so pages never overlap or
+    /// skip a blob even when many share a timestamp.
+    pub async fn list_remote_batches_page(
+        &self,
+        vault_id: &str,
+        query: &ListBatchesQuery,
+    ) -> Result<RemoteBatchPage, ServerSyncError> {
         let resp = self.list_batches(vault_id, query).await?;
+        let has_more = resp.has_more;
+        let next_cursor = resp.cursor;
         let metas = resp
             .entries
             .into_iter()
@@ -456,7 +502,11 @@ impl<T: RawHttpSender> ServerSyncClient<T> {
                 })
             })
             .collect();
-        Ok(metas)
+        Ok(RemoteBatchPage {
+            metas,
+            has_more,
+            next_cursor,
+        })
     }
 
     // ── Snapshots ───────────────────────────────────────────────────────────
@@ -504,12 +554,31 @@ impl<T: RawHttpSender> ServerSyncClient<T> {
     }
 
     /// List snapshot blobs as parsed [`RemoteSnapshotMeta`].
+    ///
+    /// Returns a single page. Use [`Self::list_remote_snapshots_page`] to follow
+    /// the cursor across pages.
     pub async fn list_remote_snapshots(
         &self,
         vault_id: &str,
         query: &ListSnapshotsQuery,
     ) -> Result<Vec<RemoteSnapshotMeta>, ServerSyncError> {
+        Ok(self
+            .list_remote_snapshots_page(vault_id, query)
+            .await?
+            .metas)
+    }
+
+    /// List a single page of snapshot blobs, exposing the pagination cursor.
+    ///
+    /// See [`Self::list_remote_batches_page`] for the cursor-following contract.
+    pub async fn list_remote_snapshots_page(
+        &self,
+        vault_id: &str,
+        query: &ListSnapshotsQuery,
+    ) -> Result<RemoteSnapshotPage, ServerSyncError> {
         let resp = self.list_snapshots(vault_id, query).await?;
+        let has_more = resp.has_more;
+        let next_cursor = resp.cursor;
         let metas = resp
             .entries
             .into_iter()
@@ -525,7 +594,11 @@ impl<T: RawHttpSender> ServerSyncClient<T> {
                 })
             })
             .collect();
-        Ok(metas)
+        Ok(RemoteSnapshotPage {
+            metas,
+            has_more,
+            next_cursor,
+        })
     }
 
     // ── Devices ─────────────────────────────────────────────────────────────
@@ -964,6 +1037,45 @@ mod tests {
         assert_eq!(metas[0].batch_id, "b1");
         assert_eq!(metas[0].device_id, "d1");
         assert_eq!(metas[0].size, 10);
+    }
+
+    #[test]
+    fn list_remote_batches_page_exposes_cursor() {
+        let resp = json_response(
+            200,
+            &serde_json::json!({
+                "entries": [
+                    { "path": "v1/batches/d1/b1.enc", "size": 10, "content_hash": "aa", "created_at": "t1" }
+                ],
+                "has_more": true,
+                "cursor": "t1|v1/batches/d1/b1.enc",
+            }),
+        );
+        let sender = MockSender::new(vec![resp]);
+        let client = ServerSyncClient::with_token(sender, "tok".into());
+        let page = block_on(client.list_remote_batches_page("v1", &ListBatchesQuery::default()))
+            .expect("list page");
+        assert_eq!(page.metas.len(), 1);
+        assert!(page.has_more);
+        assert_eq!(page.next_cursor.as_deref(), Some("t1|v1/batches/d1/b1.enc"));
+    }
+
+    #[test]
+    fn list_remote_batches_page_defaults_cursor_when_absent() {
+        // Older servers omit `cursor`; it must deserialize to None.
+        let resp = json_response(
+            200,
+            &serde_json::json!({
+                "entries": [],
+                "has_more": false,
+            }),
+        );
+        let sender = MockSender::new(vec![resp]);
+        let client = ServerSyncClient::with_token(sender, "tok".into());
+        let page = block_on(client.list_remote_batches_page("v1", &ListBatchesQuery::default()))
+            .expect("list page");
+        assert!(!page.has_more);
+        assert!(page.next_cursor.is_none());
     }
 
     #[test]

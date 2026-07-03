@@ -924,11 +924,30 @@ impl ServerDb {
                 params_vec.push(Box::new(format!("{p}%")));
             }
             if let Some(ref s) = since {
-                let idx = params_vec.len() + 1;
-                let _ = write!(sql, " AND created_at > ?{idx}");
-                params_vec.push(Box::new(s.clone()));
+                // A `since` value produced by this server is a composite keyset
+                // cursor `"<created_at>|<path>"` (see `list_batches`/
+                // `list_snapshots` handlers). Split on the first `|` — neither an
+                // RFC3339 timestamp nor a blob path contains that byte. Legacy
+                // callers may still pass a bare timestamp, which keeps the
+                // original `created_at > since` behaviour.
+                if let Some((cursor_created, cursor_path)) = s.split_once('|') {
+                    let ca_idx = params_vec.len() + 1;
+                    let path_idx = params_vec.len() + 2;
+                    let _ = write!(
+                        sql,
+                        " AND (created_at > ?{ca_idx} OR (created_at = ?{ca_idx} AND path > ?{path_idx}))"
+                    );
+                    params_vec.push(Box::new(cursor_created.to_string()));
+                    params_vec.push(Box::new(cursor_path.to_string()));
+                } else {
+                    let idx = params_vec.len() + 1;
+                    let _ = write!(sql, " AND created_at > ?{idx}");
+                    params_vec.push(Box::new(s.clone()));
+                }
             }
-            sql.push_str(" ORDER BY created_at ASC");
+            // Strict total order — `path` (the UNIQUE primary key) breaks ties on
+            // `created_at` so keyset pagination never overlaps or skips a row.
+            sql.push_str(" ORDER BY created_at ASC, path ASC");
             let idx = params_vec.len() + 1;
             let _ = write!(sql, " LIMIT ?{idx}");
             params_vec.push(Box::new(limit));

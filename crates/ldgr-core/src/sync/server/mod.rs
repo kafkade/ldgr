@@ -11,7 +11,8 @@ pub mod protocol;
 pub mod srp;
 
 pub use client::{
-    HttpMethod, RawHttpSender, RawRequest, RawResponse, ServerSyncClient, ServerSyncError,
+    HttpMethod, RawHttpSender, RawRequest, RawResponse, RemoteBatchPage, RemoteSnapshotPage,
+    ServerSyncClient, ServerSyncError,
 };
 pub use protocol::{
     BlobEntry, CreateOfferRequest, CreateOfferResponse, CreateVaultRequest, DeviceResponse,

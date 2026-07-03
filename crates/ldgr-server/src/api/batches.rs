@@ -103,6 +103,40 @@ pub struct BlobEntry {
 pub struct ListBlobsResponse {
     pub entries: Vec<BlobEntry>,
     pub has_more: bool,
+    /// Opaque keyset continuation token (`"<created_at>|<path>"` of the last
+    /// entry). Present iff `has_more`; the client passes it back as `since`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+/// Build the page returned by a blob-list handler: truncate the over-fetched
+/// row used to detect `has_more`, and derive the keyset continuation cursor
+/// from the last surviving entry when there are more pages.
+pub(super) fn build_list_response(
+    mut metas: Vec<crate::storage::BlobMeta>,
+    limit: usize,
+) -> ListBlobsResponse {
+    let has_more = metas.len() > limit;
+    metas.truncate(limit);
+    let cursor = if has_more {
+        metas.last().map(|m| format!("{}|{}", m.created_at, m.path))
+    } else {
+        None
+    };
+    let entries = metas
+        .into_iter()
+        .map(|m| BlobEntry {
+            path: m.path,
+            size: m.size,
+            content_hash: m.content_hash,
+            created_at: m.created_at,
+        })
+        .collect();
+    ListBlobsResponse {
+        entries,
+        has_more,
+        cursor,
+    }
 }
 
 /// `GET /api/v1/vaults/:vault_id/batches`
@@ -123,7 +157,7 @@ pub async fn list_batches(
         |did| format!("{vault_id}/batches/{did}/"),
     );
 
-    let entries = state
+    let metas = state
         .db
         .list_blobs(
             &vault_id,
@@ -133,17 +167,5 @@ pub async fn list_batches(
         )
         .await?;
 
-    let has_more = entries.len() > limit as usize;
-    let entries: Vec<BlobEntry> = entries
-        .into_iter()
-        .take(limit as usize)
-        .map(|m| BlobEntry {
-            path: m.path,
-            size: m.size,
-            content_hash: m.content_hash,
-            created_at: m.created_at,
-        })
-        .collect();
-
-    Ok(Json(ListBlobsResponse { entries, has_more }))
+    Ok(Json(build_list_response(metas, limit as usize)))
 }

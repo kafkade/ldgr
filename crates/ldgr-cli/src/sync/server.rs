@@ -219,45 +219,56 @@ impl BlobTransport for ServerTransport {
     ) -> Result<ListResult, TransportError> {
         let pfx = prefix.as_str();
 
-        // The server paginates internally (it returns `has_more` but no opaque
-        // cursor token), so we surface a single page here. The default limit
-        // (1000) comfortably covers a vault's batches/snapshots; broader
-        // `since`-based pagination is a future refinement.
+        // The server pages results and returns an opaque keyset cursor (over
+        // `(created_at, path)`) via the `has_more`/`cursor` fields. Follow it
+        // until exhausted so vaults with more blobs than a single server page
+        // (~1000) list — and therefore pull — completely. Entries are collated
+        // across pages and surfaced as one logical listing.
         if pfx == batches_prefix(&self.vault_id).as_str() {
-            let metas = self
-                .client
-                .list_remote_batches(&self.vault_id, &ListBatchesQuery::default())
-                .await
-                .map_err(to_transport_error)?;
-            let entries = metas
-                .into_iter()
-                .map(|m| BlobEntry {
+            let mut entries = Vec::new();
+            let mut query = ListBatchesQuery::default();
+            loop {
+                let page = self
+                    .client
+                    .list_remote_batches_page(&self.vault_id, &query)
+                    .await
+                    .map_err(to_transport_error)?;
+                entries.extend(page.metas.into_iter().map(|m| BlobEntry {
                     path: m.path,
                     size: m.size,
                     content_hash: m.content_hash,
                     modified_at: m.modified_at,
-                })
-                .collect();
+                }));
+                match page.next_cursor {
+                    Some(cursor) if page.has_more => query.since = Some(cursor),
+                    _ => break,
+                }
+            }
             Ok(ListResult {
                 entries,
                 cursor: None,
                 has_more: false,
             })
         } else if pfx == snapshots_prefix(&self.vault_id).as_str() {
-            let metas = self
-                .client
-                .list_remote_snapshots(&self.vault_id, &ListSnapshotsQuery::default())
-                .await
-                .map_err(to_transport_error)?;
-            let entries = metas
-                .into_iter()
-                .map(|m| BlobEntry {
+            let mut entries = Vec::new();
+            let mut query = ListSnapshotsQuery::default();
+            loop {
+                let page = self
+                    .client
+                    .list_remote_snapshots_page(&self.vault_id, &query)
+                    .await
+                    .map_err(to_transport_error)?;
+                entries.extend(page.metas.into_iter().map(|m| BlobEntry {
                     path: m.path,
                     size: m.size,
                     content_hash: m.content_hash,
                     modified_at: m.modified_at,
-                })
-                .collect();
+                }));
+                match page.next_cursor {
+                    Some(cursor) if page.has_more => query.since = Some(cursor),
+                    _ => break,
+                }
+            }
             Ok(ListResult {
                 entries,
                 cursor: None,
