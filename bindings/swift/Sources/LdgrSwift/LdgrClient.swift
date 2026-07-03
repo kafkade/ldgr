@@ -428,6 +428,9 @@ public final class LdgrClient: @unchecked Sendable {
             }
         }
     }
+
+    /// List all transactions.
+    public func listTransactions() throws -> [Transaction] {
         do {
             return try vault.listTransactions().map { ffi in
                 Transaction(
