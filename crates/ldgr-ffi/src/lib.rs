@@ -11,6 +11,7 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use ldgr_core::accounting::parser::{ParseError, parse_journal};
 use ldgr_core::accounting::reports;
 use ldgr_core::accounting::types as acct;
 use ldgr_core::crypto::{
@@ -19,6 +20,7 @@ use ldgr_core::crypto::{
 };
 use ldgr_core::storage::accounts::{self, AccountType, ListOptions, NewAccount};
 use ldgr_core::storage::error::StorageError;
+use ldgr_core::storage::journal_import;
 use ldgr_core::storage::schema;
 use ldgr_core::storage::sync as sync_storage;
 use ldgr_core::storage::transactions::{self, NewPosting, NewTransaction, TransactionStatus};
@@ -186,6 +188,12 @@ pub struct FfiIngestOutcome {
     pub applied: u32,
     pub conflicts: u32,
     pub skipped: u32,
+}
+
+#[derive(Debug)]
+pub struct FfiImportSummary {
+    pub accounts_created: u32,
+    pub transactions_imported: u32,
 }
 
 // ── Vault State ────────────────────────────────────────────────────────────────
@@ -492,6 +500,26 @@ impl LdgrVault {
         Ok(txns.into_iter().map(to_ffi_transaction).collect())
     }
 
+    /// Import an hledger-journal document into the vault.
+    ///
+    /// Parses `source` as the supported hledger journal subset, then creates any
+    /// referenced accounts (inferring type from the top-level name segment) and
+    /// inserts each transaction. Unsupported syntax produces an
+    /// [`LdgrError::InvalidInput`] listing the offending line numbers; nothing is
+    /// written when parsing fails.
+    pub fn import_journal(&self, source: String) -> Result<FfiImportSummary, LdgrError> {
+        let state = self.state.lock().expect("mutex poisoned");
+        let conn = require_conn(&state)?;
+
+        let journal = parse_journal(&source).map_err(format_parse_errors)?;
+        let summary = journal_import::import_journal(conn, &journal)?;
+
+        Ok(FfiImportSummary {
+            accounts_created: summary.accounts_created,
+            transactions_imported: summary.transactions_imported,
+        })
+    }
+
     /// Soft-delete a transaction by ID.
     pub fn delete_transaction(&self, id: String) -> Result<(), LdgrError> {
         let state = self.state.lock().expect("mutex poisoned");
@@ -715,6 +743,18 @@ impl LdgrVault {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
+
+/// Collect journal [`ParseError`]s into a single `InvalidInput` error whose
+/// message lists each offending line number, preserving the parser's context.
+fn format_parse_errors(errors: Vec<ParseError>) -> LdgrError {
+    use std::fmt::Write as _;
+
+    let mut msg = format!("journal has {} error(s):", errors.len());
+    for err in &errors {
+        let _ = write!(msg, "\n  {err}");
+    }
+    LdgrError::InvalidInput(msg)
+}
 
 fn require_conn<'a>(
     state: &'a std::sync::MutexGuard<'_, VaultState>,
@@ -1002,6 +1042,57 @@ mod tests {
         // Data persisted
         let txns = vault.list_transactions().unwrap();
         assert_eq!(txns.len(), 1);
+    }
+
+    #[test]
+    fn import_journal_creates_accounts_and_transactions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+
+        let vault = LdgrVault::new(path).unwrap();
+        vault
+            .create_vault("pw".to_string(), "Import".to_string())
+            .unwrap();
+
+        let source = "2024-01-01 Opening\n    Assets:Checking   $100.00\n    Equity:Opening\n\n\
+                      2024-01-02 * Coffee\n    Expenses:Food    $4.50\n    Assets:Checking\n";
+        let summary = vault.import_journal(source.to_string()).unwrap();
+
+        assert_eq!(summary.transactions_imported, 2);
+        assert_eq!(summary.accounts_created, 3);
+        assert_eq!(vault.list_accounts().unwrap().len(), 3);
+        assert_eq!(vault.list_transactions().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn import_journal_rejects_invalid_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+
+        let vault = LdgrVault::new(path).unwrap();
+        vault
+            .create_vault("pw".to_string(), "Import".to_string())
+            .unwrap();
+
+        // `include` is an unsupported directive → parse error, nothing imported.
+        let err = vault
+            .import_journal("include other.journal\n".to_string())
+            .unwrap_err();
+        assert!(matches!(err, LdgrError::InvalidInput(_)));
+        assert_eq!(vault.list_transactions().unwrap().len(), 0);
+        assert_eq!(vault.list_accounts().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn import_journal_requires_unlocked_vault() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+
+        let vault = LdgrVault::new(path).unwrap();
+        let err = vault
+            .import_journal("2024-01-01 x\n    A  1\n    B\n".to_string())
+            .unwrap_err();
+        assert!(matches!(err, LdgrError::VaultLocked));
     }
 
     #[test]

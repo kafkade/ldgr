@@ -92,6 +92,11 @@ dictionary FfiIngestOutcome {
     u32 skipped;
 };
 
+dictionary FfiImportSummary {
+    u32 accounts_created;
+    u32 transactions_imported;
+};
+
 interface LdgrVault {
     [Throws=LdgrError]
     constructor(string path);
@@ -129,6 +134,9 @@ interface LdgrVault {
 
     [Throws=LdgrError]
     sequence<FfiTransaction> list_transactions();
+
+    [Throws=LdgrError]
+    FfiImportSummary import_journal(string source);
 
     [Throws=LdgrError]
     void delete_transaction(string id);

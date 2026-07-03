@@ -14,6 +14,8 @@ pub mod error;
 #[cfg(all(feature = "sqlite", feature = "goals"))]
 pub mod goals;
 #[cfg(feature = "sqlite")]
+pub mod journal_import;
+#[cfg(feature = "sqlite")]
 pub mod prices;
 #[cfg(feature = "sqlite")]
 pub mod schema;
