@@ -211,16 +211,41 @@ struct MacRootView: View {
         switch result {
         case .success(let urls):
             guard let url = urls.first else { return }
-            // NOTE: journal import is not yet exposed through the LdgrSwift
-            // bindings (import/export lives in ldgr-core behind a feature flag).
-            // The command surface + file picker are wired here; the actual
-            // parse/apply lands in a follow-up. See issue #170.
-            infoMessage = """
-            Journal import isn't available in this build yet.
-
-            Selected: \(url.lastPathComponent)
-            """
+            Task { await importJournal(from: url) }
         case .failure(let error):
+            infoMessage = error.localizedDescription
+        }
+    }
+
+    /// Read the selected journal file and apply it to the vault, then refresh
+    /// the shared store so the imported data appears immediately.
+    private func importJournal(from url: URL) async {
+        let needsScope = url.startAccessingSecurityScopedResource()
+        defer {
+            if needsScope { url.stopAccessingSecurityScopedResource() }
+        }
+
+        let source: String
+        do {
+            source = try String(contentsOf: url, encoding: .utf8)
+        } catch {
+            infoMessage = "Couldn't read \(url.lastPathComponent): \(error.localizedDescription)"
+            return
+        }
+
+        do {
+            let summary = try await client.importJournal(source: source)
+            await store.reload(client: client)
+            await syncManager.refreshStatus(client: client)
+            let txnLabel = summary.transactionsImported == 1 ? "transaction" : "transactions"
+            let acctLabel = summary.accountsCreated == 1 ? "account" : "accounts"
+            infoMessage = """
+            Imported \(url.lastPathComponent).
+
+            \(summary.transactionsImported) \(txnLabel), \
+            \(summary.accountsCreated) new \(acctLabel).
+            """
+        } catch {
             infoMessage = error.localizedDescription
         }
     }

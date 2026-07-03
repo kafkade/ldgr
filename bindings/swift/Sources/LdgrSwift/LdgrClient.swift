@@ -150,6 +150,14 @@ public struct IngestOutcome: Sendable {
     public let skipped: UInt32
 }
 
+/// Summary of an hledger-journal import via ``LdgrClient/importJournal(source:)``.
+public struct ImportSummary: Sendable {
+    /// Accounts newly created because the journal referenced them.
+    public let accountsCreated: UInt32
+    /// Transactions inserted into the vault.
+    public let transactionsImported: UInt32
+}
+
 /// Errors from the ldgr vault.
 public enum LdgrClientError: Error, LocalizedError, Sendable {
     case vaultLocked
@@ -392,8 +400,34 @@ public final class LdgrClient: @unchecked Sendable {
         }
     }
 
-    /// List all transactions.
-    public func listTransactions() throws -> [Transaction] {
+    /// Import an hledger-journal document into the vault.
+    ///
+    /// Parses `source` (the supported hledger subset), creates any referenced
+    /// accounts, and inserts each transaction. Parsing and inserts can be
+    /// non-trivial for large journals, so the work runs on a background thread.
+    ///
+    /// - Throws: ``LdgrClientError/invalidInput(_:)`` with offending line
+    ///   numbers when the journal cannot be parsed; nothing is written in that
+    ///   case.
+    public func importJournal(source: String) async throws -> ImportSummary {
+        try await withCheckedThrowingContinuation { continuation in
+            Task.detached { [vault] in
+                do {
+                    let ffi = try vault.importJournal(source: source)
+                    continuation.resume(
+                        returning: ImportSummary(
+                            accountsCreated: ffi.accountsCreated,
+                            transactionsImported: ffi.transactionsImported
+                        )
+                    )
+                } catch let error as LdgrError {
+                    continuation.resume(throwing: LdgrClientError(from: error))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
         do {
             return try vault.listTransactions().map { ffi in
                 Transaction(
