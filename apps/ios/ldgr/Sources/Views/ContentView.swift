@@ -21,7 +21,11 @@ struct ContentView: View {
 
             case .unlocked:
                 if let client {
+                    #if os(macOS)
+                    MacRootView(appState: appState, client: client)
+                    #else
                     MainTabView(appState: appState, client: client)
+                    #endif
                 } else {
                     ProgressView("Initializing…")
                 }

@@ -1,6 +1,11 @@
 import SwiftUI
 import LdgrSwift
 
+/// Stable scene identifiers used for multi-window support.
+enum LdgrScene {
+    static let main = "main"
+}
+
 /// App entry point. Monitors scene phase for auto-lock and privacy protection.
 @main
 struct LdgrApp: App {
@@ -14,7 +19,7 @@ struct LdgrApp: App {
     @State private var showPrivacyOverlay = false
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: LdgrScene.main) {
             ZStack {
                 ContentView(appState: appState, client: $client)
                     .environment(watchManager)
@@ -33,6 +38,13 @@ struct LdgrApp: App {
                 handleScenePhase(from: oldPhase, to: newPhase)
             }
         }
+        #if os(macOS)
+        .defaultSize(width: 1040, height: 680)
+        .windowResizability(.contentMinSize)
+        .commands {
+            LdgrCommands()
+        }
+        #endif
     }
 
     private func initializeClient() {
