@@ -16,6 +16,7 @@ pub mod coingecko;
 pub mod ecb;
 #[cfg(feature = "sqlite")]
 pub mod persist;
+pub mod proxy;
 pub mod registry;
 pub mod types;
 pub mod yahoo;
@@ -26,6 +27,7 @@ pub use coingecko::CoinGecko;
 pub use ecb::Ecb;
 #[cfg(feature = "sqlite")]
 pub use persist::{CacheStats, CacheStatus, CacheStoreError, PersistentCache};
+pub use proxy::MarketProxy;
 pub use registry::ProviderRegistry;
 pub use types::*;
 pub use yahoo::YahooFinance;
