@@ -18,6 +18,12 @@ target/
 /apps/web/out/
 /apps/web/public/sql.js/
 
+# Cloudflare Worker (market data proxy)
+/infra/market-proxy/node_modules/
+/infra/market-proxy/dist/
+/infra/market-proxy/.wrangler/
+/infra/market-proxy/.dev.vars
+
 # iOS
 /apps/ios/build/
 *.xcuserdata
