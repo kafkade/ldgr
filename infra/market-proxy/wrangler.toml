@@ -1,0 +1,28 @@
+#:schema node_modules/wrangler/config-schema.json
+name = "ldgr-market-proxy"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+workers_dev = false
+
+# Serve the proxy under api.ldgr.dev/market/*. The domain is already on
+# Cloudflare (see ADR-007). The worker strips the /market prefix internally,
+# so /market/quote is handled by the /quote route.
+routes = [
+  { pattern = "api.ldgr.dev/market/*", zone_name = "ldgr.dev" },
+]
+
+# KV namespace for cached upstream responses. Create with:
+#   wrangler kv namespace create MARKET_KV
+#   wrangler kv namespace create MARKET_KV --preview
+# then paste the returned ids below.
+[[kv_namespaces]]
+binding = "MARKET_KV"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+preview_id = "REPLACE_WITH_KV_PREVIEW_NAMESPACE_ID"
+
+[observability]
+enabled = true
+
+[vars]
+# Optional CoinGecko Demo API key can be provided as a secret instead:
+#   wrangler secret put COINGECKO_API_KEY

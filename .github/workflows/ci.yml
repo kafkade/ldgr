@@ -28,6 +28,7 @@ jobs:
       swift: ${{ steps.filter.outputs.swift }}
       docs: ${{ steps.filter.outputs.docs }}
       web: ${{ steps.filter.outputs.web }}
+      infra: ${{ steps.filter.outputs.infra }}
     steps:
       - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v4
@@ -48,6 +49,8 @@ jobs:
             web:
               - 'apps/web/**'
               - 'crates/ldgr-wasm/**'
+            infra:
+              - 'infra/market-proxy/**'
 
   # ── Rust checks ───────────────────────────────────────────────────────────────
 
@@ -238,13 +241,40 @@ jobs:
         working-directory: apps/web
         run: npm test
 
+  # ── Infra (Cloudflare Worker) ─────────────────────────────────────────────────
+
+  market-proxy:
+    name: Market proxy (Worker)
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.infra == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: infra/market-proxy/package-lock.json
+      - name: Install dependencies
+        working-directory: infra/market-proxy
+        run: npm ci
+      - name: Typecheck
+        working-directory: infra/market-proxy
+        run: npm run typecheck
+      - name: Run tests
+        working-directory: infra/market-proxy
+        run: npm test
+      - name: Validate Worker build
+        working-directory: infra/market-proxy
+        run: npx wrangler deploy --dry-run --outdir dist
+
   # ── Summary gate ──────────────────────────────────────────────────────────────
   # Single required status check for branch protection. Downstream jobs may be
   # skipped (path filters) — that is OK; only failures or cancellations block.
   ci:
     name: CI
     if: always()
-    needs: [changes, test, clippy, fmt, wasm, msrv, audit, swift, markdownlint, web]
+    needs: [changes, test, clippy, fmt, wasm, msrv, audit, swift, markdownlint, web, market-proxy]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any dependency failed

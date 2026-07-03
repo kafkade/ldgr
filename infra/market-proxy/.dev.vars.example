@@ -1,0 +1,5 @@
+# Example secrets for `wrangler dev`. Copy to `.dev.vars` (gitignored) and fill
+# in as needed. In production these are set with `wrangler secret put`.
+
+# Optional CoinGecko Demo API key — raises the anonymous crypto rate limit.
+# COINGECKO_API_KEY=CG-xxxxxxxxxxxxxxxxxxxxxxxx
