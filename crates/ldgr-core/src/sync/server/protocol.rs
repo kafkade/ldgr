@@ -211,6 +211,11 @@ pub struct BlobEntry {
 pub struct ListBlobsResponse {
     pub entries: Vec<BlobEntry>,
     pub has_more: bool,
+    /// Opaque continuation token to pass as the next request's `since` when
+    /// `has_more` is true. Absent on the final page. Older servers that predate
+    /// cursor pagination omit this field, so it defaults to `None`.
+    #[serde(default)]
+    pub cursor: Option<String>,
 }
 
 /// Query parameters for `GET /api/v1/vaults/:vault_id/batches`.
@@ -403,6 +408,7 @@ mod tests {
                 created_at: "t".into(),
             }],
             has_more: true,
+            cursor: Some("t|v1/snapshots/s1.enc".into()),
         });
         round_trip(&ListBatchesQuery {
             since: Some("t".into()),

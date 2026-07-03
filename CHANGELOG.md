@@ -96,6 +96,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - iOS vault writes (add account, add/delete transaction) now record sync-outbox events, so locally created changes are actually included in the next push instead of being silently skipped
 - Web vault writes (add account, add/delete transaction) now record sync-outbox events, so locally created changes are actually included in the next push instead of being silently skipped (the `sync_events`/`sync_state` tables were previously dead scaffolding)
 - Resolving a sync conflict as "keep remote" now actually re-applies the remote change (via the Swift/iOS bindings it previously only marked the conflict resolved without materializing the remote version)
+- Sync against a self-hosted `ldgr-server` now lists and pulls every encrypted batch and snapshot in large vaults: blob listings were previously capped at a single server page (~1000 entries), so a vault with more than one page of batches or snapshots would silently drop — and never pull — the overflow. The client now follows the server's continuation cursor across all pages
 
 ## [1.2.0] - 2026-05-30
 

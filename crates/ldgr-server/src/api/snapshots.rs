@@ -8,7 +8,7 @@ use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::batches::{BlobEntry, ListBlobsResponse};
+use super::batches::{ListBlobsResponse, build_list_response};
 use super::vaults::require_vault_access;
 use crate::auth::hex_encode;
 use crate::auth::middleware::AuthUser;
@@ -102,22 +102,10 @@ pub async fn list_snapshots(
     let limit = params.limit.unwrap_or(100).min(1000);
     let prefix = format!("{vault_id}/snapshots/");
 
-    let entries = state
+    let metas = state
         .db
         .list_blobs(&vault_id, Some(&prefix), params.since.as_deref(), limit + 1)
         .await?;
 
-    let has_more = entries.len() > limit as usize;
-    let entries: Vec<BlobEntry> = entries
-        .into_iter()
-        .take(limit as usize)
-        .map(|m| BlobEntry {
-            path: m.path,
-            size: m.size,
-            content_hash: m.content_hash,
-            created_at: m.created_at,
-        })
-        .collect();
-
-    Ok(Json(ListBlobsResponse { entries, has_more }))
+    Ok(Json(build_list_response(metas, limit as usize)))
 }
