@@ -7,6 +7,7 @@ mod commands;
 mod config;
 mod convert;
 mod db;
+mod market_fetch;
 mod session;
 mod sync;
 mod theme;
@@ -169,10 +170,17 @@ enum Commands {
         /// Auto-refresh interval in seconds
         #[arg(long, short, default_value_t = 15)]
         interval: u64,
+        /// Bypass the shared market-data proxy and fetch providers directly
+        #[arg(long)]
+        no_proxy: bool,
     },
 
     /// Portfolio view with market values and interactive charts
-    Portfolio,
+    Portfolio {
+        /// Bypass the shared market-data proxy and fetch providers directly
+        #[arg(long)]
+        no_proxy: bool,
+    },
 
     /// Manage the local market data price cache
     Cache {
@@ -386,10 +394,12 @@ fn main() {
         Some(Commands::Export { format, query }) => {
             commands::export::run(&vault_path, &format, &query)
         }
-        Some(Commands::Watch { symbols, interval }) => {
-            commands::watch::run(symbols, interval, &vault_path)
-        }
-        Some(Commands::Portfolio) => commands::portfolio::run(&vault_path),
+        Some(Commands::Watch {
+            symbols,
+            interval,
+            no_proxy,
+        }) => commands::watch::run(symbols, interval, no_proxy, &vault_path),
+        Some(Commands::Portfolio { no_proxy }) => commands::portfolio::run(no_proxy, &vault_path),
         Some(Commands::Cache { action }) => match action {
             CacheAction::Clear => commands::cache::run_clear(&vault_path),
             CacheAction::Status => commands::cache::run_status(&vault_path),

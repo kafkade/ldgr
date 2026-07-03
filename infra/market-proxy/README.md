@@ -74,6 +74,33 @@ npm run deploy
 worker strips the `/market` prefix internally, so `/market/quote` is served by
 the `/quote` handler.
 
+## Client integration
+
+The ldgr client uses this proxy as the primary fetch endpoint, with the local
+SQLite cache in front of it and direct provider requests as a fallback
+(ADR-007 Layer 1 + Layer 2). For each market-data request the client:
+
+1. checks its local `market_cache.db` (TTL-based) — a hit returns immediately;
+2. on a miss, fetches `api.ldgr.dev/market/...` (this proxy) and writes the
+   result through to the local cache;
+3. if the proxy is unavailable (network error or non-2xx), falls back to the
+   direct provider URL and caches that instead.
+
+Because the proxy returns responses in the exact provider shapes, the same
+`ldgr-core` parsers handle both proxy and direct responses.
+
+Configuration (applies to `ldgr watch` and `ldgr portfolio`):
+
+| Setting | Effect |
+| --- | --- |
+| `LDGR_MARKET_PROXY` unset | Use the default proxy `https://api.ldgr.dev/market` |
+| `LDGR_MARKET_PROXY=https://…` | Use a custom proxy (e.g. your own Worker deployment) |
+| `LDGR_MARKET_PROXY=none` | Disable the proxy; fetch providers directly |
+| `--no-proxy` flag | Disable the proxy for a single invocation (overrides the env var) |
+
+Only symbol names are ever sent to the proxy — never vault, balance, or
+portfolio data.
+
 ## Cost
 
 Comfortably within Cloudflare's free tier (100K Worker req/day, 100K KV
