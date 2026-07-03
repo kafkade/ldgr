@@ -175,7 +175,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-  # ── Swift / iOS ───────────────────────────────────────────────────────────────
+  # ── Swift / iOS / macOS ───────────────────────────────────────────────────────
 
   swift:
     name: Swift (Apple platforms)
@@ -203,6 +203,35 @@ jobs:
         run: |
           cd bindings/swift
           swift build
+
+      # Run the LdgrSwift unit tests (vault lifecycle + shared view models)
+      # against the XCFramework built above.
+      - name: Test LdgrSwift
+        run: |
+          cd bindings/swift
+          swift test
+
+      # ── macOS app build ─────────────────────────────────────────────────────
+      # Generate the Xcode project and build the native macOS app scheme so it
+      # cannot bit-rot. Build-only (no archive); signing is disabled because the
+      # project uses automatic signing with an empty DEVELOPMENT_TEAM.
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: apps/ios
+        run: xcodegen generate
+
+      - name: Build macOS app (ldgr-macos)
+        working-directory: apps/ios
+        run: |
+          xcodebuild build \
+            -project ldgr.xcodeproj \
+            -scheme ldgr-macos \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
 
   # ── Documentation ─────────────────────────────────────────────────────────────
 
