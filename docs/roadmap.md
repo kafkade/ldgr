@@ -159,6 +159,6 @@ Each phase produces a usable, shippable product increment. Phases are sequential
 - ✅ Siri Shortcuts (App Intents): query net worth, check spending, add expense
 - ✅ Community market data provider interface and documentation
 - CLI and web theming system
-- Plugin/extension architecture for community features
+- Plugin/extension architecture for community features (design: [ADR-009](adr/009-plugin-extension-architecture.md))
 
 **Exit criteria**: Full ecosystem with all platforms shipping, community contributions flowing.
