@@ -6,6 +6,7 @@ pub mod cache;
 pub mod config;
 pub mod delete;
 pub mod export;
+pub mod goals;
 pub mod import;
 pub mod incomestatement;
 pub mod init;

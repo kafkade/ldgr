@@ -189,6 +189,12 @@ enum Commands {
         no_proxy: bool,
     },
 
+    /// Advanced financial goal projections (scenarios, inflation, schedules, allocation)
+    Goals {
+        #[command(subcommand)]
+        action: GoalsAction,
+    },
+
     /// Manage the local market data price cache
     Cache {
         #[command(subcommand)]
@@ -214,6 +220,62 @@ enum CacheAction {
     Clear,
     /// Show cache entry count and hit rate
     Status,
+}
+
+#[derive(clap::Subcommand)]
+enum GoalsAction {
+    /// List defined goals with current progress
+    List {
+        /// Output format: table, json
+        #[arg(long, short, default_value = "table")]
+        output: String,
+    },
+    /// Multi-scenario projection band for a goal
+    Project {
+        /// Goal id (from goals.json)
+        id: String,
+        /// Override the monthly contribution
+        #[arg(long)]
+        contribution: Option<String>,
+        /// Pessimistic annual return (e.g. 0.02)
+        #[arg(long)]
+        pessimistic: Option<String>,
+        /// Expected annual return (e.g. 0.05)
+        #[arg(long)]
+        expected: Option<String>,
+        /// Optimistic annual return (e.g. 0.08)
+        #[arg(long)]
+        optimistic: Option<String>,
+        /// Annual inflation rate to grow the target (e.g. 0.03)
+        #[arg(long)]
+        inflation: Option<String>,
+        /// Output format: table, json
+        #[arg(long, short, default_value = "table")]
+        output: String,
+    },
+    /// Project a goal under its variable contribution schedule
+    Plan {
+        /// Goal id (from goals.json)
+        id: String,
+        /// Annual return rate (e.g. 0.05)
+        #[arg(long, default_value = "0.05")]
+        rate: String,
+        /// Output format: table, json
+        #[arg(long, short, default_value = "table")]
+        output: String,
+    },
+    /// Allocate a shared monthly budget across all goals
+    Allocate {
+        /// Total monthly budget to distribute
+        #[arg(long)]
+        budget: String,
+        /// Strategy: priority, deadline, proportional, equal
+        #[arg(long, default_value = "priority")]
+        strategy: String,
+        /// Output format: table, json
+        #[arg(long, short, default_value = "table")]
+        output: String,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -416,6 +478,35 @@ fn main() {
             no_proxy,
         }) => commands::watch::run(symbols, interval, no_proxy, &vault_path),
         Some(Commands::Portfolio { no_proxy }) => commands::portfolio::run(no_proxy, &vault_path),
+        Some(Commands::Goals { action }) => match action {
+            GoalsAction::List { output } => commands::goals::run_list(&vault_path, &output),
+            GoalsAction::Project {
+                id,
+                contribution,
+                pessimistic,
+                expected,
+                optimistic,
+                inflation,
+                output,
+            } => commands::goals::run_project(
+                &vault_path,
+                &id,
+                contribution.as_deref(),
+                pessimistic.as_deref(),
+                expected.as_deref(),
+                optimistic.as_deref(),
+                inflation.as_deref(),
+                &output,
+            ),
+            GoalsAction::Plan { id, rate, output } => {
+                commands::goals::run_plan(&vault_path, &id, &rate, &output)
+            }
+            GoalsAction::Allocate {
+                budget,
+                strategy,
+                output,
+            } => commands::goals::run_allocate(&vault_path, &budget, &strategy, &output),
+        },
         Some(Commands::Cache { action }) => match action {
             CacheAction::Clear => commands::cache::run_clear(&vault_path),
             CacheAction::Status => commands::cache::run_status(&vault_path),
