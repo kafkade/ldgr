@@ -8,6 +8,7 @@ mod config;
 mod convert;
 mod db;
 mod market_fetch;
+mod render;
 mod session;
 mod sync;
 mod theme;
@@ -154,11 +155,17 @@ enum Commands {
         account: String,
     },
 
-    /// Export transactions to CSV, JSON, or hledger journal
+    /// Export transactions to CSV, JSON, hledger journal, or a PDF report
     Export {
-        /// Output format: hledger, csv, json
+        /// Output format: hledger, csv, json, pdf
         #[arg(long, short, default_value = "hledger")]
         format: String,
+        /// Report for --format pdf: balancesheet, incomestatement, networth
+        #[arg(long)]
+        report: Option<String>,
+        /// Output file path (required for --format pdf; defaults to stdout otherwise)
+        #[arg(long, short)]
+        output: Option<String>,
         /// Query filters (e.g., date:2024, acct:Expenses)
         query: Vec<String>,
     },
@@ -391,9 +398,18 @@ fn main() {
         }
         Some(Commands::Validate { file }) => commands::validate::run(&file),
         Some(Commands::Reconcile { account }) => commands::reconcile::run(&vault_path, &account),
-        Some(Commands::Export { format, query }) => {
-            commands::export::run(&vault_path, &format, &query)
-        }
+        Some(Commands::Export {
+            format,
+            report,
+            output,
+            query,
+        }) => commands::export::run(
+            &vault_path,
+            &format,
+            report.as_deref(),
+            output.as_deref(),
+            &query,
+        ),
         Some(Commands::Watch {
             symbols,
             interval,

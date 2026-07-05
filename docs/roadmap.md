@@ -141,7 +141,7 @@ Each phase produces a usable, shippable product increment. Phases are sequential
 - ~~SRP-6a authentication for server sync~~ ✅
 - Loan tracking module: amortization schedules, payoff projections, what-if analysis, refinance comparison
 - Advanced financial goal projections
-- PDF report generation
+- ~~PDF report generation~~ ✅ (balance sheet, income statement, net worth)
 
 **Exit criteria**: A user can access finances from any browser with offline support, and optionally self-host a sync server.
 
