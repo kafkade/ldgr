@@ -55,6 +55,11 @@ ldgr import statement.ofx
 # Export for hledger
 ldgr export --format hledger | hledger balance
 
+# Generate a styled PDF report
+ldgr export --format pdf --report balancesheet --output balance-sheet.pdf
+ldgr export --format pdf --report incomestatement --output income.pdf date:2024
+ldgr export --format pdf --report networth --output net-worth.pdf
+
 # Lock when done
 ldgr lock
 ```
@@ -78,6 +83,7 @@ ldgr lock
 | `ldgr balancesheet [query]` | Balance sheet (Assets - Liabilities = Equity) |
 | `ldgr import <file>` | Import CSV or OFX/QFX bank exports |
 | `ldgr export --format <fmt>` | Export to hledger, CSV, or JSON |
+| `ldgr export --format pdf --report <name> --output <file>` | PDF report (balancesheet, incomestatement, networth) |
 | `ldgr validate <file>` | Check journal importability |
 | `ldgr reconcile <account>` | Interactive reconciliation |
 | `ldgr rules` | Manage import auto-categorization rules |
