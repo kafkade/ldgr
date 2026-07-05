@@ -31,7 +31,7 @@ qrcode = { version = "0.14", default-features = false }
 # PDF report rendering (pure-Rust, built-in Standard-14 fonts — no bundled font
 # assets). CLI-only: deliberately kept out of ldgr-core to protect the WASM
 # bundle-size budget (ADR-005).
-printpdf = "0.7"
+pdf-writer = "0.15"
 
 # Async
 async-trait.workspace = true

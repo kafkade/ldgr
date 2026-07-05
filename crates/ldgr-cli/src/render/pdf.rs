@@ -1,28 +1,31 @@
 //! Render a layout-agnostic [`ReportDocument`] to PDF bytes.
 //!
-//! Uses `printpdf` with the built-in Standard-14 fonts (Helvetica / Courier), so
-//! no font files are bundled. Proportional Helvetica is used for labels/headings;
-//! monospace Courier is used for amounts so the right-aligned money column can be
-//! measured from a fixed glyph advance (no font-metrics table required).
+//! Uses `pdf-writer` with the built-in Standard-14 (base-14) Type1 fonts
+//! (Helvetica / Courier), so no font files are bundled. Proportional Helvetica
+//! is used for labels/headings; monospace Courier is used for amounts so the
+//! right-aligned money column can be measured from a fixed glyph advance (no
+//! font-metrics table required).
 //!
 //! Layout is a simple top-down cursor with automatic page breaks, giving a
 //! paginated, styled document: title, period subtitle, section headings, an
 //! indented account hierarchy, and emphasized totals.
+//!
+//! `pdf-writer` is a low-level PDF writer: this module builds the document
+//! catalog, the page tree, per-page content streams and the base-14 font
+//! dictionaries by hand. Coordinates are PDF points with a bottom-left origin
+//! (y grows upward).
 
-use printpdf::{
-    BuiltinFont, Color, IndirectFontRef, Line, Mm, PdfDocument, PdfDocumentReference,
-    PdfLayerIndex, PdfPageIndex, Point, Rgb,
-};
+use pdf_writer::{Content, Finish, Name, Pdf, Rect, Ref, Str};
 
 use ldgr_core::accounting::report_document::{ReportDocument, ReportRow};
 
-// Page geometry (A4, millimetres).
-const PAGE_W: f32 = 210.0;
-const PAGE_H: f32 = 297.0;
-const MARGIN_L: f32 = 20.0;
-const MARGIN_R: f32 = 20.0;
-const MARGIN_T: f32 = 20.0;
-const MARGIN_B: f32 = 20.0;
+// Page geometry (A4, PDF points; 1pt = 1/72 inch).
+const PAGE_W: f32 = 595.28;
+const PAGE_H: f32 = 841.89;
+const MARGIN_L: f32 = 56.0;
+const MARGIN_R: f32 = 56.0;
+const MARGIN_T: f32 = 56.0;
+const MARGIN_B: f32 = 56.0;
 
 // Font sizes (points).
 const SIZE_TITLE: f32 = 20.0;
@@ -33,166 +36,168 @@ const SIZE_FOOTER: f32 = 8.0;
 
 // Courier advance width is a fixed 600/1000 em.
 const COURIER_ADVANCE_EM: f32 = 0.6;
-// Indentation applied per nesting level (mm).
-const INDENT_STEP: f32 = 5.0;
+// Indentation applied per nesting level (points).
+const INDENT_STEP: f32 = 14.0;
 
-const PT_TO_MM: f32 = 25.4 / 72.0;
-
-fn pt_to_mm(pt: f32) -> f32 {
-    pt * PT_TO_MM
-}
+// Resource names for the base-14 fonts referenced from content streams.
+const FONT_REGULAR: &[u8] = b"F1";
+const FONT_BOLD: &[u8] = b"F2";
+const FONT_MONO: &[u8] = b"F3";
+const FONT_MONO_BOLD: &[u8] = b"F4";
 
 /// Line advance for a given font size, including leading.
 fn line_height(size_pt: f32) -> f32 {
-    pt_to_mm(size_pt) * 1.45
+    size_pt * 1.45
 }
 
-/// Width (mm) of a monospace Courier string at the given point size.
+/// Width (points) of a monospace Courier string at the given point size.
 #[allow(clippy::cast_precision_loss)] // char counts are tiny; f32 is exact here
-fn courier_width_mm(text: &str, size_pt: f32) -> f32 {
-    text.chars().count() as f32 * size_pt * COURIER_ADVANCE_EM * PT_TO_MM
+fn courier_width_pt(text: &str, size_pt: f32) -> f32 {
+    text.chars().count() as f32 * size_pt * COURIER_ADVANCE_EM
 }
 
 fn content_right() -> f32 {
     PAGE_W - MARGIN_R
 }
 
+/// Encode a Rust UTF-8 string to WinAnsi/Latin-1 bytes for a base-14 font,
+/// substituting `?` for any code point outside the single-byte range. This is a
+/// best-effort transcoding sufficient for financial reports (ASCII plus common
+/// Latin-1 currency/letter glyphs).
+fn encode(s: &str) -> Vec<u8> {
+    // Any code point outside 0x00..=0xFF cannot be a single WinAnsi byte.
+    s.chars()
+        .map(|c| u8::try_from(c as u32).unwrap_or(b'?'))
+        .collect()
+}
+
+/// Object references allocated for the four base-14 fonts.
+#[derive(Clone, Copy)]
 struct Fonts {
-    regular: IndirectFontRef,
-    bold: IndirectFontRef,
-    mono: IndirectFontRef,
-    mono_bold: IndirectFontRef,
+    regular: Ref,
+    bold: Ref,
+    mono: Ref,
+    mono_bold: Ref,
+}
+
+/// One page: its object id, its content-stream id, and the (still open)
+/// content builder we append drawing operators to.
+struct PageEntry {
+    page_id: Ref,
+    content_id: Ref,
+    content: Content,
 }
 
 struct Painter {
-    doc: PdfDocumentReference,
+    alloc: Ref,
+    catalog: Ref,
+    tree: Ref,
     fonts: Fonts,
-    pages: Vec<(PdfPageIndex, PdfLayerIndex)>,
-    current: usize,
-    /// Baseline y (mm from bottom) for the next line of text.
+    pages: Vec<PageEntry>,
+    /// Baseline y (points from bottom) for the next line of text.
     cursor_y: f32,
     footer: String,
 }
 
 impl Painter {
     fn new(title: &str) -> Self {
-        let (doc, page1, layer1) = PdfDocument::new(title, Mm(PAGE_W), Mm(PAGE_H), "content");
+        let mut alloc = Ref::new(1);
+        let catalog = alloc.bump();
+        let tree = alloc.bump();
         let fonts = Fonts {
-            regular: doc.add_builtin_font(BuiltinFont::Helvetica).unwrap(),
-            bold: doc.add_builtin_font(BuiltinFont::HelveticaBold).unwrap(),
-            mono: doc.add_builtin_font(BuiltinFont::Courier).unwrap(),
-            mono_bold: doc.add_builtin_font(BuiltinFont::CourierBold).unwrap(),
+            regular: alloc.bump(),
+            bold: alloc.bump(),
+            mono: alloc.bump(),
+            mono_bold: alloc.bump(),
         };
-        Self {
-            doc,
+        let mut painter = Self {
+            alloc,
+            catalog,
+            tree,
             fonts,
-            pages: vec![(page1, layer1)],
-            current: 0,
+            pages: Vec::new(),
             cursor_y: PAGE_H - MARGIN_T,
             footer: title.to_string(),
-        }
+        };
+        painter.start_page();
+        painter
     }
 
-    fn layer(&self) -> printpdf::PdfLayerReference {
-        let (page, layer) = self.pages[self.current];
-        self.doc.get_page(page).get_layer(layer)
-    }
-
-    fn new_page(&mut self) {
-        let (page, layer) = self.doc.add_page(Mm(PAGE_W), Mm(PAGE_H), "content");
-        self.pages.push((page, layer));
-        self.current = self.pages.len() - 1;
+    fn start_page(&mut self) {
+        let page_id = self.alloc.bump();
+        let content_id = self.alloc.bump();
+        self.pages.push(PageEntry {
+            page_id,
+            content_id,
+            content: Content::new(),
+        });
         self.cursor_y = PAGE_H - MARGIN_T;
     }
 
-    /// Ensure `needed` mm of vertical space remains, else start a new page.
+    /// Ensure `needed` points of vertical space remain, else start a new page.
     fn ensure_space(&mut self, needed: f32) {
         if self.cursor_y - needed < MARGIN_B {
-            self.new_page();
+            self.start_page();
         }
-    }
-
-    fn text(&self, x: f32, y: f32, size: f32, font: &IndirectFontRef, s: &str) {
-        self.layer().use_text(s, size, Mm(x), Mm(y), font);
-    }
-
-    fn rule(&self, y: f32) {
-        let layer = self.layer();
-        layer.set_outline_thickness(0.4);
-        layer.set_outline_color(Color::Rgb(Rgb::new(0.65, 0.65, 0.65, None)));
-        let line = Line {
-            points: vec![
-                (Point::new(Mm(MARGIN_L), Mm(y)), false),
-                (Point::new(Mm(content_right()), Mm(y)), false),
-            ],
-            is_closed: false,
-        };
-        layer.add_line(line);
     }
 
     fn advance(&mut self, dy: f32) {
         self.cursor_y -= dy;
     }
 
+    /// Draw a line of text on the current page at an absolute baseline.
+    fn text(&mut self, x: f32, y: f32, size: f32, font: &'static [u8], s: &str) {
+        let bytes = encode(s);
+        let content = &mut self.pages.last_mut().expect("a page exists").content;
+        content.begin_text();
+        content.set_font(Name(font), size);
+        content.set_text_matrix([1.0, 0.0, 0.0, 1.0, x, y]);
+        content.show(Str(&bytes));
+        content.end_text();
+    }
+
+    /// Draw a light hairline rule across the content width.
+    fn rule(&mut self, y: f32) {
+        let content = &mut self.pages.last_mut().expect("a page exists").content;
+        content.set_line_width(0.5);
+        content.set_stroke_gray(0.65);
+        content.move_to(MARGIN_L, y);
+        content.line_to(content_right(), y);
+        content.stroke();
+    }
+
     fn header(&mut self, doc: &ReportDocument) {
-        let lh = line_height(SIZE_TITLE);
-        self.advance(lh);
-        self.text(
-            MARGIN_L,
-            self.cursor_y,
-            SIZE_TITLE,
-            &self.fonts.bold,
-            &doc.title,
-        );
+        self.advance(line_height(SIZE_TITLE));
+        self.text(MARGIN_L, self.cursor_y, SIZE_TITLE, FONT_BOLD, &doc.title);
 
         if let Some(period) = &doc.period {
             self.advance(line_height(SIZE_PERIOD));
-            self.text(
-                MARGIN_L,
-                self.cursor_y,
-                SIZE_PERIOD,
-                &self.fonts.regular,
-                period,
-            );
+            self.text(MARGIN_L, self.cursor_y, SIZE_PERIOD, FONT_REGULAR, period);
         }
 
-        self.advance(2.5);
+        self.advance(7.0);
         self.rule(self.cursor_y);
-        self.advance(4.0);
+        self.advance(11.0);
     }
 
     fn heading(&mut self, text: &str) {
         // Extra breathing room before each section.
-        self.ensure_space(line_height(SIZE_HEADING) + 12.0);
-        self.advance(4.0);
+        self.ensure_space(line_height(SIZE_HEADING) + 34.0);
+        self.advance(11.0);
         self.advance(line_height(SIZE_HEADING));
-        self.text(
-            MARGIN_L,
-            self.cursor_y,
-            SIZE_HEADING,
-            &self.fonts.bold,
-            text,
-        );
-        self.advance(2.0);
+        self.text(MARGIN_L, self.cursor_y, SIZE_HEADING, FONT_BOLD, text);
+        self.advance(6.0);
         self.rule(self.cursor_y);
-        self.advance(2.0);
+        self.advance(6.0);
     }
 
-    fn text_label(&self, x: f32, y: f32, size: f32, bold: bool, s: &str) {
-        let font = if bold {
-            &self.fonts.bold
-        } else {
-            &self.fonts.regular
-        };
+    fn text_label(&mut self, x: f32, y: f32, size: f32, bold: bool, s: &str) {
+        let font = if bold { FONT_BOLD } else { FONT_REGULAR };
         self.text(x, y, size, font, s);
     }
 
-    fn text_amount(&self, x: f32, y: f32, size: f32, bold: bool, s: &str) {
-        let font = if bold {
-            &self.fonts.mono_bold
-        } else {
-            &self.fonts.mono
-        };
+    fn text_amount(&mut self, x: f32, y: f32, size: f32, bold: bool, s: &str) {
+        let font = if bold { FONT_MONO_BOLD } else { FONT_MONO };
         self.text(x, y, size, font, s);
     }
 
@@ -203,10 +208,10 @@ impl Painter {
 
         // Emphasized rows (totals) get a hairline above them.
         if emphasis {
-            self.ensure_space(line_height(SIZE_BODY) + 2.0);
-            self.advance(1.5);
+            self.ensure_space(line_height(SIZE_BODY) + 6.0);
+            self.advance(4.0);
             self.rule(self.cursor_y);
-            self.advance(2.0);
+            self.advance(6.0);
         }
 
         let amount_lines: Vec<String> = if row.amounts.is_empty() {
@@ -224,35 +229,97 @@ impl Painter {
                 self.text_label(label_x, y, SIZE_BODY, emphasis, &row.label);
             }
             if !amount.is_empty() {
-                let w = courier_width_mm(amount, SIZE_BODY);
+                let w = courier_width_pt(amount, SIZE_BODY);
                 let x = content_right() - w;
                 self.text_amount(x, y, SIZE_BODY, emphasis, amount);
             }
         }
     }
 
-    fn footers(&self) {
+    /// Draw the per-page footer (report title left, pagination right) on every
+    /// page now that the total page count is known.
+    fn draw_footers(&mut self) {
         let total = self.pages.len();
-        for (i, &(page, layer)) in self.pages.iter().enumerate() {
-            let layer_ref = self.doc.get_page(page).get_layer(layer);
-            let y = MARGIN_B * 0.5;
-            layer_ref.use_text(
-                &self.footer,
-                SIZE_FOOTER,
-                Mm(MARGIN_L),
-                Mm(y),
-                &self.fonts.regular,
-            );
+        let footer = self.footer.clone();
+        let y = MARGIN_B * 0.5;
+        for i in 0..total {
+            let title_bytes = encode(&footer);
             let page_str = format!("Page {} of {}", i + 1, total);
-            let w = courier_width_mm(&page_str, SIZE_FOOTER);
-            layer_ref.use_text(
-                &page_str,
-                SIZE_FOOTER,
-                Mm(content_right() - w),
-                Mm(y),
-                &self.fonts.mono,
-            );
+            let page_bytes = encode(&page_str);
+            let page_x = content_right() - courier_width_pt(&page_str, SIZE_FOOTER);
+            let content = &mut self.pages[i].content;
+
+            content.begin_text();
+            content.set_font(Name(FONT_REGULAR), SIZE_FOOTER);
+            content.set_text_matrix([1.0, 0.0, 0.0, 1.0, MARGIN_L, y]);
+            content.show(Str(&title_bytes));
+            content.end_text();
+
+            content.begin_text();
+            content.set_font(Name(FONT_MONO), SIZE_FOOTER);
+            content.set_text_matrix([1.0, 0.0, 0.0, 1.0, page_x, y]);
+            content.show(Str(&page_bytes));
+            content.end_text();
         }
+    }
+
+    /// Finalize the document into PDF bytes.
+    fn into_bytes(mut self) -> Vec<u8> {
+        self.draw_footers();
+
+        let catalog = self.catalog;
+        let tree = self.tree;
+        let fonts = self.fonts;
+
+        // Serialize each page's content stream (consumes the builders).
+        let pages: Vec<(Ref, Ref, Vec<u8>)> = self
+            .pages
+            .into_iter()
+            .map(|e| (e.page_id, e.content_id, e.content.finish().to_vec()))
+            .collect();
+
+        let mut pdf = Pdf::new();
+        pdf.catalog(catalog).pages(tree);
+
+        {
+            let count = i32::try_from(pages.len()).unwrap_or(i32::MAX);
+            let mut tree_dict = pdf.pages(tree);
+            tree_dict.count(count);
+            tree_dict.kids(pages.iter().map(|(p, _, _)| *p));
+            tree_dict.finish();
+        }
+
+        for (page_id, content_id, bytes) in &pages {
+            {
+                let mut page = pdf.page(*page_id);
+                page.parent(tree);
+                page.media_box(Rect::new(0.0, 0.0, PAGE_W, PAGE_H));
+                page.contents(*content_id);
+                let mut res = page.resources();
+                let mut font_dict = res.fonts();
+                font_dict.pair(Name(FONT_REGULAR), fonts.regular);
+                font_dict.pair(Name(FONT_BOLD), fonts.bold);
+                font_dict.pair(Name(FONT_MONO), fonts.mono);
+                font_dict.pair(Name(FONT_MONO_BOLD), fonts.mono_bold);
+                font_dict.finish();
+                res.finish();
+                page.finish();
+            }
+            pdf.stream(*content_id, bytes);
+        }
+
+        for (font_ref, base) in [
+            (fonts.regular, &b"Helvetica"[..]),
+            (fonts.bold, &b"Helvetica-Bold"[..]),
+            (fonts.mono, &b"Courier"[..]),
+            (fonts.mono_bold, &b"Courier-Bold"[..]),
+        ] {
+            pdf.type1_font(font_ref)
+                .base_font(Name(base))
+                .encoding_predefined(Name(b"WinAnsiEncoding"));
+        }
+
+        pdf.finish()
     }
 }
 
@@ -264,7 +331,9 @@ fn amount_display(amount: &ldgr_core::accounting::report_document::Amount) -> St
 /// Render a [`ReportDocument`] to PDF bytes.
 ///
 /// # Errors
-/// Returns an error if the underlying PDF serialization fails.
+/// Currently infallible, but returns a `Result` so callers integrate cleanly
+/// with fallible rendering backends and future validation.
+#[allow(clippy::unnecessary_wraps)] // stable fallible signature for callers
 pub fn render_report(doc: &ReportDocument) -> anyhow::Result<Vec<u8>> {
     let mut painter = Painter::new(&doc.title);
     painter.header(doc);
@@ -280,25 +349,13 @@ pub fn render_report(doc: &ReportDocument) -> anyhow::Result<Vec<u8>> {
     }
 
     if let Some(note) = &doc.note {
-        painter.ensure_space(line_height(SIZE_FOOTER) + 6.0);
-        painter.advance(6.0);
+        painter.ensure_space(line_height(SIZE_FOOTER) + 17.0);
+        painter.advance(17.0);
         painter.advance(line_height(SIZE_FOOTER));
-        painter.text(
-            MARGIN_L,
-            painter.cursor_y,
-            SIZE_FOOTER,
-            &painter.fonts.regular,
-            note,
-        );
+        painter.text(MARGIN_L, painter.cursor_y, SIZE_FOOTER, FONT_REGULAR, note);
     }
 
-    painter.footers();
-
-    let bytes = painter
-        .doc
-        .save_to_bytes()
-        .map_err(|e| anyhow::anyhow!("failed to serialize PDF: {e}"))?;
-    Ok(bytes)
+    Ok(painter.into_bytes())
 }
 
 #[cfg(test)]
@@ -359,11 +416,20 @@ mod tests {
 
     #[test]
     fn courier_width_scales_with_length() {
-        let short = courier_width_mm("1", SIZE_BODY);
-        let long = courier_width_mm("1000000", SIZE_BODY);
+        let short = courier_width_pt("1", SIZE_BODY);
+        let long = courier_width_pt("1000000", SIZE_BODY);
         assert!(long > short);
         // Seven characters should be exactly 7x a single character.
         assert!((long - short * 7.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn encode_replaces_non_latin1() {
+        assert_eq!(encode("USD"), b"USD");
+        // Euro sign (U+20AC) is outside Latin-1 and becomes '?'.
+        assert_eq!(encode("\u{20ac}5"), b"?5");
+        // Latin-1 letters within 0x00..=0xFF pass through.
+        assert_eq!(encode("caf\u{e9}"), b"caf\xe9");
     }
 
     #[test]
