@@ -207,6 +207,12 @@ enum Commands {
         action: SyncAction,
     },
 
+    /// Manage paired devices (QR/X25519 onboarding via ldgr-server)
+    Devices {
+        #[command(subcommand)]
+        action: DevicesAction,
+    },
+
     /// Manage CLI configuration (theme, etc.)
     Config {
         #[command(subcommand)]
@@ -290,6 +296,24 @@ enum SyncAction {
     Status,
     /// Review and resolve pending sync conflicts
     Resolve,
+}
+
+#[derive(clap::Subcommand)]
+enum DevicesAction {
+    /// List devices registered for this vault's account
+    List,
+    /// Pair a new device: show a QR code / pairing token from this device
+    Add,
+    /// Join from a new device using a pairing token from `ldgr devices add`
+    Join {
+        /// Pairing token printed by `ldgr devices add` on the existing device
+        payload: String,
+    },
+    /// Revoke a device by id
+    Remove {
+        /// Device id (from `ldgr devices list`)
+        id: String,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -517,6 +541,12 @@ fn main() {
             SyncAction::Pull => commands::sync::run_pull(&vault_path),
             SyncAction::Status => commands::sync::run_status(&vault_path),
             SyncAction::Resolve => commands::sync::run_resolve(&vault_path),
+        },
+        Some(Commands::Devices { action }) => match action {
+            DevicesAction::List => commands::devices::run_list(&vault_path),
+            DevicesAction::Add => commands::devices::run_add(&vault_path),
+            DevicesAction::Join { payload } => commands::devices::run_join(&vault_path, &payload),
+            DevicesAction::Remove { id } => commands::devices::run_remove(&vault_path, &id),
         },
         Some(Commands::Config { action }) => match action {
             ConfigAction::Set { key, value } => commands::config::run_set(&key, &value),
