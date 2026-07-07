@@ -17,6 +17,11 @@ pub mod transport;
 #[cfg(feature = "sync")]
 pub mod server;
 
+/// Relay-backed device pairing orchestration (two-offer X25519 handshake).
+/// Requires the `sync` feature because it drives the server key-exchange relay.
+#[cfg(feature = "sync")]
+pub mod pairing;
+
 /// Batch-blob compose/apply pipeline (pending events ↔ encrypted blob).
 /// Requires the `sqlite` feature because it reads and writes the canonical
 /// `SQLite` vault via a passed-in `Connection`.
@@ -31,6 +36,12 @@ pub use framing::{
 pub use onboarding::{
     OnboardingInitiation, OnboardingResponse, QrPayload, complete_onboarding, decrypt_vault_key,
     encrypt_vault_key, initiate_onboarding, respond_to_onboarding,
+};
+
+#[cfg(feature = "sync")]
+pub use pairing::{
+    Initiation, JoinerHelloReceived, JoinerSession, PairingCode, PairingError, deliver_vault_key,
+    initiate_pairing, poll_joiner_hello, poll_vault_key, respond_pairing,
 };
 pub use snapshot::*;
 pub use transport::{
