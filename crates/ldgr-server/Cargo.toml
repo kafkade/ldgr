@@ -30,7 +30,7 @@ rusqlite.workspace = true
 # Crypto (SRP-6a)
 sha2.workspace = true
 rand.workspace = true
-num-bigint = { version = "0.4", default-features = false }
+num-bigint = { version = "0.5", default-features = false }
 
 # Errors
 anyhow.workspace = true
