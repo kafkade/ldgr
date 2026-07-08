@@ -248,6 +248,17 @@ ldgr sync pull      # download other devices' encrypted batches
 ldgr sync status    # show provider, device ID, last sync, pending counts
 ```
 
+To pair another device without re-entering your account credentials by hand, use
+the `ldgr devices` commands (QR / X25519 onboarding — see [Pairing a new
+device](#pairing-a-new-device-with-ldgr-devices) below):
+
+```sh
+ldgr devices list            # devices registered to your vault
+ldgr devices add             # start pairing; shows a QR code + token
+ldgr devices join <token>    # complete pairing on the new device
+ldgr devices remove <id>     # deregister a device
+```
+
 > **Important CLI limitation (today):** `ldgr sync pull` downloads other devices'
 > batches into a local inbox but does **not** yet apply them to your vault, and the
 > CLI has no conflict-review command. So the CLI can *publish* and *fetch* changes,
@@ -275,9 +286,39 @@ server only ever holding encrypted blobs.
 
 > **How convergence works:** devices converge by exchanging and replaying encrypted
 > **event batches** — each device pushes its pending events and pulls + applies the
-> others'. There is no QR-code or snapshot "fast onboarding" path wired into the
-> clients yet; a brand-new device simply signs in to the same account/vault and syncs
-> to pull the existing batches.
+> others'. A brand-new device signs in to the same account/vault and syncs to pull the
+> existing batches. To hand the vault key to a new device without retyping credentials,
+> use QR / X25519 pairing via `ldgr devices` (below).
+
+---
+
+## Pairing a new device with `ldgr devices`
+
+`ldgr devices` transfers your vault key to a new device over the server relay,
+end-to-end encrypted under an X25519 ECDH shared secret — the server only ever
+relays ciphertext. Both devices must be signed in to the **same account** on the
+**same self-hosted server** (run `ldgr sync setup` on each first).
+
+1. **New device** — run `ldgr sync setup` and point it at the same server/account.
+2. **Existing device** — run `ldgr devices add`. It opens a pairing session and
+   prints a scannable **QR code**, a copy-paste **token**, and a **verification
+   code**, then waits for the new device to join.
+3. **New device** — run `ldgr devices join <token>` (paste the token from the QR /
+   existing device). It prints its own copy of the **verification code**.
+4. **Both devices** — confirm the verification codes match. If they differ, abort:
+   someone may be intercepting the pairing. When they match, the existing device
+   encrypts the vault key under the shared secret and delivers it over the relay.
+5. **New device** — receives and installs the vault key, then registers itself
+   (it now shows up in `ldgr devices list`). Run `ldgr sync pull` to materialize
+   the vault.
+
+Remove a device you no longer use with `ldgr devices remove <id>` (find the id via
+`ldgr devices list`).
+
+> The vault key never crosses the wire in plaintext — it is AES-256-GCM encrypted
+> under the ECDH shared secret, so a compromised or curious server cannot read it.
+> iOS QR-scanning onboarding is a planned follow-up; today `join` takes the token as
+> an argument.
 
 ---
 
