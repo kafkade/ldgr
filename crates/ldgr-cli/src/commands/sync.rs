@@ -461,7 +461,7 @@ fn render_emergency_kit(base_url: &str, email: &str, secret_key: &SecretKey) -> 
 
 /// Render a QR code to the terminal using half-block characters. Colors are
 /// inverted (light modules filled) so it scans on a typical dark terminal.
-fn print_qr(payload: &str) {
+pub(crate) fn print_qr(payload: &str) {
     match qrcode::QrCode::new(payload.as_bytes()) {
         Ok(code) => {
             let rendered = code

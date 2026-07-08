@@ -7,6 +7,8 @@ mod commands;
 mod config;
 mod convert;
 mod db;
+mod market_fetch;
+mod render;
 mod session;
 mod sync;
 mod theme;
@@ -153,11 +155,17 @@ enum Commands {
         account: String,
     },
 
-    /// Export transactions to CSV, JSON, or hledger journal
+    /// Export transactions to CSV, JSON, hledger journal, or a PDF report
     Export {
-        /// Output format: hledger, csv, json
+        /// Output format: hledger, csv, json, pdf
         #[arg(long, short, default_value = "hledger")]
         format: String,
+        /// Report for --format pdf: balancesheet, incomestatement, networth
+        #[arg(long)]
+        report: Option<String>,
+        /// Output file path (required for --format pdf; defaults to stdout otherwise)
+        #[arg(long, short)]
+        output: Option<String>,
         /// Query filters (e.g., date:2024, acct:Expenses)
         query: Vec<String>,
     },
@@ -169,10 +177,23 @@ enum Commands {
         /// Auto-refresh interval in seconds
         #[arg(long, short, default_value_t = 15)]
         interval: u64,
+        /// Bypass the shared market-data proxy and fetch providers directly
+        #[arg(long)]
+        no_proxy: bool,
     },
 
     /// Portfolio view with market values and interactive charts
-    Portfolio,
+    Portfolio {
+        /// Bypass the shared market-data proxy and fetch providers directly
+        #[arg(long)]
+        no_proxy: bool,
+    },
+
+    /// Advanced financial goal projections (scenarios, inflation, schedules, allocation)
+    Goals {
+        #[command(subcommand)]
+        action: GoalsAction,
+    },
 
     /// Manage the local market data price cache
     Cache {
@@ -184,6 +205,12 @@ enum Commands {
     Sync {
         #[command(subcommand)]
         action: SyncAction,
+    },
+
+    /// Manage paired devices (QR/X25519 onboarding via ldgr-server)
+    Devices {
+        #[command(subcommand)]
+        action: DevicesAction,
     },
 
     /// Manage CLI configuration (theme, etc.)
@@ -202,6 +229,62 @@ enum CacheAction {
 }
 
 #[derive(clap::Subcommand)]
+enum GoalsAction {
+    /// List defined goals with current progress
+    List {
+        /// Output format: table, json
+        #[arg(long, short, default_value = "table")]
+        output: String,
+    },
+    /// Multi-scenario projection band for a goal
+    Project {
+        /// Goal id (from goals.json)
+        id: String,
+        /// Override the monthly contribution
+        #[arg(long)]
+        contribution: Option<String>,
+        /// Pessimistic annual return (e.g. 0.02)
+        #[arg(long)]
+        pessimistic: Option<String>,
+        /// Expected annual return (e.g. 0.05)
+        #[arg(long)]
+        expected: Option<String>,
+        /// Optimistic annual return (e.g. 0.08)
+        #[arg(long)]
+        optimistic: Option<String>,
+        /// Annual inflation rate to grow the target (e.g. 0.03)
+        #[arg(long)]
+        inflation: Option<String>,
+        /// Output format: table, json
+        #[arg(long, short, default_value = "table")]
+        output: String,
+    },
+    /// Project a goal under its variable contribution schedule
+    Plan {
+        /// Goal id (from goals.json)
+        id: String,
+        /// Annual return rate (e.g. 0.05)
+        #[arg(long, default_value = "0.05")]
+        rate: String,
+        /// Output format: table, json
+        #[arg(long, short, default_value = "table")]
+        output: String,
+    },
+    /// Allocate a shared monthly budget across all goals
+    Allocate {
+        /// Total monthly budget to distribute
+        #[arg(long)]
+        budget: String,
+        /// Strategy: priority, deadline, proportional, equal
+        #[arg(long, default_value = "priority")]
+        strategy: String,
+        /// Output format: table, json
+        #[arg(long, short, default_value = "table")]
+        output: String,
+    },
+}
+
+#[derive(clap::Subcommand)]
 enum SyncAction {
     /// Configure sync provider (Dropbox or `WebDAV`)
     Setup,
@@ -213,6 +296,24 @@ enum SyncAction {
     Status,
     /// Review and resolve pending sync conflicts
     Resolve,
+}
+
+#[derive(clap::Subcommand)]
+enum DevicesAction {
+    /// List devices registered for this vault's account
+    List,
+    /// Pair a new device: show a QR code / pairing token from this device
+    Add,
+    /// Join from a new device using a pairing token from `ldgr devices add`
+    Join {
+        /// Pairing token printed by `ldgr devices add` on the existing device
+        payload: String,
+    },
+    /// Revoke a device by id
+    Remove {
+        /// Device id (from `ldgr devices list`)
+        id: String,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -383,13 +484,53 @@ fn main() {
         }
         Some(Commands::Validate { file }) => commands::validate::run(&file),
         Some(Commands::Reconcile { account }) => commands::reconcile::run(&vault_path, &account),
-        Some(Commands::Export { format, query }) => {
-            commands::export::run(&vault_path, &format, &query)
-        }
-        Some(Commands::Watch { symbols, interval }) => {
-            commands::watch::run(symbols, interval, &vault_path)
-        }
-        Some(Commands::Portfolio) => commands::portfolio::run(&vault_path),
+        Some(Commands::Export {
+            format,
+            report,
+            output,
+            query,
+        }) => commands::export::run(
+            &vault_path,
+            &format,
+            report.as_deref(),
+            output.as_deref(),
+            &query,
+        ),
+        Some(Commands::Watch {
+            symbols,
+            interval,
+            no_proxy,
+        }) => commands::watch::run(symbols, interval, no_proxy, &vault_path),
+        Some(Commands::Portfolio { no_proxy }) => commands::portfolio::run(no_proxy, &vault_path),
+        Some(Commands::Goals { action }) => match action {
+            GoalsAction::List { output } => commands::goals::run_list(&vault_path, &output),
+            GoalsAction::Project {
+                id,
+                contribution,
+                pessimistic,
+                expected,
+                optimistic,
+                inflation,
+                output,
+            } => commands::goals::run_project(
+                &vault_path,
+                &id,
+                contribution.as_deref(),
+                pessimistic.as_deref(),
+                expected.as_deref(),
+                optimistic.as_deref(),
+                inflation.as_deref(),
+                &output,
+            ),
+            GoalsAction::Plan { id, rate, output } => {
+                commands::goals::run_plan(&vault_path, &id, &rate, &output)
+            }
+            GoalsAction::Allocate {
+                budget,
+                strategy,
+                output,
+            } => commands::goals::run_allocate(&vault_path, &budget, &strategy, &output),
+        },
         Some(Commands::Cache { action }) => match action {
             CacheAction::Clear => commands::cache::run_clear(&vault_path),
             CacheAction::Status => commands::cache::run_status(&vault_path),
@@ -400,6 +541,12 @@ fn main() {
             SyncAction::Pull => commands::sync::run_pull(&vault_path),
             SyncAction::Status => commands::sync::run_status(&vault_path),
             SyncAction::Resolve => commands::sync::run_resolve(&vault_path),
+        },
+        Some(Commands::Devices { action }) => match action {
+            DevicesAction::List => commands::devices::run_list(&vault_path),
+            DevicesAction::Add => commands::devices::run_add(&vault_path),
+            DevicesAction::Join { payload } => commands::devices::run_join(&vault_path, &payload),
+            DevicesAction::Remove { id } => commands::devices::run_remove(&vault_path, &id),
         },
         Some(Commands::Config { action }) => match action {
             ConfigAction::Set { key, value } => commands::config::run_set(&key, &value),

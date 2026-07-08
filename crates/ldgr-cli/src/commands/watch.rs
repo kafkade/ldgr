@@ -18,6 +18,7 @@ use tokio::sync::mpsc;
 use ldgr_core::market::cache::{HISTORICAL_TTL, QUOTE_TTL};
 use ldgr_core::market::{MarketCache, PersistentCache, QuoteProvider, YahooFinance};
 
+use crate::market_fetch::{self, ProxyConfig};
 use crate::tui::chart::ChartApp;
 use crate::tui::event::{AppEvent, EventHandler};
 use crate::tui::watchlist::WatchlistApp;
@@ -57,7 +58,12 @@ fn quote_cache_key(symbol: &str) -> String {
 }
 
 /// Run the watchlist TUI.
-pub fn run(symbols: Vec<String>, interval_secs: u64, vault_path: &std::path::Path) -> Result<()> {
+pub fn run(
+    symbols: Vec<String>,
+    interval_secs: u64,
+    no_proxy: bool,
+    vault_path: &std::path::Path,
+) -> Result<()> {
     if symbols.is_empty() {
         anyhow::bail!(
             "No symbols provided.\nUsage: ldgr watch AAPL MSFT GOOG\n\nAdd symbols to track their prices in real-time."
@@ -66,9 +72,10 @@ pub fn run(symbols: Vec<String>, interval_secs: u64, vault_path: &std::path::Pat
 
     // The price cache is an optimization — if it can't be opened, carry on without it.
     let cache = crate::commands::cache::open_cache(vault_path).ok();
+    let proxy = ProxyConfig::resolve(no_proxy);
 
     let rt = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
-    rt.block_on(run_watchlist_async(symbols, interval_secs, cache))
+    rt.block_on(run_watchlist_async(symbols, interval_secs, cache, proxy))
 }
 
 #[allow(clippy::unused_async, clippy::too_many_lines)]
@@ -76,6 +83,7 @@ async fn run_watchlist_async(
     symbols: Vec<String>,
     interval_secs: u64,
     mut cache: Option<PersistentCache>,
+    proxy: ProxyConfig,
 ) -> Result<()> {
     // Set up terminal
     enable_raw_mode().context("failed to enable raw mode")?;
@@ -112,7 +120,14 @@ async fn run_watchlist_async(
     let (fetch_tx, mut fetch_rx) = mpsc::unbounded_channel::<FetchResult>();
 
     // Initial fetch
-    dispatch_quote_fetch(cache.as_mut(), &client, &provider, &app.symbols, &fetch_tx);
+    dispatch_quote_fetch(
+        cache.as_mut(),
+        &client,
+        &provider,
+        &proxy,
+        &app.symbols,
+        &fetch_tx,
+    );
     app.mark_loading();
 
     let mut chart_app: Option<ChartApp> = None;
@@ -172,6 +187,7 @@ async fn run_watchlist_async(
                             cache.as_mut(),
                             &client,
                             &provider,
+                            &proxy,
                             &ca.symbol,
                             ca.timeframe,
                             &fetch_tx,
@@ -187,6 +203,7 @@ async fn run_watchlist_async(
                             cache.as_mut(),
                             &client,
                             &provider,
+                            &proxy,
                             &sym,
                             ca.timeframe,
                             &fetch_tx,
@@ -214,6 +231,7 @@ async fn run_watchlist_async(
                             cache.as_mut(),
                             &client,
                             &provider,
+                            &proxy,
                             &new_symbols,
                             &fetch_tx,
                         );
@@ -225,6 +243,7 @@ async fn run_watchlist_async(
                             cache.as_mut(),
                             &client,
                             &provider,
+                            &proxy,
                             &app.symbols,
                             &fetch_tx,
                         );
@@ -247,6 +266,7 @@ async fn run_watchlist_async(
                         cache.as_mut(),
                         &client,
                         &provider,
+                        &proxy,
                         &app.symbols,
                         &fetch_tx,
                     );
@@ -271,6 +291,7 @@ fn dispatch_quote_fetch(
     mut cache: Option<&mut PersistentCache>,
     client: &reqwest::Client,
     provider: &YahooFinance,
+    proxy: &ProxyConfig,
     symbols: &[String],
     tx: &mpsc::UnboundedSender<FetchResult>,
 ) {
@@ -291,35 +312,32 @@ fn dispatch_quote_fetch(
             continue;
         }
 
-        let url = provider.quote_url(&[symbol.as_str()]);
-        if url.is_empty() {
+        let direct_url = provider.quote_url(&[symbol.as_str()]);
+        if direct_url.is_empty() {
             continue;
         }
+        let proxy_url = proxy.quote_url(symbol);
         let client = client.clone();
         let tx = tx.clone();
         let sym = symbol.clone();
         let provider = YahooFinance;
 
+        // Fetch via proxy first, falling back to the direct provider URL.
         tokio::spawn(async move {
-            match client.get(&url).send().await {
-                Ok(resp) => match resp.text().await {
-                    Ok(text) => match provider.parse_quotes(&text) {
-                        Ok(quotes) => {
-                            let _ = tx.send(FetchResult::Quotes {
-                                quotes,
-                                cache_key: Some(key),
-                            });
-                        }
-                        Err(e) => {
-                            let _ = tx.send(FetchResult::QuoteError(sym, e.to_string()));
-                        }
-                    },
+            match market_fetch::fetch_text(&client, proxy_url, &direct_url).await {
+                Ok(text) => match provider.parse_quotes(&text) {
+                    Ok(quotes) => {
+                        let _ = tx.send(FetchResult::Quotes {
+                            quotes,
+                            cache_key: Some(key),
+                        });
+                    }
                     Err(e) => {
                         let _ = tx.send(FetchResult::QuoteError(sym, e.to_string()));
                     }
                 },
                 Err(e) => {
-                    let _ = tx.send(FetchResult::QuoteError(sym, e.to_string()));
+                    let _ = tx.send(FetchResult::QuoteError(sym, e));
                 }
             }
         });
@@ -331,6 +349,7 @@ fn dispatch_historical_fetch(
     cache: Option<&mut PersistentCache>,
     client: &reqwest::Client,
     provider: &YahooFinance,
+    proxy: &ProxyConfig,
     symbol: &str,
     timeframe: crate::tui::chart::Timeframe,
     tx: &mpsc::UnboundedSender<FetchResult>,
@@ -358,31 +377,28 @@ fn dispatch_historical_fetch(
         start: start_date,
         end: today,
     };
-    let url = provider.historical_url(symbol, &range);
+    let direct_url = provider.historical_url(symbol, &range);
+    let proxy_url = proxy.historical_url(symbol, &range);
     let client = client.clone();
     let tx = tx.clone();
     let provider = YahooFinance;
 
+    // Fetch via proxy first, falling back to the direct provider URL.
     tokio::spawn(async move {
-        match client.get(&url).send().await {
-            Ok(resp) => match resp.text().await {
-                Ok(text) => match provider.parse_historical(&text) {
-                    Ok(bars) => {
-                        let _ = tx.send(FetchResult::Historical {
-                            bars,
-                            cache_key: Some(key),
-                        });
-                    }
-                    Err(e) => {
-                        let _ = tx.send(FetchResult::HistoricalError(e.to_string()));
-                    }
-                },
+        match market_fetch::fetch_text(&client, proxy_url, &direct_url).await {
+            Ok(text) => match provider.parse_historical(&text) {
+                Ok(bars) => {
+                    let _ = tx.send(FetchResult::Historical {
+                        bars,
+                        cache_key: Some(key),
+                    });
+                }
                 Err(e) => {
                     let _ = tx.send(FetchResult::HistoricalError(e.to_string()));
                 }
             },
             Err(e) => {
-                let _ = tx.send(FetchResult::HistoricalError(e.to_string()));
+                let _ = tx.send(FetchResult::HistoricalError(e));
             }
         }
     });

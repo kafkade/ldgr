@@ -52,6 +52,10 @@ rust_decimal = { workspace = true }
 ldgr-ffi = { path = "../ldgr-ffi" }
 tower = { version = "0.5", features = ["util"] }
 async-trait.workspace = true
+# The FFI-level e2e composes a REAL encrypted batch from an on-disk `LdgrVault`
+# (two devices sharing one vault file) before pushing it through the transport,
+# so it needs scratch directories.
+tempfile = "3"
 
 [lints]
 workspace = true

@@ -141,7 +141,7 @@ Each phase produces a usable, shippable product increment. Phases are sequential
 - ~~SRP-6a authentication for server sync~~ ✅
 - Loan tracking module: amortization schedules, payoff projections, what-if analysis, refinance comparison
 - Advanced financial goal projections
-- PDF report generation
+- ~~PDF report generation~~ ✅ (balance sheet, income statement, net worth)
 
 **Exit criteria**: A user can access finances from any browser with offline support, and optionally self-host a sync server.
 
@@ -159,6 +159,6 @@ Each phase produces a usable, shippable product increment. Phases are sequential
 - ✅ Siri Shortcuts (App Intents): query net worth, check spending, add expense
 - ✅ Community market data provider interface and documentation
 - CLI and web theming system
-- Plugin/extension architecture for community features
+- Plugin/extension architecture for community features (design: [ADR-009](adr/009-plugin-extension-architecture.md))
 
 **Exit criteria**: Full ecosystem with all platforms shipping, community contributions flowing.

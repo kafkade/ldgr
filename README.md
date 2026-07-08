@@ -13,7 +13,7 @@ An open-source, privacy-first personal finance system built on plain-text accoun
 - **Self-hosted sync server** — optional Axum-based relay server with SRP-6a zero-knowledge authentication. The server stores only encrypted blobs — it never sees plaintext financial data. Docker image included.
 - **Multi-platform** — Rust core library with CLI (clap + ratatui), iOS/iPadOS (SwiftUI via UniFFI), and web (Next.js + WASM) frontends.
 - **hledger-compatible** — import from and export to hledger journal format. Use `hledger` for reporting if you prefer.
-- **Investment tracking** — value holdings at market prices for net worth calculations. Market data from Yahoo Finance, CoinGecko (crypto), and ECB (forex) — all free, no API keys required.
+- **Investment tracking** — value holdings at market prices for net worth calculations. Market data from Yahoo Finance, CoinGecko (crypto), and ECB (forex) — all free, no API keys required. See the [Market Data guide](docs/market-data.md) for providers, caching, privacy, and configuration.
 
 > **Note**: ldgr is a **net worth tracker**, not a trading platform. Market data
 > is used to value your investment holdings as part of the overall financial
@@ -55,6 +55,11 @@ ldgr import statement.ofx
 # Export for hledger
 ldgr export --format hledger | hledger balance
 
+# Generate a styled PDF report
+ldgr export --format pdf --report balancesheet --output balance-sheet.pdf
+ldgr export --format pdf --report incomestatement --output income.pdf date:2024
+ldgr export --format pdf --report networth --output net-worth.pdf
+
 # Lock when done
 ldgr lock
 ```
@@ -78,6 +83,7 @@ ldgr lock
 | `ldgr balancesheet [query]` | Balance sheet (Assets - Liabilities = Equity) |
 | `ldgr import <file>` | Import CSV or OFX/QFX bank exports |
 | `ldgr export --format <fmt>` | Export to hledger, CSV, or JSON |
+| `ldgr export --format pdf --report <name> --output <file>` | PDF report (balancesheet, incomestatement, networth) |
 | `ldgr validate <file>` | Check journal importability |
 | `ldgr reconcile <account>` | Interactive reconciliation |
 | `ldgr rules` | Manage import auto-categorization rules |
@@ -199,6 +205,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow details.
 ## Documentation
 
 - [How is my data protected?](docs/security/vault-overview.md) — plain-language overview of ldgr's encryption, no technical background needed
+- [Market Data](docs/market-data.md) — providers, caching, privacy, proxy configuration, and self-hosting
 - [Architecture & Roadmap](docs/ldgr-architecture.md) — full system design, ADRs, data model
 - [Roadmap](docs/roadmap.md) — phased development plan
 - [ADRs](docs/adr/) — architecture decision records, including [ADR-008: Self-Hosting + Two-Secret Account Auth](docs/adr/008-self-hosting-and-account-auth.md)
