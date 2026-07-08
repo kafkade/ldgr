@@ -6,6 +6,7 @@
 pub mod lots;
 pub mod parser;
 pub mod query;
+pub mod report_document;
 pub mod reports;
 pub mod types;
 
@@ -15,6 +16,10 @@ pub use lots::{
 };
 pub use parser::{ParseError, parse_journal};
 pub use query::{Filter, Query};
+pub use report_document::{
+    Amount, ReportDocument, ReportRow, ReportSection, balance_sheet_document,
+    income_statement_document, net_worth_document,
+};
 pub use reports::{
     AccountBalance, BalanceReport, BalanceSheet, CashFlow, IncomeStatement, NetWorth,
     RegisterEntry, RegisterReport, TrialBalance, TrialBalanceEntry, compute_balance,
