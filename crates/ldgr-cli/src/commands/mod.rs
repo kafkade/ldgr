@@ -5,6 +5,7 @@ pub mod balancesheet;
 pub mod cache;
 pub mod config;
 pub mod delete;
+pub mod devices;
 pub mod export;
 pub mod goals;
 pub mod import;

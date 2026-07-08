@@ -163,7 +163,7 @@ fn generate_verification_code(public_key: &PublicKey) -> String {
     format!("{:06}", sum % 1_000_000)
 }
 
-fn base64_encode(data: &[u8]) -> String {
+pub(crate) fn base64_encode(data: &[u8]) -> String {
     use std::fmt::Write;
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut result = String::with_capacity(data.len().div_ceil(3) * 4);
@@ -188,7 +188,7 @@ fn base64_encode(data: &[u8]) -> String {
     result
 }
 
-fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
     let s = s.trim_end_matches('=');
     let mut result = Vec::with_capacity(s.len() * 3 / 4);
     let mut buf: u32 = 0;
