@@ -1,10 +1,10 @@
-# ldgr-server — automatic-HTTPS reverse proxy (optional `tls` compose profile).
+# ldgr — automatic-HTTPS reverse proxy (optional `tls` compose profile).
 #
 # Enable with:  docker compose --profile tls up -d
 # Requires LDGR_DOMAIN (and optionally LDGR_ACME_EMAIL) in .env, plus DNS for
 # that domain pointed at this host. Caddy obtains and renews a certificate for
-# you and proxies HTTPS traffic to the ldgr-server container on port 8080.
-
+# you and fronts the `web` service, which serves the panel and (via its own
+# reverse proxy) the JSON API — so a single HTTPS origin serves everything.
 {
 	# Uncomment to receive ACME/expiry notices (or set LDGR_ACME_EMAIL in .env).
 	# email {$LDGR_ACME_EMAIL}
@@ -12,5 +12,5 @@
 
 {$LDGR_DOMAIN} {
 	encode zstd gzip
-	reverse_proxy server:8080
+	reverse_proxy web:8080
 }

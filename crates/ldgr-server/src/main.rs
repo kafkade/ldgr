@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tower_http::trace::TraceLayer;
 
-use ldgr_server::{api, auth, config, state, storage};
+use ldgr_server::{api, auth, config, cors, state, storage};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -25,7 +25,18 @@ async fn main() -> anyhow::Result<()> {
         config,
     });
 
-    let app = api::router(state.clone()).layer(TraceLayer::new_for_http());
+    let mut app = api::router(state.clone()).layer(TraceLayer::new_for_http());
+
+    // Attach the scoped CORS layer only when an allowlist is configured; with no
+    // `LDGR_ALLOWED_ORIGINS` set, cross-origin browser requests stay blocked
+    // (the secure default). Same-origin deployments need no allowlist.
+    if let Some(cors) = cors::cors_layer(&state.config.allowed_origins) {
+        tracing::info!(
+            "CORS enabled for {} allowed origin(s)",
+            state.config.allowed_origins.len()
+        );
+        app = app.layer(cors);
+    }
 
     let listener = tokio::net::TcpListener::bind(state.config.bind_addr).await?;
     tracing::info!(

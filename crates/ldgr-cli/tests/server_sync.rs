@@ -35,6 +35,7 @@ async fn spawn_server() -> (String, Arc<AppState>) {
         srp_handshake_ttl_secs: 120,
         registration_policy: RegistrationPolicy::Open,
         admin_email: None,
+        allowed_origins: Vec::new(),
         default_user_quota_bytes: 1024 * 1024 * 1024,
         server_name: "ldgr-test-server".into(),
     };
