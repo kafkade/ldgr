@@ -232,26 +232,39 @@ mod tests {
 
     #[test]
     fn encrypted_store_is_unreadable_without_key() {
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("vault.db");
-        seed_plaintext_db(&db_path);
-        assert!(migrate_if_plaintext(&db_path, &KEY).unwrap());
+        // SQLCipher's wrong-key / keyless decrypt-failure path (through the
+        // vendored OpenSSL build) consumes a large native stack on Windows —
+        // more than the ~2 MiB default of a libtest worker thread, which
+        // overflows there. The production CLI never hits this on a worker
+        // thread: it runs on the main thread, which Rust gives an 8 MiB stack
+        // on Windows. Run the assertions on a thread with that same stack so
+        // the test mirrors production and is robust across platforms.
+        let handle = std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let dir = tempfile::tempdir().unwrap();
+                let db_path = dir.path().join("vault.db");
+                seed_plaintext_db(&db_path);
+                assert!(migrate_if_plaintext(&db_path, &KEY).unwrap());
 
-        // A keyless open cannot read the schema (data is unreadable at rest).
-        let conn = Connection::open(&db_path).unwrap();
-        let keyless = conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| {
-            r.get::<_, i64>(0)
-        });
-        assert!(
-            keyless.is_err(),
-            "keyless read must fail on encrypted store"
-        );
+                // A keyless open cannot read the schema (unreadable at rest).
+                let conn = Connection::open(&db_path).unwrap();
+                let keyless = conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| {
+                    r.get::<_, i64>(0)
+                });
+                assert!(
+                    keyless.is_err(),
+                    "keyless read must fail on encrypted store"
+                );
 
-        // A wrong key also fails.
-        let wrong = db::open_encrypted(&db_path, &[0xFFu8; 32]);
-        assert!(
-            wrong.is_err(),
-            "wrong key must fail to open encrypted store"
-        );
+                // A wrong key also fails.
+                let wrong = db::open_encrypted(&db_path, &[0xFFu8; 32]);
+                assert!(
+                    wrong.is_err(),
+                    "wrong key must fail to open encrypted store"
+                );
+            })
+            .expect("failed to spawn test thread");
+        handle.join().expect("test thread panicked");
     }
 }
