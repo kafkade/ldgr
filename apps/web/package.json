@@ -10,7 +10,7 @@
     "build": "next build --webpack",
     "start": "next start",
     "lint": "next lint",
-    "test": "node --experimental-strip-types --test test/integration.mjs test/sync-wasm.mjs test/admin-api.mjs"
+    "test": "node --experimental-strip-types --test test/integration.mjs test/sync-wasm.mjs test/admin-api.mjs test/at-rest.mjs"
   },
   "dependencies": {
     "next": "^16.2.10",

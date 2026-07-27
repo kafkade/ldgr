@@ -15,8 +15,8 @@ use ldgr_core::accounting::parser::{ParseError, parse_journal};
 use ldgr_core::accounting::reports;
 use ldgr_core::accounting::types as acct;
 use ldgr_core::crypto::{
-    self, Argon2Params, UnlockedVault, encode_recovery_key, open_vault, restore_vault_from_session,
-    serialize_vault,
+    self, Argon2Params, UnlockedVault, derive_db_key, encode_recovery_key, open_vault,
+    restore_vault_from_session, serialize_vault,
 };
 use ldgr_core::storage::accounts::{self, AccountType, ListOptions, NewAccount};
 use ldgr_core::storage::error::StorageError;
@@ -25,9 +25,11 @@ use ldgr_core::storage::schema;
 use ldgr_core::storage::sync as sync_storage;
 use ldgr_core::storage::transactions::{self, NewPosting, NewTransaction, TransactionStatus};
 use rusqlite::Connection;
+use zeroize::Zeroizing;
 
 uniffi::include_scaffolding!("ldgr");
 
+mod migrate;
 mod sync;
 pub use sync::*;
 
@@ -211,6 +213,40 @@ enum VaultState {
 
 // ── LdgrVault Object ───────────────────────────────────────────────────────────
 
+/// Open the working-store database and apply the `SQLCipher` key derived from the
+/// session vault key, so financial data is encrypted at rest (issue #315).
+///
+/// Mirrors the CLI's keyed open ([`ldgr_cli::db::open_encrypted`]): a raw-key
+/// `PRAGMA key` (so `SQLCipher` uses the derived bytes directly and skips its own
+/// PBKDF2 — we already derive from the Argon2id-based key chain), then a forced
+/// page read so a wrong key (or an unmigrated plaintext store) fails now with a
+/// clear error rather than at the first query. The formatted `PRAGMA` statement,
+/// which embeds the key hex, is zeroized after use.
+///
+/// This is what makes the FFI/iOS path actually encrypt: with plain `SQLite` the
+/// `PRAGMA key` is silently ignored and the store would be written in plaintext.
+///
+/// We deliberately do **not** enable `PRAGMA cipher_memory_security`: issue #295
+/// removed it from the CLI because its global `VirtualLock`-on-every-allocation
+/// hook exhausts the Windows working-set quota. At-rest confidentiality comes
+/// entirely from `PRAGMA key` encrypting the database file on disk.
+fn open_encrypted_db(
+    path: &std::path::Path,
+    session_key: &[u8; 32],
+) -> Result<Connection, LdgrError> {
+    let conn = Connection::open(path)?;
+    let db_key = derive_db_key(session_key)?;
+    let pragma = db_key.to_pragma_hex();
+    let stmt = Zeroizing::new(format!("PRAGMA key = \"{}\";", pragma.as_str()));
+    conn.execute_batch(&stmt)?;
+    // Force a page read so a wrong key (or an unmigrated plaintext store) fails
+    // now with a clear error rather than at the first query.
+    conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| {
+        r.get::<_, i64>(0)
+    })?;
+    Ok(conn)
+}
+
 pub struct LdgrVault {
     vault_dir: PathBuf,
     vault_path: PathBuf,
@@ -257,8 +293,9 @@ impl LdgrVault {
         let vault_bytes = serialize_vault(&vault)?;
         atomic_write(&self.vault_path, &vault_bytes)?;
 
-        // Create and initialize SQLite database
-        let conn = Connection::open(&self.db_path)?;
+        // Create and initialize the encrypted SQLite (SQLCipher) database
+        let session_key = vault.export_session_key();
+        let conn = open_encrypted_db(&self.db_path, &session_key)?;
         schema::initialize(&conn)?;
 
         let recovery_string = encode_recovery_key(&recovery_key);
@@ -281,7 +318,8 @@ impl LdgrVault {
         let data = std::fs::read(&self.vault_path)?;
         let vault = open_vault(&data, password.as_bytes())?;
 
-        let conn = Connection::open(&self.db_path)?;
+        let session_key = vault.export_session_key();
+        let conn = open_encrypted_db(&self.db_path, &session_key)?;
         // Ensure schema is initialized (idempotent)
         schema::initialize(&conn)?;
 
@@ -353,12 +391,80 @@ impl LdgrVault {
         let data = std::fs::read(&self.vault_path)?;
         let vault = restore_vault_from_session(&data, &key_bytes)?;
 
-        let conn = Connection::open(&self.db_path)?;
+        let session_key = vault.export_session_key();
+        let conn = open_encrypted_db(&self.db_path, &session_key)?;
         schema::initialize(&conn)?;
 
         let mut state = self.state.lock().expect("mutex poisoned");
         *state = VaultState::Unlocked { vault, conn };
 
+        Ok(())
+    }
+
+    /// Whether the working store is a legacy **plaintext** `SQLite` database that
+    /// must be migrated to the encrypted (`SQLCipher`) format before it can be
+    /// opened (issue #315).
+    ///
+    /// Only reads the file header — does not require the vault to be unlocked.
+    /// The caller should check this before [`open`](Self::open) /
+    /// [`open_with_session_key`](Self::open_with_session_key) and, if `true`, run
+    /// [`migrate`](Self::migrate) (password path) or
+    /// [`migrate_with_session_key`](Self::migrate_with_session_key) (biometric
+    /// path) first.
+    pub fn needs_migration(&self) -> Result<bool, LdgrError> {
+        migrate::is_plaintext_sqlite(&self.db_path)
+    }
+
+    /// Migrate a legacy plaintext working store to the encrypted format, keyed by
+    /// the vault key derived from `password` (issue #315).
+    ///
+    /// Mirrors the CLI's explicit `ldgr migrate`: opens the vault to obtain the
+    /// session key (so a wrong password is rejected before any file is touched),
+    /// re-materialises `vault.db` as `SQLCipher`-encrypted, verifies the copy
+    /// preserves the schema version and every table's row count, then atomically
+    /// swaps it in — keeping the original as `vault.db.plaintext.bak`. A no-op if
+    /// the store is already encrypted. Leaves the vault **locked**; call
+    /// [`open`](Self::open) afterwards.
+    pub fn migrate(&self, password: String) -> Result<(), LdgrError> {
+        if !self.vault_path.exists() {
+            return Err(LdgrError::NotFound(format!(
+                "vault file not found: {}",
+                self.vault_path.display()
+            )));
+        }
+        let data = std::fs::read(&self.vault_path)?;
+        let vault = open_vault(&data, password.as_bytes())?;
+        let session_key = vault.export_session_key();
+        migrate::migrate_if_plaintext(&self.db_path, &session_key)?;
+        Ok(())
+    }
+
+    /// Migrate a legacy plaintext working store using a previously exported
+    /// session key (biometric-unlock path, issue #315).
+    ///
+    /// Like [`migrate`](Self::migrate) but keyed from the cached 32-byte session
+    /// key instead of the password, so a biometric user upgrading from an
+    /// unencrypted build is not forced to re-enter their password. Validates the
+    /// key against the vault before migrating. Leaves the vault **locked**; call
+    /// [`open_with_session_key`](Self::open_with_session_key) afterwards.
+    pub fn migrate_with_session_key(&self, key: Vec<u8>) -> Result<(), LdgrError> {
+        let key_bytes: [u8; 32] = key.try_into().map_err(|v: Vec<u8>| {
+            LdgrError::InvalidInput(format!(
+                "session key must be exactly 32 bytes, got {}",
+                v.len()
+            ))
+        })?;
+        if !self.vault_path.exists() {
+            return Err(LdgrError::NotFound(format!(
+                "vault file not found: {}",
+                self.vault_path.display()
+            )));
+        }
+        // Validate the key matches the vault before touching the working store.
+        let data = std::fs::read(&self.vault_path)?;
+        let vault = restore_vault_from_session(&data, &key_bytes)?;
+        let session_key = vault.export_session_key();
+        migrate::migrate_if_plaintext(&self.db_path, &session_key)?;
         Ok(())
     }
 
@@ -1342,5 +1448,108 @@ mod tests {
             vault.ingest_batch(vec![1, 2, 3]).unwrap_err(),
             LdgrError::VaultLocked
         ));
+    }
+
+    // ---- Issue #315: at-rest encryption + migration ----
+
+    const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
+
+    fn bytes_contain(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    #[test]
+    fn working_store_is_encrypted_at_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+
+        let vault = LdgrVault::new(path).unwrap();
+        vault
+            .create_vault("pw".to_string(), "Secret Ledger".to_string())
+            .unwrap();
+        vault
+            .add_account(
+                "Assets:SecretBank".to_string(),
+                "asset".to_string(),
+                Some("USD".to_string()),
+            )
+            .unwrap();
+        vault.close();
+
+        // The on-disk working store must be SQLCipher-encrypted: no plaintext
+        // SQLite header, and no ledger identifiers visible in the clear.
+        let on_disk = std::fs::read(dir.path().join("vault.db")).unwrap();
+        assert_ne!(&on_disk[..16], SQLITE_MAGIC, "vault.db must be encrypted");
+        assert!(!bytes_contain(&on_disk, b"Assets:SecretBank"));
+        assert!(!bytes_contain(&on_disk, b"sqlite_master"));
+
+        // A freshly created (already encrypted) vault does not need migration.
+        assert!(!vault.needs_migration().unwrap());
+    }
+
+    #[test]
+    fn migrate_plaintext_store_to_encrypted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+        let db_path = dir.path().join("vault.db");
+
+        // Create a real (encrypted) vault, then simulate a legacy build by
+        // replacing vault.db with a plaintext SQLite database.
+        let vault = LdgrVault::new(path).unwrap();
+        vault
+            .create_vault("pw".to_string(), "Legacy".to_string())
+            .unwrap();
+        vault.close();
+        std::fs::remove_file(&db_path).unwrap();
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            schema::initialize(&conn).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE t_probe (id INTEGER); INSERT INTO t_probe VALUES (1),(2);",
+            )
+            .unwrap();
+        }
+        // Confirm it is plaintext before migrating.
+        assert_eq!(&std::fs::read(&db_path).unwrap()[..16], SQLITE_MAGIC);
+        assert!(vault.needs_migration().unwrap());
+
+        // Explicit migration (mirrors CLI `ldgr migrate`), then open.
+        vault.migrate("pw".to_string()).unwrap();
+        assert!(!vault.needs_migration().unwrap());
+        assert!(dir.path().join("vault.db.plaintext.bak").exists());
+        assert!(!dir.path().join("vault.db.migrating").exists());
+
+        // Store is now encrypted and the seeded data survived.
+        let on_disk = std::fs::read(&db_path).unwrap();
+        assert_ne!(&on_disk[..16], SQLITE_MAGIC);
+        assert!(!bytes_contain(&on_disk, b"t_probe"));
+
+        vault.open("pw".to_string()).unwrap();
+        assert!(vault.is_unlocked());
+        vault.close();
+    }
+
+    #[test]
+    fn migrate_rejects_wrong_password() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+        let db_path = dir.path().join("vault.db");
+
+        let vault = LdgrVault::new(path).unwrap();
+        vault
+            .create_vault("correct".to_string(), "Legacy".to_string())
+            .unwrap();
+        vault.close();
+        std::fs::remove_file(&db_path).unwrap();
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            schema::initialize(&conn).unwrap();
+        }
+
+        // A wrong password must fail before any file is swapped; the plaintext
+        // store is left intact (still needs migration).
+        assert!(vault.migrate("wrong".to_string()).is_err());
+        assert!(vault.needs_migration().unwrap());
+        assert!(!dir.path().join("vault.db.plaintext.bak").exists());
     }
 }

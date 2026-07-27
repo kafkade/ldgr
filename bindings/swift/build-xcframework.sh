@@ -33,6 +33,21 @@ if [[ "${1:-}" == "--release" ]]; then
     CARGO_FLAGS="--release"
 fi
 
+# ── Deployment targets ──────────────────────────────────────────────────────────
+# Pin a minimum OS version for every Apple slice. This is REQUIRED now that
+# ldgr-ffi links SQLCipher's vendored OpenSSL (issues #295/#315): those C objects
+# are built for the host SDK and reference `___chkstk_darwin`, a libSystem
+# stack-probe symbol that only exists from iOS 12 / watchOS 5 onward. Without an
+# explicit target, cargo/rustc default to the ancient iOS 10.0 baseline, where
+# that symbol is undefined and the link fails ("Undefined symbols:
+# ___chkstk_darwin"). These values match the minimums declared in Package.swift
+# so the framework links against the same floor the Swift package advertises, and
+# each is overridable via `${VAR:-default}`. Each `cargo build --target` reads the
+# env var matching its platform at link time.
+export IPHONEOS_DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-16.0}"
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
+export WATCHOS_DEPLOYMENT_TARGET="${WATCHOS_DEPLOYMENT_TARGET:-10.0}"
+
 echo "╔══════════════════════════════════════════════════╗"
 echo "║  ldgr — Building XCFramework ($PROFILE)         ║"
 echo "╚══════════════════════════════════════════════════╝"

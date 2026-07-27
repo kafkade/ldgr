@@ -21,8 +21,23 @@ uuid.workspace = true
 rust_decimal.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
-# Plain bundled SQLite. At-rest encryption for the iOS/FFI working store
-# (SQLCipher keyed open + Swift Keychain session) is tracked separately in #315.
+zeroize.workspace = true
+
+# At-rest encryption for the iOS/FFI working store (issue #315): the keyed
+# `PRAGMA key` open only encrypts when rusqlite is built with SQLCipher — plain
+# SQLite treats `PRAGMA key` as a silent no-op and would write plaintext. The
+# SQLCipher feature uses rusqlite's vendored OpenSSL, but `openssl-src` cannot
+# configure OpenSSL for watchOS ("don't know how to configure OpenSSL for
+# aarch64-apple-watchos"), so the feature is scoped to every target EXCEPT
+# watchOS. This is safe: the watchOS app links only `LdgrShared` (pre-computed
+# summaries over WatchConnectivity) and never opens a vault database, so it needs
+# neither SQLCipher nor at-rest encryption. Each `cargo build --target` selects
+# exactly one table below, so their features never unify across a device vs.
+# watch build.
+[target.'cfg(not(target_os = "watchos"))'.dependencies]
+rusqlite = { workspace = true, features = ["bundled-sqlcipher-vendored-openssl"] }
+
+[target.'cfg(target_os = "watchos")'.dependencies]
 rusqlite = { workspace = true, features = ["bundled"] }
 
 [build-dependencies]
