@@ -13,7 +13,7 @@
     "test": "node --experimental-strip-types --test test/integration.mjs test/sync-wasm.mjs test/admin-api.mjs test/at-rest.mjs"
   },
   "dependencies": {
-    "next": "^16.2.10",
+    "next": "^16.2.11",
     "qrcode": "^1.5.4",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
