@@ -34,19 +34,22 @@ zeroize = { version = "1", features = ["derive"] }
 
 # Data
 rust_decimal = { version = "1", features = ["serde-with-str"] }
-# Local working store (SQLite via rusqlite). Feature selection is per-crate, NOT
-# workspace-wide, so that unrelated consumers keep plain SQLite:
-#   - ldgr-cli enables `bundled-sqlcipher-vendored-openssl` (SQLCipher, encrypts
-#     `vault.db` at rest for issue #295); vendored OpenSSL builds from source for
-#     portable, reproducible CLI builds.
-#   - ldgr-core / ldgr-server / ldgr-ffi enable plain `bundled` (issue #295 keeps
-#     the server's encrypted-blob store and the FFI/iOS path — seq-02 follow-up —
-#     off SQLCipher + vendored OpenSSL).
+# Local working store (SQLite via rusqlite). The workspace default is plain
+# `bundled`; the SQLCipher feature is selected PER-CRATE, NOT workspace-wide, so
+# that unrelated consumers keep plain SQLite:
+#   - ldgr-cli and ldgr-ffi enable `bundled-sqlcipher-vendored-openssl`
+#     (SQLCipher, encrypts `vault.db` at rest for issue #295); vendored OpenSSL
+#     builds from source for portable, reproducible client builds. The FFI path
+#     must use SQLCipher so its keyed `PRAGMA key` open actually encrypts on iOS
+#     (plain SQLite treats `PRAGMA key` as a no-op and would write plaintext).
+#   - ldgr-core / ldgr-server enable plain `bundled` (issue #295 keeps the
+#     server's encrypted-blob store off SQLCipher + vendored OpenSSL).
 # NOTE: Cargo unifies features across a full `cargo build --workspace`, so a
-# combined build links SQLCipher into the shared rusqlite; standalone builds
-# (`cargo build -p ldgr-server`) keep plain SQLite. SQLCipher is a superset of
-# SQLite, so unkeyed opens are behaviorally unaffected either way.
-rusqlite = { version = "0.40" }
+# combined/dev build links SQLCipher into the shared rusqlite; the SHIPPED server
+# is always built isolated with `cargo build -p ldgr-server` (Dockerfile /
+# release), which keeps plain SQLite. SQLCipher is a superset of SQLite, so
+# unkeyed opens are behaviorally unaffected either way.
+rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v7", "serde"] }

@@ -18,10 +18,11 @@ uniffi.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 uuid.workspace = true
-rusqlite = { workspace = true, features = ["bundled"] }
+rusqlite = { workspace = true, features = ["bundled-sqlcipher-vendored-openssl"] }
 rust_decimal.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
+zeroize.workspace = true
 
 [build-dependencies]
 uniffi = { workspace = true, features = ["build"] }

@@ -107,7 +107,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- The CLI's local working store (`vault.db`) is now encrypted at rest with SQLCipher (AES-256): the database is keyed by a subkey derived from your vault key via HKDF, so account names, transaction descriptions, amounts, and commodities are no longer readable from disk without your master password. Anyone with filesystem access to a locked vault — including another local user or a stolen locked laptop — sees only ciphertext. Existing plaintext vaults are upgraded with `ldgr migrate`
+- The local working store (`vault.db`) is now encrypted at rest with SQLCipher (AES-256): the database is keyed by a subkey derived from your vault key via HKDF, so account names, transaction descriptions, amounts, and commodities are no longer readable from disk without your master password. This applies to both the CLI and the shared Rust core used by the iOS/iPadOS app, so anyone with filesystem access to a locked vault — including another local user or a stolen locked laptop — sees only ciphertext. Existing plaintext CLI vaults are upgraded with `ldgr migrate`
 - The unlocked session key is no longer written to a plaintext `session.json`; it is stored in the operating system keystore (macOS Keychain, Linux kernel keyring, or Windows Credential Manager) while `session.json` holds only non-secret metadata. `ldgr lock` now removes the key from the keystore and clears the session, so locking renders the working store unreadable rather than merely dropping a marker
 
 ## [1.2.0] - 2026-05-30
