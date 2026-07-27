@@ -170,16 +170,21 @@ mod tests {
 
     /// Run a test body on a thread with a generous stack.
     ///
-    /// `SQLCipher`'s cipher setup (through the vendored `OpenSSL` build,
-    /// compiled unoptimized for tests) uses large native stack frames. On
-    /// Windows that is enough to overflow libtest's default ~2 MiB worker-thread
-    /// stack even on the ordinary success path (open + `PRAGMA key` + a single
-    /// read). The shipped `ldgr` binary is unaffected — it runs this code on the
-    /// process main thread, which has a multi-megabyte stack — so this only
-    /// matters for the test harness. Give `SQLCipher`-touching tests headroom.
+    /// `SQLCipher`'s cipher path (through the vendored `OpenSSL` build) uses a
+    /// large native stack for the keyed open / `sqlcipher_export` migration.
+    /// On Windows/MSVC that footprint is dramatically larger than on
+    /// macOS/Linux for the *same* bounded operation — heavier frame layout,
+    /// SEH-based unwinding, and different vendored-`OpenSSL` codegen — and it
+    /// empirically exceeds a 16 MiB worker-thread stack there, overflowing even
+    /// the success path (open + `PRAGMA key` + a single read). macOS/Linux run
+    /// the identical body well under that. The shipped `ldgr` binary is
+    /// unaffected — it runs this code on the process main thread, which has a
+    /// multi-megabyte stack — so this only matters for the test harness. Give
+    /// `SQLCipher`-touching tests a large explicit stack (64 MiB, comfortably
+    /// above the observed Windows requirement).
     fn with_large_stack(f: impl FnOnce() + Send + 'static) {
         std::thread::Builder::new()
-            .stack_size(16 * 1024 * 1024)
+            .stack_size(64 * 1024 * 1024)
             .spawn(f)
             .expect("failed to spawn test thread")
             .join()
