@@ -123,3 +123,9 @@ pub fn auth_key(password: &[u8]) -> AuthKey {
         .expect("derive master key");
     derive_auth_key(&mk).expect("derive auth key")
 }
+
+/// Fixed account-scoped Argon2 KDF (salt + params) for 2SKD tests, matching the
+/// salt/params [`auth_key`] uses so registration and login agree (#296).
+pub fn account_kdf() -> ldgr_core::crypto::AccountKdf {
+    ldgr_core::crypto::AccountKdf::from_parts(b"argon-salt-16byte".to_vec(), Argon2Params::test())
+}

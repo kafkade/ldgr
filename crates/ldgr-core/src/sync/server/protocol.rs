@@ -52,6 +52,55 @@ pub enum HexError {
     InvalidChar,
 }
 
+// ── Account KDF (two-secret / 2SKD, ADR-008 + #296) ──────────────────────────────
+
+/// Account-scoped Argon2id salt + parameters, transported so a new device can
+/// derive `MK_auth` without the original vault header (#296).
+///
+/// Sent in [`RegisterRequest`] for `srp-2skd-v1` accounts and echoed back in
+/// [`LoginInitResponse`]. Not secret — no more sensitive than the SRP salt that
+/// is already returned pre-auth. Omitted entirely for single-secret accounts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountKdfWire {
+    /// Hex-encoded account Argon2id salt (≥16 bytes).
+    pub salt: String,
+    /// Argon2id memory cost in KiB.
+    pub memory_cost_kib: u32,
+    /// Argon2id iterations (time cost).
+    pub iterations: u32,
+    /// Argon2id degree of parallelism.
+    pub parallelism: u32,
+}
+
+impl AccountKdfWire {
+    /// Build the wire form from a core [`AccountKdf`](crate::crypto::AccountKdf).
+    #[must_use]
+    pub fn from_account_kdf(kdf: &crate::crypto::AccountKdf) -> Self {
+        let params = kdf.params();
+        Self {
+            salt: hex_encode(kdf.salt()),
+            memory_cost_kib: params.memory_cost_kib,
+            iterations: params.iterations,
+            parallelism: params.parallelism,
+        }
+    }
+
+    /// Parse the wire form back into a core [`AccountKdf`](crate::crypto::AccountKdf).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HexError`] if the salt is not valid hex.
+    pub fn to_account_kdf(&self) -> Result<crate::crypto::AccountKdf, HexError> {
+        let salt = hex_decode(&self.salt)?;
+        let params = crate::crypto::Argon2Params {
+            memory_cost_kib: self.memory_cost_kib,
+            iterations: self.iterations,
+            parallelism: self.parallelism,
+        };
+        Ok(crate::crypto::AccountKdf::from_parts(salt, params))
+    }
+}
+
 // ── Auth: Register ──────────────────────────────────────────────────────────────
 
 /// `POST /api/v1/auth/register` request body.
@@ -75,6 +124,13 @@ pub struct RegisterRequest {
     /// `None` for single-secret registration (omitted from the wire).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_id: Option<String>,
+    /// Account-scoped Argon2id salt + params used to derive `MK_auth` (#296).
+    /// Present for `srp-2skd-v1`; the server stores it and returns it at
+    /// `login/init` so a new device (no vault header) can reproduce the verifier.
+    ///
+    /// `None` for single-secret registration (omitted from the wire).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_kdf: Option<AccountKdfWire>,
 }
 
 /// `POST /api/v1/auth/register` response body.
@@ -106,6 +162,11 @@ pub struct LoginInitResponse {
     /// legacy single-secret accounts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_id: Option<String>,
+    /// The account's stored Argon2id salt + params, returned for two-secret
+    /// (2SKD) accounts so a new device can derive `MK_auth` without a vault
+    /// header (#296). `None` for legacy single-secret accounts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_kdf: Option<AccountKdfWire>,
 }
 
 // ── Auth: Login verify (SRP step 2) ─────────────────────────────────────────────
@@ -328,6 +389,7 @@ mod tests {
             verifier: "abcd".into(),
             auth_scheme: None,
             account_id: None,
+            account_kdf: None,
         });
         // `None` must omit `auth_scheme` entirely (wire-identical to legacy).
         let legacy = RegisterRequest {
@@ -336,6 +398,7 @@ mod tests {
             verifier: "abcd".into(),
             auth_scheme: None,
             account_id: None,
+            account_kdf: None,
         };
         let legacy_json = serde_json::to_string(&legacy).expect("serialize");
         assert!(
@@ -346,13 +409,24 @@ mod tests {
             !legacy_json.contains("account_id"),
             "account_id must be omitted when None: {legacy_json}"
         );
+        assert!(
+            !legacy_json.contains("account_kdf"),
+            "account_kdf must be omitted when None: {legacy_json}"
+        );
         // `Some(..)` round-trips and is present on the wire.
+        let kdf = AccountKdfWire {
+            salt: "00112233445566778899aabbccddeeff".into(),
+            memory_cost_kib: 65536,
+            iterations: 3,
+            parallelism: 1,
+        };
         round_trip(&RegisterRequest {
             username: "alice".into(),
             salt: "00ff".into(),
             verifier: "abcd".into(),
             auth_scheme: Some("srp-2skd-v1".into()),
             account_id: Some("018f-account".into()),
+            account_kdf: Some(kdf.clone()),
         });
         let two_skd = RegisterRequest {
             username: "alice".into(),
@@ -360,9 +434,11 @@ mod tests {
             verifier: "abcd".into(),
             auth_scheme: Some("srp-2skd-v1".into()),
             account_id: Some("018f-account".into()),
+            account_kdf: Some(kdf.clone()),
         };
         let two_skd_json = serde_json::to_string(&two_skd).expect("serialize");
         assert!(two_skd_json.contains("\"auth_scheme\":\"srp-2skd-v1\""));
+        assert!(two_skd_json.contains("\"account_kdf\""));
         round_trip(&RegisterResponse {
             user_id: "u1".into(),
         });
@@ -375,6 +451,14 @@ mod tests {
             salt: "00ff".into(),
             server_public: "bb".into(),
             account_id: None,
+            account_kdf: None,
+        });
+        round_trip(&LoginInitResponse {
+            handshake_id: "h1".into(),
+            salt: "00ff".into(),
+            server_public: "bb".into(),
+            account_id: Some("018f-account".into()),
+            account_kdf: Some(kdf),
         });
         round_trip(&LoginVerifyRequest {
             handshake_id: "h1".into(),
@@ -384,6 +468,14 @@ mod tests {
             server_proof: "dd".into(),
             token: "tok".into(),
         });
+    }
+
+    #[test]
+    fn account_kdf_wire_round_trips_core_type() {
+        use crate::crypto::{AccountKdf, Argon2Params};
+        let kdf = AccountKdf::from_parts(vec![0xab; 16], Argon2Params::test());
+        let wire = AccountKdfWire::from_account_kdf(&kdf);
+        assert_eq!(wire.to_account_kdf().unwrap(), kdf);
     }
 
     #[test]

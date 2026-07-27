@@ -19,10 +19,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
-use ldgr_core::crypto::{
-    Argon2Params, AuthKey, EmergencyKit, SecretKey, decode_recovery_key, derive_auth_key,
-    derive_master_key,
-};
+use ldgr_core::crypto::{AccountKdf, Argon2Params, EmergencyKit, SecretKey, decode_recovery_key};
 use ldgr_core::sync::conflicts::SyncConflict;
 use ldgr_core::sync::events::{EventBatch, SyncEvent, VectorClock};
 use ldgr_core::sync::server::{
@@ -260,12 +257,14 @@ impl WasmSyncClient {
         Ok(())
     }
 
-    /// Register a new **two-secret (2SKD)** account (ADR-008).
+    /// Register a new **two-secret (2SKD)** account (ADR-008 + #296).
     ///
-    /// Derives `MK_auth` from `password` + Argon2 salt/params and parses
-    /// `secret_key` (canonical text). Neither the password nor the Secret Key
-    /// leaves the browser — only `(salt, verifier)` and the `account_id` go to
-    /// the server. Returns the assigned user id.
+    /// `MK_auth` is derived from `password` + the **account-scoped** Argon2
+    /// salt/params (a fresh salt generated at sign-up, decoupled from any vault);
+    /// `secret_key` is parsed from its canonical text. Neither the password nor
+    /// the Secret Key leaves the browser — only `(salt, verifier)`, the
+    /// `account_id`, and the account KDF go to the server. Returns the assigned
+    /// user id.
     #[wasm_bindgen(js_name = register2skd)]
     #[allow(clippy::too_many_arguments)]
     pub async fn register_2skd(
@@ -279,27 +278,33 @@ impl WasmSyncClient {
         iterations: u32,
         parallelism: u32,
     ) -> Result<String, JsError> {
-        let params = Argon2Params {
-            memory_cost_kib,
-            iterations,
-            parallelism,
-        };
+        let account_kdf = AccountKdf::from_parts(
+            argon2_salt,
+            Argon2Params {
+                memory_cost_kib,
+                iterations,
+                parallelism,
+            },
+        );
         let aid = Uuid::parse_str(&account_id)
             .map_err(|e| JsError::new(&format!("invalid account id: {e}")))?;
-        let mk_auth = derive_mk_auth(password.as_bytes(), &argon2_salt, &params)?;
         let sk = SecretKey::parse(&secret_key)
             .map_err(|e| JsError::new(&format!("invalid secret key: {e}")))?;
         let client = self.client();
         client
-            .register_2skd(&username, &aid, &mk_auth, &sk)
+            .register_2skd(&username, &aid, password.as_bytes(), &sk, &account_kdf)
             .await
             .map(|r| r.user_id)
             .map_err(sync_err)
     }
 
     /// Perform a **two-secret (2SKD)** login and cache the session token
-    /// (ADR-008). The account id is supplied by the server at `login/init`, so
-    /// callers pass only the master `password` and the account `secret_key`.
+    /// (ADR-008 + #296). The account id is supplied by the server at
+    /// `login/init`, so callers pass only the master `password` and the account
+    /// `secret_key`. The account Argon2 salt/params are optional: pass them from
+    /// the Emergency Kit to override the server's copy (defense-in-depth), or
+    /// pass an empty `argon2_salt` to use the copy the server returns at
+    /// `login/init`.
     #[wasm_bindgen(js_name = login2skd)]
     #[allow(clippy::too_many_arguments)]
     pub async fn login_2skd(
@@ -312,17 +317,24 @@ impl WasmSyncClient {
         iterations: u32,
         parallelism: u32,
     ) -> Result<(), JsError> {
-        let params = Argon2Params {
-            memory_cost_kib,
-            iterations,
-            parallelism,
+        // An empty salt means "no kit copy — use the server-returned KDF".
+        let kit_kdf = if argon2_salt.is_empty() {
+            None
+        } else {
+            Some(AccountKdf::from_parts(
+                argon2_salt,
+                Argon2Params {
+                    memory_cost_kib,
+                    iterations,
+                    parallelism,
+                },
+            ))
         };
-        let mk_auth = derive_mk_auth(password.as_bytes(), &argon2_salt, &params)?;
         let sk = SecretKey::parse(&secret_key)
             .map_err(|e| JsError::new(&format!("invalid secret key: {e}")))?;
         let mut client = self.client();
         client
-            .login_2skd(&username, &mk_auth, &sk)
+            .login_2skd(&username, password.as_bytes(), &sk, kit_kdf.as_ref())
             .await
             .map_err(sync_err)?;
         *self.token.borrow_mut() = client.token().map(str::to_string);
@@ -415,18 +427,7 @@ impl WasmSyncClient {
     }
 }
 
-// ── 2SKD onboarding (ADR-008) ──────────────────────────────────────────────────
-
-/// Derive the master auth key (`MK_auth`) from a password + Argon2 salt/params.
-fn derive_mk_auth(
-    password: &[u8],
-    argon2_salt: &[u8],
-    params: &Argon2Params,
-) -> Result<AuthKey, JsError> {
-    let master_key = derive_master_key(password, argon2_salt, params)
-        .map_err(|e| JsError::new(&format!("key derivation failed: {e}")))?;
-    derive_auth_key(&master_key).map_err(|e| JsError::new(&format!("key derivation failed: {e}")))
-}
+// ── 2SKD onboarding (ADR-008 + #296) ───────────────────────────────────────────
 
 /// Generate a fresh account id + account [`SecretKey`] for 2SKD sign-up
 /// (ADR-008).
@@ -446,22 +447,49 @@ pub fn generate_secret_key() -> Result<String, JsError> {
     serde_json::to_string(&out).map_err(|e| JsError::new(&format!("serialization error: {e}")))
 }
 
+/// Generate a fresh **account-scoped** Argon2 salt for 2SKD sign-up (#296),
+/// returned as raw bytes. The caller pairs it with its chosen Argon2 params to
+/// form the account KDF and threads the same salt/params through
+/// [`register_2skd`](WasmSyncClient::register_2skd), the Emergency Kit
+/// ([`build_emergency_kit`]), and secure browser storage. Decoupled from any
+/// vault header, so it reproduces `MK_auth` on any device.
+#[wasm_bindgen(js_name = generateAccountKdfSalt)]
+#[must_use]
+pub fn generate_account_kdf_salt() -> Vec<u8> {
+    AccountKdf::generate(Argon2Params::wasm()).salt().to_vec()
+}
+
 /// Build an Emergency Kit (render-agnostic fields + QR payload) for new-device
-/// sign-in (ADR-008). `recovery_key` is an opt-in vault recovery key; pass
-/// `undefined`/`null` to keep the two recovery artifacts separate (recommended).
+/// sign-in (ADR-008 + #296). Carries the account-scoped Argon2 salt/params so a
+/// new device can derive `MK_auth` offline. `recovery_key` is an opt-in vault
+/// recovery key; pass `undefined`/`null` to keep the two recovery artifacts
+/// separate (recommended).
 ///
-/// Returns a JSON string
-/// `{ version, address, email, accountHint, secretKey, recoveryKey, qrPayload }`.
+/// Returns a JSON string `{ version, address, email, accountHint, secretKey,
+/// accountKdfSalt, accountKdfParams, recoveryKey, qrPayload }`.
 #[wasm_bindgen(js_name = buildEmergencyKit)]
+#[allow(clippy::too_many_arguments)]
 pub fn build_emergency_kit(
     address: String,
     email: String,
     secret_key: String,
+    account_kdf_salt: Vec<u8>,
+    memory_cost_kib: u32,
+    iterations: u32,
+    parallelism: u32,
     recovery_key: Option<String>,
 ) -> Result<String, JsError> {
     let sk = SecretKey::parse(&secret_key)
         .map_err(|e| JsError::new(&format!("invalid secret key: {e}")))?;
-    let mut kit = EmergencyKit::new(address, email, &sk);
+    let account_kdf = AccountKdf::from_parts(
+        account_kdf_salt,
+        Argon2Params {
+            memory_cost_kib,
+            iterations,
+            parallelism,
+        },
+    );
+    let mut kit = EmergencyKit::new(address, email, &sk, &account_kdf);
     if let Some(rk_text) = recovery_key.as_deref() {
         let rk = decode_recovery_key(rk_text)
             .map_err(|e| JsError::new(&format!("invalid recovery key: {e}")))?;
@@ -470,14 +498,38 @@ pub fn build_emergency_kit(
     let qr_payload = kit
         .to_qr_payload()
         .map_err(|e| JsError::new(&format!("kit serialization failed: {e}")))?;
+    Ok(emergency_kit_json(&kit, &qr_payload))
+}
+
+/// Parse a scanned/typed Emergency Kit QR payload back into its fields (#296) so
+/// a new device can extract the Secret Key + account Argon2 KDF and call
+/// [`login2skd`](WasmSyncClient::login_2skd).
+///
+/// Returns the same JSON shape as [`build_emergency_kit`].
+#[wasm_bindgen(js_name = parseEmergencyKit)]
+pub fn parse_emergency_kit(qr_payload: String) -> Result<String, JsError> {
+    let kit = EmergencyKit::from_qr_payload(&qr_payload)
+        .map_err(|e| JsError::new(&format!("invalid emergency kit: {e}")))?;
+    Ok(emergency_kit_json(&kit, &qr_payload))
+}
+
+/// Serialize an [`EmergencyKit`] into the JSON shape the web app consumes.
+fn emergency_kit_json(kit: &EmergencyKit, qr_payload: &str) -> String {
+    let params = kit.account_kdf().params();
     let out = serde_json::json!({
         "version": kit.version(),
         "address": kit.address(),
         "email": kit.email(),
         "accountHint": kit.account_hint(),
         "secretKey": kit.secret_key_text(),
+        "accountKdfSalt": kit.account_kdf().salt(),
+        "accountKdfParams": {
+            "memoryCostKib": params.memory_cost_kib,
+            "iterations": params.iterations,
+            "parallelism": params.parallelism,
+        },
         "recoveryKey": kit.recovery_key_text(),
         "qrPayload": qr_payload,
     });
-    serde_json::to_string(&out).map_err(|e| JsError::new(&format!("serialization error: {e}")))
+    serde_json::to_string(&out).unwrap_or_else(|_| "{}".to_string())
 }

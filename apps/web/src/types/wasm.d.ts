@@ -85,12 +85,18 @@ declare module '*pkg/ldgr_wasm' {
 
   export function parseJournal(text: string): string;
   export function generateSecretKey(): string;
+  export function generateAccountKdfSalt(): Uint8Array;
   export function buildEmergencyKit(
     address: string,
     email: string,
     secretKey: string,
+    accountKdfSalt: Uint8Array,
+    memoryCostKib: number,
+    iterations: number,
+    parallelism: number,
     recoveryKey?: string | null,
   ): string;
+  export function parseEmergencyKit(qrPayload: string): string;
   export function mergeBatch(
     localPendingJson: string,
     remoteBatchJson: string,

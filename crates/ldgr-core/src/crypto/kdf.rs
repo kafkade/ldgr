@@ -14,7 +14,7 @@ const DB_KEY_INFO: &[u8] = b"ldgr-sqlcipher-key-v1";
 /// Argon2id parameters for password hashing.
 ///
 /// Stored in the vault header so the correct parameters are used on unlock.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Argon2Params {
     /// Memory cost in KiB.
     pub memory_cost_kib: u32,
