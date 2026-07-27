@@ -168,6 +168,24 @@ mod tests {
         haystack.windows(needle.len()).any(|w| w == needle)
     }
 
+    /// Run a test body on a thread with a generous stack.
+    ///
+    /// `SQLCipher`'s cipher setup (through the vendored `OpenSSL` build,
+    /// compiled unoptimized for tests) uses large native stack frames. On
+    /// Windows that is enough to overflow libtest's default ~2 MiB worker-thread
+    /// stack even on the ordinary success path (open + `PRAGMA key` + a single
+    /// read). The shipped `ldgr` binary is unaffected — it runs this code on the
+    /// process main thread, which has a multi-megabyte stack — so this only
+    /// matters for the test harness. Give `SQLCipher`-touching tests headroom.
+    fn with_large_stack(f: impl FnOnce() + Send + 'static) {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(f)
+            .expect("failed to spawn test thread")
+            .join()
+            .expect("test body panicked");
+    }
+
     /// Create a plaintext `SQLite` database at `path` with the real schema plus a
     /// small custom table carrying known row counts.
     fn seed_plaintext_db(path: &Path) {
@@ -181,101 +199,107 @@ mod tests {
 
     #[test]
     fn detects_plaintext_and_encrypted() {
-        let dir = tempfile::tempdir().unwrap();
-        let plain = dir.path().join("plain.db");
-        seed_plaintext_db(&plain);
-        assert!(is_plaintext_sqlite(&plain).unwrap());
+        with_large_stack(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let plain = dir.path().join("plain.db");
+            seed_plaintext_db(&plain);
+            assert!(is_plaintext_sqlite(&plain).unwrap());
 
-        // A fresh encrypted database must NOT be detected as plaintext.
-        let enc = dir.path().join("enc.db");
-        let conn = db::open_encrypted(&enc, &KEY).unwrap();
-        ldgr_core::storage::schema::initialize(&conn).unwrap();
-        drop(conn);
-        assert!(!is_plaintext_sqlite(&enc).unwrap());
+            // A fresh encrypted database must NOT be detected as plaintext.
+            let enc = dir.path().join("enc.db");
+            let conn = db::open_encrypted(&enc, &KEY).unwrap();
+            ldgr_core::storage::schema::initialize(&conn).unwrap();
+            drop(conn);
+            assert!(!is_plaintext_sqlite(&enc).unwrap());
 
-        // A non-existent file is not "plaintext to migrate".
-        assert!(!is_plaintext_sqlite(&dir.path().join("nope.db")).unwrap());
+            // A non-existent file is not "plaintext to migrate".
+            assert!(!is_plaintext_sqlite(&dir.path().join("nope.db")).unwrap());
+        });
     }
 
     #[test]
     fn migration_round_trip_preserves_data_and_encrypts() {
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("vault.db");
-        seed_plaintext_db(&db_path);
+        with_large_stack(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let db_path = dir.path().join("vault.db");
+            seed_plaintext_db(&db_path);
 
-        // Sanity: on-disk header is the plaintext SQLite magic before migration.
-        let before = std::fs::read(&db_path).unwrap();
-        assert_eq!(&before[..16], SQLITE_HEADER);
+            // Sanity: on-disk header is the plaintext SQLite magic before migration.
+            let before = std::fs::read(&db_path).unwrap();
+            assert_eq!(&before[..16], SQLITE_HEADER);
 
-        let migrated = migrate_if_plaintext(&db_path, &KEY).unwrap();
-        assert!(migrated, "a plaintext store must be migrated");
+            let migrated = migrate_if_plaintext(&db_path, &KEY).unwrap();
+            assert!(migrated, "a plaintext store must be migrated");
 
-        // Running again is a no-op (already encrypted).
-        assert!(!migrate_if_plaintext(&db_path, &KEY).unwrap());
+            // Running again is a no-op (already encrypted).
+            assert!(!migrate_if_plaintext(&db_path, &KEY).unwrap());
 
-        // The on-disk file is no longer a plaintext SQLite database.
-        let after = std::fs::read(&db_path).unwrap();
-        assert_ne!(
-            &after[..16],
-            SQLITE_HEADER,
-            "store must be encrypted at rest"
-        );
-        assert!(!is_plaintext_sqlite(&db_path).unwrap());
+            // The on-disk file is no longer a plaintext SQLite database.
+            let after = std::fs::read(&db_path).unwrap();
+            assert_ne!(
+                &after[..16],
+                SQLITE_HEADER,
+                "store must be encrypted at rest"
+            );
+            assert!(!is_plaintext_sqlite(&db_path).unwrap());
 
-        // The plaintext backup is retained for backout.
-        assert!(dir.path().join("vault.db.plaintext.bak").exists());
-        // The temporary migration file is cleaned up.
-        assert!(!dir.path().join("vault.db.migrating").exists());
+            // The plaintext backup is retained for backout.
+            assert!(dir.path().join("vault.db.plaintext.bak").exists());
+            // The temporary migration file is cleaned up.
+            assert!(!dir.path().join("vault.db.migrating").exists());
 
-        // Data is preserved and readable with the correct key.
-        let conn = db::open_encrypted(&db_path, &KEY).unwrap();
-        let probe: i64 = conn
-            .query_row("SELECT count(*) FROM t_probe", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(probe, 3);
+            // Data is preserved and readable with the correct key.
+            let conn = db::open_encrypted(&db_path, &KEY).unwrap();
+            let probe: i64 = conn
+                .query_row("SELECT count(*) FROM t_probe", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(probe, 3);
+        });
     }
 
     #[test]
     fn encrypted_store_is_unreadable_without_key() {
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("vault.db");
-        seed_plaintext_db(&db_path);
-        assert!(migrate_if_plaintext(&db_path, &KEY).unwrap());
+        with_large_stack(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let db_path = dir.path().join("vault.db");
+            seed_plaintext_db(&db_path);
+            assert!(migrate_if_plaintext(&db_path, &KEY).unwrap());
 
-        // The at-rest guarantee, verified deterministically from the on-disk
-        // bytes (cheap and identical on every platform): the file is no longer a
-        // plaintext SQLite database and none of the schema's table names or the
-        // seeded probe data survive in the clear — the payload is opaque
-        // ciphertext without the key.
-        //
-        // We deliberately do NOT try to open the encrypted file with a wrong or
-        // absent key here. SQLCipher's decrypt-failure path (through the vendored
-        // OpenSSL build, unoptimized) consumes a pathologically large native
-        // stack on Windows and overflows a libtest worker thread there. That path
-        // exercises SQLCipher's own behavior, not our code — and it never runs in
-        // production (unlock fails on the wrong password before the DB is ever
-        // opened). Our contribution (key derivation + correct-key open) is proven
-        // by the positive round-trip below.
-        let bytes = std::fs::read(&db_path).unwrap();
-        assert_ne!(
-            &bytes[..16],
-            SQLITE_HEADER,
-            "store must be encrypted at rest"
-        );
-        assert!(
-            !byte_contains(&bytes, b"t_probe"),
-            "table names must not be readable in the clear"
-        );
-        assert!(
-            !byte_contains(&bytes, b"sqlite_master"),
-            "schema must not be readable in the clear"
-        );
+            // The at-rest guarantee, verified deterministically from the on-disk
+            // bytes (cheap and identical on every platform): the file is no longer
+            // a plaintext SQLite database and none of the schema's table names or
+            // the seeded probe data survive in the clear — the payload is opaque
+            // ciphertext without the key.
+            //
+            // We deliberately do NOT try to open the encrypted file with a wrong
+            // or absent key here. SQLCipher's decrypt-failure path (through the
+            // vendored OpenSSL build, unoptimized) consumes a pathologically large
+            // native stack on Windows and overflows a libtest worker thread there.
+            // That path exercises SQLCipher's own behavior, not our code — and it
+            // never runs in production (unlock fails on the wrong password before
+            // the DB is ever opened). Our contribution (key derivation +
+            // correct-key open) is proven by the positive round-trip below.
+            let bytes = std::fs::read(&db_path).unwrap();
+            assert_ne!(
+                &bytes[..16],
+                SQLITE_HEADER,
+                "store must be encrypted at rest"
+            );
+            assert!(
+                !byte_contains(&bytes, b"t_probe"),
+                "table names must not be readable in the clear"
+            );
+            assert!(
+                !byte_contains(&bytes, b"sqlite_master"),
+                "schema must not be readable in the clear"
+            );
 
-        // The data is only recoverable with the correct key.
-        let conn = db::open_encrypted(&db_path, &KEY).unwrap();
-        let probe: i64 = conn
-            .query_row("SELECT count(*) FROM t_probe", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(probe, 3);
+            // The data is only recoverable with the correct key.
+            let conn = db::open_encrypted(&db_path, &KEY).unwrap();
+            let probe: i64 = conn
+                .query_row("SELECT count(*) FROM t_probe", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(probe, 3);
+        });
     }
 }

@@ -21,21 +21,8 @@ uuid.workspace = true
 rust_decimal.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
-zeroize.workspace = true
-
-# SQLCipher (encrypt vault.db at rest, issue #295) uses rusqlite's vendored
-# OpenSSL. `openssl-src` cannot configure OpenSSL for watchOS ("don't know how to
-# configure OpenSSL for aarch64-apple-watchos"), so the SQLCipher feature is
-# scoped to every target EXCEPT watchOS. This is safe: the watchOS app links only
-# `LdgrShared` (pre-computed summaries over WatchConnectivity) and never opens a
-# vault database, so it needs neither SQLCipher nor encryption at rest. The
-# watchOS XCFramework slice therefore builds against plain bundled SQLite. Each
-# `cargo build --target` selects exactly one of the two tables below, so their
-# features never unify across a device vs. watch build.
-[target.'cfg(not(target_os = "watchos"))'.dependencies]
-rusqlite = { workspace = true, features = ["bundled-sqlcipher-vendored-openssl"] }
-
-[target.'cfg(target_os = "watchos")'.dependencies]
+# Plain bundled SQLite. At-rest encryption for the iOS/FFI working store
+# (SQLCipher keyed open + Swift Keychain session) is tracked separately in #315.
 rusqlite = { workspace = true, features = ["bundled"] }
 
 [build-dependencies]

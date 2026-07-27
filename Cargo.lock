@@ -1800,7 +1800,6 @@ dependencies = [
  "thiserror 2.0.18",
  "uniffi",
  "uuid",
- "zeroize",
 ]
 
 [[package]]

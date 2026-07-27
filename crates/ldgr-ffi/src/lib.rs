@@ -15,8 +15,8 @@ use ldgr_core::accounting::parser::{ParseError, parse_journal};
 use ldgr_core::accounting::reports;
 use ldgr_core::accounting::types as acct;
 use ldgr_core::crypto::{
-    self, Argon2Params, UnlockedVault, derive_db_key, encode_recovery_key, open_vault,
-    restore_vault_from_session, serialize_vault,
+    self, Argon2Params, UnlockedVault, encode_recovery_key, open_vault, restore_vault_from_session,
+    serialize_vault,
 };
 use ldgr_core::storage::accounts::{self, AccountType, ListOptions, NewAccount};
 use ldgr_core::storage::error::StorageError;
@@ -25,7 +25,6 @@ use ldgr_core::storage::schema;
 use ldgr_core::storage::sync as sync_storage;
 use ldgr_core::storage::transactions::{self, NewPosting, NewTransaction, TransactionStatus};
 use rusqlite::Connection;
-use zeroize::Zeroizing;
 
 uniffi::include_scaffolding!("ldgr");
 
@@ -212,37 +211,6 @@ enum VaultState {
 
 // ── LdgrVault Object ───────────────────────────────────────────────────────────
 
-/// Open the working-store database and apply the `SQLCipher` key derived from the
-/// session vault key, so financial data is encrypted at rest (issue #295).
-///
-/// Mirrors the CLI's keyed open: a raw-key `PRAGMA key` (so `SQLCipher` uses the
-/// derived bytes directly and skips its own PBKDF2 — we already derive from the
-/// Argon2id-based key chain) plus `cipher_memory_security`. A page read forces a
-/// wrong-key or unmigrated-plaintext store to fail fast. The formatted `PRAGMA`
-/// statement, which embeds the key hex, is zeroized after use.
-///
-/// This is what makes the FFI/iOS path actually encrypt: with plain `SQLite` the
-/// `PRAGMA key` is silently ignored and the store would be written in plaintext.
-fn open_encrypted_db(
-    path: &std::path::Path,
-    session_key: &[u8; 32],
-) -> Result<Connection, LdgrError> {
-    let conn = Connection::open(path)?;
-    let db_key = derive_db_key(session_key)?;
-    let pragma = db_key.to_pragma_hex();
-    let stmt = Zeroizing::new(format!(
-        "PRAGMA cipher_memory_security = ON;\nPRAGMA key = \"{}\";",
-        pragma.as_str()
-    ));
-    conn.execute_batch(&stmt)?;
-    // Force a page read so a wrong key (or an unmigrated plaintext store) fails
-    // now with a clear error rather than at the first query.
-    conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| {
-        r.get::<_, i64>(0)
-    })?;
-    Ok(conn)
-}
-
 pub struct LdgrVault {
     vault_dir: PathBuf,
     vault_path: PathBuf,
@@ -289,9 +257,8 @@ impl LdgrVault {
         let vault_bytes = serialize_vault(&vault)?;
         atomic_write(&self.vault_path, &vault_bytes)?;
 
-        // Create and initialize the encrypted SQLite (SQLCipher) database
-        let session_key = vault.export_session_key();
-        let conn = open_encrypted_db(&self.db_path, &session_key)?;
+        // Create and initialize SQLite database
+        let conn = Connection::open(&self.db_path)?;
         schema::initialize(&conn)?;
 
         let recovery_string = encode_recovery_key(&recovery_key);
@@ -314,8 +281,7 @@ impl LdgrVault {
         let data = std::fs::read(&self.vault_path)?;
         let vault = open_vault(&data, password.as_bytes())?;
 
-        let session_key = vault.export_session_key();
-        let conn = open_encrypted_db(&self.db_path, &session_key)?;
+        let conn = Connection::open(&self.db_path)?;
         // Ensure schema is initialized (idempotent)
         schema::initialize(&conn)?;
 
@@ -387,8 +353,7 @@ impl LdgrVault {
         let data = std::fs::read(&self.vault_path)?;
         let vault = restore_vault_from_session(&data, &key_bytes)?;
 
-        let session_key = vault.export_session_key();
-        let conn = open_encrypted_db(&self.db_path, &session_key)?;
+        let conn = Connection::open(&self.db_path)?;
         schema::initialize(&conn)?;
 
         let mut state = self.state.lock().expect("mutex poisoned");
