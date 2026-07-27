@@ -190,14 +190,60 @@ pub async fn register(
     // Two supported modes:
     //   * Env-seeded (preferred for unattended docker-compose): if
     //     `LDGR_ADMIN_EMAIL` is set, the account registering with that email
-    //     becomes admin and bypasses the registration policy.
+    //     becomes admin and bypasses the registration policy. Safe under
+    //     concurrent registration via the UNIQUE(email) index.
     //   * First-user fallback: if no admin email is configured, the very first
     //     account to register (empty user table) becomes admin and bypasses the
-    //     policy. After that, the policy governs all sign-ups.
+    //     policy. This election + insert is performed ATOMICALLY (single
+    //     transaction) so that at most one admin is ever elected even under
+    //     concurrent registration. After that, the policy governs all sign-ups.
+    if state.config.admin_email.is_none() {
+        let elected = state
+            .db
+            .try_bootstrap_first_admin(&NewUser {
+                id: &user_id,
+                username: &req.username,
+                email: Some(&email),
+                salt: &salt,
+                verifier: &verifier,
+                role: "admin",
+                auth_scheme,
+                invited_by: None,
+                created_at: &created_at,
+                account_id: account_id.as_deref(),
+                account_kdf_salt: account_kdf.as_ref().map(AccountKdf::salt),
+                account_kdf_mem_kib: account_kdf
+                    .as_ref()
+                    .map(|k| i64::from(k.params().memory_cost_kib)),
+                account_kdf_iters: account_kdf
+                    .as_ref()
+                    .map(|k| i64::from(k.params().iterations)),
+                account_kdf_parallelism: account_kdf
+                    .as_ref()
+                    .map(|k| i64::from(k.params().parallelism)),
+            })
+            .await?;
+        if let crate::storage::BootstrapElection::ElectedAdmin = elected {
+            tracing::info!("registered bootstrap admin: {} (role=admin)", req.username);
+            return Ok((
+                StatusCode::CREATED,
+                Json(RegisterResponse {
+                    user_id,
+                    role: "admin".to_string(),
+                }),
+            ));
+        }
+        // NotFirst → fall through to the policy-governed path as a normal user.
+    }
+
     let is_bootstrap_admin = if let Some(admin_email) = state.config.admin_email.as_deref() {
         email.eq_ignore_ascii_case(admin_email) && !state.db.email_exists(admin_email).await?
     } else {
-        state.db.count_users().await? == 0
+        // The no-admin-email fallback election was already resolved atomically
+        // above (early return when this request won the admin slot), so any
+        // request reaching here in fallback mode is definitively NOT the first
+        // user and must be governed by the registration policy.
+        false
     };
 
     // ── Registration policy enforcement ─────────────────────────────────────

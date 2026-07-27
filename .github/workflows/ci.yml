@@ -269,6 +269,16 @@ jobs:
       - name: Run tests
         working-directory: apps/web
         run: npm test
+      - name: Add wasm target
+        run: rustup target add wasm32-unknown-unknown
+      - name: Install wasm-pack
+        run: curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
+      - name: Build WASM bundle
+        working-directory: apps/web
+        run: npm run build:wasm
+      - name: Build static export
+        working-directory: apps/web
+        run: npm run build
 
   # ── Infra (Cloudflare Worker) ─────────────────────────────────────────────────
 

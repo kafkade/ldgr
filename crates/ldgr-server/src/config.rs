@@ -49,6 +49,13 @@ pub struct Config {
     /// set, the account registering with this email becomes `admin` and bypasses
     /// the registration policy. Preferred for unattended docker-compose deploys.
     pub admin_email: Option<String>,
+    /// Cross-origin request allowlist for the browser-based admin panel and web
+    /// client (`LDGR_ALLOWED_ORIGINS`, comma-separated). Empty by default, which
+    /// means **no** cross-origin access is granted — the secure posture for a
+    /// zero-knowledge product. Set this only when the web app is served from a
+    /// different origin than this API (e.g. a separate admin host); a same-origin
+    /// deployment (reverse proxy) needs no entry here.
+    pub allowed_origins: Vec<String>,
     /// Default per-user storage quota in bytes, applied when a user's
     /// `storage_quota_bytes` is unset.
     pub default_user_quota_bytes: i64,
@@ -88,6 +95,7 @@ impl Config {
                 "invite-only",
             )),
             admin_email,
+            allowed_origins: parse_csv_list(&env_or("LDGR_ALLOWED_ORIGINS", "")),
             default_user_quota_bytes: env_or("LDGR_DEFAULT_QUOTA_BYTES", "1073741824") // 1 GiB
                 .parse()
                 .expect("LDGR_DEFAULT_QUOTA_BYTES must be a valid number"),
@@ -105,4 +113,13 @@ impl Config {
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+/// Split a comma-separated env value into a trimmed, non-empty list.
+fn parse_csv_list(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
 }

@@ -120,6 +120,15 @@ pub struct RelayOffer {
     pub expires_at: String,
 }
 
+/// Outcome of the atomic first-admin election (`try_bootstrap_first_admin`).
+pub enum BootstrapElection {
+    /// The users table was empty, so this registration was inserted as `admin`.
+    ElectedAdmin,
+    /// A user already existed; nothing was inserted. The caller must fall back
+    /// to the normal, policy-governed registration path.
+    NotFirst,
+}
+
 // ── Database ──────────────────────────────────────────────────────────────────
 
 /// Server-side `SQLite` storage. All operations run in `spawn_blocking`
@@ -224,6 +233,31 @@ impl ServerDb {
 
     // ── Users ─────────────────────────────────────────────────────────────────
 
+    /// Insert a single `users` row on an already-held connection (or an open
+    /// transaction, via `Deref`). Shared by [`create_user`](Self::create_user)
+    /// and [`try_bootstrap_first_admin`](Self::try_bootstrap_first_admin) so the
+    /// column list can never drift between the two insert paths. A unique-index
+    /// violation (duplicate username/email) is mapped to [`ServerError::Conflict`].
+    fn insert_user_row(conn: &Connection, new: &NewUser<'_>) -> Result<(), ServerError> {
+        conn.execute(
+            "INSERT INTO users \
+             (id, username, email, salt, verifier, created_at, role, status, auth_scheme, invited_by, updated_at, account_id, \
+              account_kdf_salt, account_kdf_mem_kib, account_kdf_iters, account_kdf_parallelism) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'active', ?8, ?9, ?6, ?10, ?11, ?12, ?13, ?14)",
+            params![new.id, new.username, new.email, new.salt, new.verifier, new.created_at, new.role,
+                    new.auth_scheme, new.invited_by, new.account_id, new.account_kdf_salt,
+                    new.account_kdf_mem_kib, new.account_kdf_iters, new.account_kdf_parallelism],
+        ).map_err(|e| match e {
+            rusqlite::Error::SqliteFailure(err, _)
+                if err.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                ServerError::Conflict("username or email already exists".into())
+            }
+            other => ServerError::from(other),
+        })?;
+        Ok(())
+    }
+
     pub async fn create_user(&self, new: &NewUser<'_>) -> Result<(), ServerError> {
         let conn = self.conn.clone();
         let id = new.id.to_string();
@@ -244,22 +278,97 @@ impl ServerDb {
             let conn = conn
                 .lock()
                 .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
-            conn.execute(
-                "INSERT INTO users \
-                 (id, username, email, salt, verifier, created_at, role, status, auth_scheme, invited_by, updated_at, account_id, \
-                  account_kdf_salt, account_kdf_mem_kib, account_kdf_iters, account_kdf_parallelism) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'active', ?8, ?9, ?6, ?10, ?11, ?12, ?13, ?14)",
-                params![id, username, email, salt, verifier, created_at, role, auth_scheme, invited_by, account_id,
-                        account_kdf_salt, account_kdf_mem_kib, account_kdf_iters, account_kdf_parallelism],
-            ).map_err(|e| match e {
-                rusqlite::Error::SqliteFailure(err, _)
-                    if err.code == rusqlite::ErrorCode::ConstraintViolation =>
-                {
-                    ServerError::Conflict("username or email already exists".into())
-                }
-                other => ServerError::from(other),
-            })?;
-            Ok(())
+            Self::insert_user_row(
+                &conn,
+                &NewUser {
+                    id: &id,
+                    username: &username,
+                    email: email.as_deref(),
+                    salt: &salt,
+                    verifier: &verifier,
+                    role: &role,
+                    auth_scheme: &auth_scheme,
+                    invited_by: invited_by.as_deref(),
+                    created_at: &created_at,
+                    account_id: account_id.as_deref(),
+                    account_kdf_salt: account_kdf_salt.as_deref(),
+                    account_kdf_mem_kib,
+                    account_kdf_iters,
+                    account_kdf_parallelism,
+                },
+            )
+        })
+        .await?
+    }
+
+    /// Atomically elect the first-ever account as `admin` (first-run bootstrap
+    /// fallback, used only when `LDGR_ADMIN_EMAIL` is unset — ADR-008 Decision 5).
+    ///
+    /// In a single `BEGIN IMMEDIATE` write transaction on the serialized
+    /// connection: if `users` is empty, insert `new` (expected `role = "admin"`)
+    /// and commit, returning [`BootstrapElection::ElectedAdmin`]; otherwise insert
+    /// nothing, roll back, and return [`BootstrapElection::NotFirst`] so the
+    /// caller runs the normal, policy-governed registration path.
+    ///
+    /// This is the race-free replacement for the old `count_users() == 0`
+    /// check-then-insert: the count and the insert share one transaction, and the
+    /// single `Mutex<Connection>` (plus `BEGIN IMMEDIATE` + WAL `busy_timeout`)
+    /// serialize writers, so **at most one** admin is ever elected even under
+    /// concurrent registration.
+    pub async fn try_bootstrap_first_admin(
+        &self,
+        new: &NewUser<'_>,
+    ) -> Result<BootstrapElection, ServerError> {
+        let conn = self.conn.clone();
+        let id = new.id.to_string();
+        let username = new.username.to_string();
+        let email = new.email.map(str::to_string);
+        let salt = new.salt.to_vec();
+        let verifier = new.verifier.to_vec();
+        let role = new.role.to_string();
+        let auth_scheme = new.auth_scheme.to_string();
+        let created_at = new.created_at.to_string();
+        let account_id = new.account_id.map(str::to_string);
+        let account_kdf_salt = new.account_kdf_salt.map(<[u8]>::to_vec);
+        let account_kdf_mem_kib = new.account_kdf_mem_kib;
+        let account_kdf_iters = new.account_kdf_iters;
+        let account_kdf_parallelism = new.account_kdf_parallelism;
+        tokio::task::spawn_blocking(move || {
+            let mut conn = conn
+                .lock()
+                .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
+            let tx = conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(ServerError::from)?;
+
+            let count: i64 = tx.query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))?;
+            if count != 0 {
+                // A user already exists; leave the table untouched. Dropping the
+                // transaction rolls it back.
+                return Ok(BootstrapElection::NotFirst);
+            }
+
+            Self::insert_user_row(
+                &tx,
+                &NewUser {
+                    id: &id,
+                    username: &username,
+                    email: email.as_deref(),
+                    salt: &salt,
+                    verifier: &verifier,
+                    role: &role,
+                    auth_scheme: &auth_scheme,
+                    invited_by: None,
+                    created_at: &created_at,
+                    account_id: account_id.as_deref(),
+                    account_kdf_salt: account_kdf_salt.as_deref(),
+                    account_kdf_mem_kib,
+                    account_kdf_iters,
+                    account_kdf_parallelism,
+                },
+            )?;
+            tx.commit().map_err(ServerError::from)?;
+            Ok(BootstrapElection::ElectedAdmin)
         })
         .await?
     }

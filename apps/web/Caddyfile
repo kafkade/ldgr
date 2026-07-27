@@ -1,0 +1,28 @@
+# ldgr web — Caddy config baked into the `ldgr-web` image (apps/web/Dockerfile).
+#
+# Caddy serves the Apache-2.0 web app + admin panel as a static Next.js export
+# and reverse-proxies the JSON API to the ldgr-server container, so the panel and
+# the API share a single origin and the panel is reachable out of the box
+# (`docker compose up`). The AGPL ldgr-server never serves these web assets
+# (ADR-006 licensing split; ADR-008 §7).
+
+:8080 {
+	encode zstd gzip
+
+	# The server's JSON API and health probe are proxied to the server
+	# container. `LDGR_API_UPSTREAM` lets non-compose deploys point elsewhere.
+	@api path /api/* /health
+	handle @api {
+		reverse_proxy {$LDGR_API_UPSTREAM:server:8080}
+	}
+
+	# Everything else is the static export (index, /admin, /vault, assets).
+	# The export emits `route.html` files (e.g. admin.html) alongside same-named
+	# directories for nested routes, so try the `.html` form before the bare path
+	# to avoid matching an index-less directory.
+	handle {
+		root * /srv/www
+		try_files {path}.html {path} {path}/index.html /index.html
+		file_server
+	}
+}
