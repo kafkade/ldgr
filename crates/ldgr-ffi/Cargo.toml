@@ -18,10 +18,12 @@ uniffi.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 uuid.workspace = true
-rusqlite.workspace = true
 rust_decimal.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
+# Plain bundled SQLite. At-rest encryption for the iOS/FFI working store
+# (SQLCipher keyed open + Swift Keychain session) is tracked separately in #315.
+rusqlite = { workspace = true, features = ["bundled"] }
 
 [build-dependencies]
 uniffi = { workspace = true, features = ["build"] }

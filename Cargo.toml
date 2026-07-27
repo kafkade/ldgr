@@ -34,6 +34,22 @@ zeroize = { version = "1", features = ["derive"] }
 
 # Data
 rust_decimal = { version = "1", features = ["serde-with-str"] }
+# Local working store (SQLite via rusqlite). The workspace default is plain
+# `bundled`; the SQLCipher feature is selected PER-CRATE, NOT workspace-wide, so
+# that unrelated consumers keep plain SQLite:
+#   - ldgr-cli enables `bundled-sqlcipher-vendored-openssl` (SQLCipher, encrypts
+#     `vault.db` at rest for issue #295); vendored OpenSSL builds from source for
+#     portable, reproducible client builds.
+#   - ldgr-core / ldgr-ffi / ldgr-server enable plain `bundled`. Issue #295 is
+#     scoped to the CLI + core; extending at-rest encryption to the iOS/FFI path
+#     (keyed `PRAGMA key` open, which plain SQLite treats as a no-op) and web/WASM
+#     is tracked separately in issue #315, so the FFI crate stays on plain SQLite
+#     here and avoids pulling vendored OpenSSL into the Apple cross-compile.
+# NOTE: Cargo unifies features across a full `cargo build --workspace`, so a
+# combined/dev build links SQLCipher into the shared rusqlite; the SHIPPED server
+# is always built isolated with `cargo build -p ldgr-server` (Dockerfile /
+# release), which keeps plain SQLite. SQLCipher is a superset of SQLite, so
+# unkeyed opens are behaviorally unaffected either way.
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -43,6 +59,12 @@ chrono = { version = "0.4", features = ["serde"] }
 # Error handling
 thiserror = "2"
 anyhow = "1"
+
+# OS keystore for the CLI unlock-session secret (macOS Keychain / Windows
+# Credential Manager / Linux kernel keyutils). Replaces persisting the vault key
+# in a plaintext session file (issue #295). `linux-native` uses keyutils (no
+# D-Bus/OpenSSL dependency), which suits an ephemeral, session-scoped secret.
+keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
@@ -72,6 +94,17 @@ proptest = "1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+
+# Compile the bundled SQLite/SQLCipher C amalgamation optimized even in dev/test
+# builds. At the default dev opt-level of 0 its giant functions (notably
+# `sqlite3VdbeExec` and the SQL parser) use pathologically large, unoptimized
+# stack frames; the SQLCipher path through them overflows libtest's ~2 MiB
+# Windows worker-thread stack (see the `migrate` tests). Building this one C
+# dependency at -O2 restores the normal (release-like) stack footprint and fixes
+# the overflow at its source, without touching the rest of the debug build. The
+# shipped release binary already compiles everything at -O3, so it is unaffected.
+[profile.dev.package.libsqlite3-sys]
+opt-level = 2
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

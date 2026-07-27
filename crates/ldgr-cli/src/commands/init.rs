@@ -59,9 +59,10 @@ pub fn run(vault_path: &Path) -> Result<()> {
         fs::set_permissions(vault_path, perms).ok();
     }
 
-    // Initialize SQLite schema alongside the vault
+    // Initialize the encrypted SQLite (SQLCipher) schema alongside the vault.
     let db_path = session::resolve_vault_dir(Some(vault_path)).join("vault.db");
-    let conn = rusqlite::Connection::open(&db_path)
+    let session_key = vault.export_session_key();
+    let conn = crate::db::open_encrypted(&db_path, &session_key)
         .with_context(|| format!("failed to create database at {}", db_path.display()))?;
     ldgr_core::storage::schema::initialize(&conn)
         .context("failed to initialize database schema")?;

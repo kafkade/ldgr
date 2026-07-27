@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn verification_code_six_digits() {
         let init = initiate_onboarding("test");
-        assert!(init.qr_payload.verification_code.len() == 6);
+        assert_eq!(init.qr_payload.verification_code.len(), 6);
         assert!(
             init.qr_payload
                 .verification_code

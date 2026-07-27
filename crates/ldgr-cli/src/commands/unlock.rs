@@ -49,7 +49,22 @@ pub fn run(vault_path: &Path, timeout_minutes: i64) -> Result<()> {
     let session_key = vault.export_session_key();
     session::create_session(&vault_dir, vault_path, &session_key, timeout_minutes)?;
 
+    // Detect a legacy plaintext working store, but do NOT migrate silently:
+    // ledgers can be large, so migration is an explicit, user-driven step.
+    let db_path = vault_dir.join("vault.db");
+    let needs_migration = crate::migrate::is_plaintext_sqlite(&db_path)
+        .context("failed to inspect the working store")?;
+
     eprintln!("✓ Vault unlocked (session expires in {timeout_minutes} min).");
+    if needs_migration {
+        eprintln!();
+        eprintln!(
+            "⚠ The local working store ({}) is NOT encrypted at rest.",
+            db_path.display()
+        );
+        eprintln!("  Run `ldgr migrate` to encrypt it (a plaintext backup is kept for backout).");
+        eprintln!();
+    }
     eprintln!("  Vault: {}", vault.metadata().name);
     eprintln!("  Items: {}", vault.item_count());
 
