@@ -19,14 +19,24 @@ use crate::session;
 /// Uses the raw-key `PRAGMA key = "x'...'"` form so `SQLCipher` uses the derived
 /// bytes directly. The formatted `PRAGMA` statement (which contains the key hex)
 /// is zeroized after use.
+///
+/// We deliberately do **not** enable `PRAGMA cipher_memory_security`. That
+/// feature installs a process-global allocator hook that calls `mlock`
+/// (`VirtualLock` on Windows) on every `SQLite` allocation to keep key material
+/// out of swap. `SQLCipher` 4 disables it by default because of its performance
+/// and platform costs, and it is orthogonal to issue #295's guarantee: at-rest
+/// confidentiality comes entirely from `PRAGMA key` encrypting the database file
+/// on disk, not from locking in-memory pages. On Windows the hook exhausts the
+/// small default working-set quota (`VirtualLock` returns `ERROR_WORKING_SET_QUOTA`);
+/// the resulting working-set pressure prevents the thread stack from committing
+/// new guard pages, which surfaces as a spurious `STATUS_STACK_OVERFLOW` at
+/// shallow depth (independent of the reserved stack size). Leaving it off keeps
+/// the keyed open portable while preserving the at-rest guarantee.
 pub fn apply_key(conn: &Connection, session_key: &[u8; 32]) -> Result<()> {
     let db_key = derive_db_key(session_key)
         .map_err(|e| anyhow::anyhow!("failed to derive database key: {e}"))?;
     let pragma = db_key.to_pragma_hex();
-    let stmt = Zeroizing::new(format!(
-        "PRAGMA cipher_memory_security = ON;\nPRAGMA key = \"{}\";",
-        pragma.as_str()
-    ));
+    let stmt = Zeroizing::new(format!("PRAGMA key = \"{}\";", pragma.as_str()));
     conn.execute_batch(&stmt)
         .context("failed to apply database encryption key")?;
     Ok(())
