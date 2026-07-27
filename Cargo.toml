@@ -34,7 +34,19 @@ zeroize = { version = "1", features = ["derive"] }
 
 # Data
 rust_decimal = { version = "1", features = ["serde-with-str"] }
-rusqlite = { version = "0.40", features = ["bundled"] }
+# Local working store (SQLite via rusqlite). Feature selection is per-crate, NOT
+# workspace-wide, so that unrelated consumers keep plain SQLite:
+#   - ldgr-cli enables `bundled-sqlcipher-vendored-openssl` (SQLCipher, encrypts
+#     `vault.db` at rest for issue #295); vendored OpenSSL builds from source for
+#     portable, reproducible CLI builds.
+#   - ldgr-core / ldgr-server / ldgr-ffi enable plain `bundled` (issue #295 keeps
+#     the server's encrypted-blob store and the FFI/iOS path — seq-02 follow-up —
+#     off SQLCipher + vendored OpenSSL).
+# NOTE: Cargo unifies features across a full `cargo build --workspace`, so a
+# combined build links SQLCipher into the shared rusqlite; standalone builds
+# (`cargo build -p ldgr-server`) keep plain SQLite. SQLCipher is a superset of
+# SQLite, so unkeyed opens are behaviorally unaffected either way.
+rusqlite = { version = "0.40" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v7", "serde"] }
@@ -43,6 +55,12 @@ chrono = { version = "0.4", features = ["serde"] }
 # Error handling
 thiserror = "2"
 anyhow = "1"
+
+# OS keystore for the CLI unlock-session secret (macOS Keychain / Windows
+# Credential Manager / Linux kernel keyutils). Replaces persisting the vault key
+# in a plaintext session file (issue #295). `linux-native` uses keyutils (no
+# D-Bus/OpenSSL dependency), which suits an ephemeral, session-scoped secret.
+keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }

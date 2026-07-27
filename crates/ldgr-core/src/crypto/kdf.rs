@@ -3,11 +3,13 @@ use hkdf::Hkdf;
 use sha2::Sha256;
 
 use super::errors::CryptoError;
-use super::keys::{AuthKey, MasterEncryptionKey, MasterKey};
+use super::keys::{AuthKey, DatabaseKey, MasterEncryptionKey, MasterKey};
 
 /// HKDF info strings for domain separation.
 const AUTH_KEY_INFO: &[u8] = b"ldgr-auth-v1";
 const ENCRYPTION_KEY_INFO: &[u8] = b"ldgr-enc-v1";
+/// HKDF info string for the local-store (`SQLCipher`) database key.
+const DB_KEY_INFO: &[u8] = b"ldgr-sqlcipher-key-v1";
 
 /// Argon2id parameters for password hashing.
 ///
@@ -152,6 +154,28 @@ pub fn derive_encryption_key(master_key: &MasterKey) -> Result<MasterEncryptionK
     Ok(MasterEncryptionKey::from_bytes(output))
 }
 
+/// Derive the local-store database key from the raw vault key via HKDF-SHA256.
+///
+/// The vault key (the 32-byte session key returned by
+/// [`export_session_key`](crate::crypto::UnlockedVault::export_session_key)) is
+/// the HKDF input keying material; the info string `"ldgr-sqlcipher-key-v1"`
+/// provides domain separation from every other subkey. The result is used as the
+/// `SQLCipher` raw key for the working `SQLite` store.
+///
+/// Deriving a dedicated subkey (rather than using the vault key directly) keeps
+/// the at-rest DB key isolated and rotatable without changing the vault format.
+///
+/// # Errors
+///
+/// Returns `CryptoError::KeyDerivation` if HKDF expansion fails.
+pub fn derive_db_key(vault_key: &[u8; 32]) -> Result<DatabaseKey, CryptoError> {
+    let hk = Hkdf::<Sha256>::new(None, vault_key);
+    let mut output = [0u8; 32];
+    hk.expand(DB_KEY_INFO, &mut output)
+        .map_err(|e| CryptoError::KeyDerivation(e.to_string()))?;
+    Ok(DatabaseKey::from_bytes(output))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,6 +245,37 @@ mod tests {
         let enc1 = derive_encryption_key(&mk).unwrap();
         let enc2 = derive_encryption_key(&mk).unwrap();
         assert_eq!(enc1.as_bytes(), enc2.as_bytes());
+    }
+
+    #[test]
+    fn db_key_is_deterministic() {
+        let vk = [0x11u8; 32];
+        let k1 = derive_db_key(&vk).unwrap();
+        let k2 = derive_db_key(&vk).unwrap();
+        assert_eq!(
+            k1.as_bytes(),
+            k2.as_bytes(),
+            "Same vault key must yield same DB key"
+        );
+    }
+
+    #[test]
+    fn db_key_differs_per_vault_key() {
+        let k1 = derive_db_key(&[0x11u8; 32]).unwrap();
+        let k2 = derive_db_key(&[0x22u8; 32]).unwrap();
+        assert_ne!(k1.as_bytes(), k2.as_bytes());
+    }
+
+    #[test]
+    fn db_key_is_domain_separated_from_vault_key() {
+        // The derived DB key must never equal the raw vault key it came from.
+        let vk = [0x33u8; 32];
+        let dk = derive_db_key(&vk).unwrap();
+        assert_ne!(
+            dk.as_bytes(),
+            &vk,
+            "DB key must not equal the raw vault key"
+        );
     }
 
     #[test]

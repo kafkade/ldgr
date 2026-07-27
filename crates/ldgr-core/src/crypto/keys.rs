@@ -89,6 +89,35 @@ define_key!(
     RecoveryKey
 );
 
+define_key!(
+    /// Database key — 256-bit key derived from the vault key via HKDF, used to
+    /// encrypt the local working store (`SQLite`) at rest via `SQLCipher`.
+    ///
+    /// This is deliberately a distinct, domain-separated subkey rather than the
+    /// raw vault key, so it can be rotated without touching the vault format.
+    DatabaseKey
+);
+
+impl DatabaseKey {
+    /// Render the key as a `SQLCipher` raw-key `PRAGMA key` argument:
+    /// `x'<64 lowercase hex chars>'`.
+    ///
+    /// Using the raw-key form tells `SQLCipher` to use these bytes directly as the
+    /// database encryption key, skipping its own PBKDF2 (we already derive from a
+    /// strong Argon2id-based chain). The returned string is zeroized on drop.
+    #[must_use]
+    pub fn to_pragma_hex(&self) -> zeroize::Zeroizing<String> {
+        use std::fmt::Write;
+        let mut s = String::with_capacity(2 + KEY_LEN * 2 + 1);
+        s.push_str("x'");
+        for b in &self.0 {
+            write!(s, "{b:02x}").expect("writing to String never fails");
+        }
+        s.push('\'');
+        zeroize::Zeroizing::new(s)
+    }
+}
+
 impl VaultKey {
     /// Generate a new random vault key.
     #[must_use]
@@ -143,6 +172,7 @@ mod tests {
         let vk = VaultKey::from_bytes([4; KEY_LEN]);
         let ik = ItemKey::from_bytes([5; KEY_LEN]);
         let rk = RecoveryKey::from_bytes([6; KEY_LEN]);
+        let dk = DatabaseKey::from_bytes([7; KEY_LEN]);
 
         for (name, debug) in [
             ("MasterKey", format!("{mk:?}")),
@@ -151,12 +181,24 @@ mod tests {
             ("VaultKey", format!("{vk:?}")),
             ("ItemKey", format!("{ik:?}")),
             ("RecoveryKey", format!("{rk:?}")),
+            ("DatabaseKey", format!("{dk:?}")),
         ] {
             assert!(
                 debug.contains("[REDACTED]"),
                 "{name} Debug must contain [REDACTED], got: {debug}"
             );
         }
+    }
+
+    #[test]
+    fn database_key_pragma_hex_format() {
+        let dk = DatabaseKey::from_bytes([0xAB; KEY_LEN]);
+        let pragma = dk.to_pragma_hex();
+        assert!(pragma.starts_with("x'"));
+        assert!(pragma.ends_with('\''));
+        // 32 bytes -> 64 hex chars, wrapped in x'...'
+        assert_eq!(pragma.len(), 2 + KEY_LEN * 2 + 1);
+        assert_eq!(pragma.as_str(), format!("x'{}'", "ab".repeat(KEY_LEN)));
     }
 
     #[test]

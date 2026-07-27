@@ -21,8 +21,12 @@ mod wrap;
 pub use emergency_kit::EmergencyKit;
 pub use envelope::{SealedEnvelope, decrypt_item, encrypt_item};
 pub use errors::CryptoError;
-pub use kdf::{Argon2Params, derive_auth_key, derive_encryption_key, derive_master_key};
-pub use keys::{AuthKey, ItemKey, MasterEncryptionKey, MasterKey, RecoveryKey, VaultKey};
+pub use kdf::{
+    Argon2Params, derive_auth_key, derive_db_key, derive_encryption_key, derive_master_key,
+};
+pub use keys::{
+    AuthKey, DatabaseKey, ItemKey, MasterEncryptionKey, MasterKey, RecoveryKey, VaultKey,
+};
 pub use recovery::{decode_recovery_key, encode_recovery_key};
 pub use secret_key::SecretKey;
 #[cfg(feature = "sync")]

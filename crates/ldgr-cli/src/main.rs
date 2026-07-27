@@ -8,6 +8,7 @@ mod config;
 mod convert;
 mod db;
 mod market_fetch;
+mod migrate;
 mod render;
 mod session;
 mod sync;
@@ -38,6 +39,8 @@ enum Commands {
     },
     /// Lock the vault (clear the session)
     Lock,
+    /// Migrate a legacy plaintext working store to the encrypted format
+    Migrate,
     /// Show vault status
     Status,
 
@@ -399,6 +402,7 @@ fn main() {
         Some(Commands::Init) => commands::init::run(&vault_path),
         Some(Commands::Unlock { timeout }) => commands::unlock::run(&vault_path, timeout),
         Some(Commands::Lock) => commands::lock::run(&vault_path),
+        Some(Commands::Migrate) => commands::migrate::run(&vault_path),
         Some(Commands::Status) => commands::status::run(&vault_path),
         Some(Commands::Accounts { action, flat }) => match action {
             Some(AccountAction::Add {

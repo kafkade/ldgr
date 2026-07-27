@@ -39,12 +39,14 @@ async-trait.workspace = true
 # Runtime
 tokio.workspace = true
 anyhow.workspace = true
+keyring.workspace = true
 chrono.workspace = true
 rust_decimal.workspace = true
-rusqlite.workspace = true
+rusqlite = { workspace = true, features = ["bundled-sqlcipher-vendored-openssl"] }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+zeroize.workspace = true
 
 [lints]
 workspace = true
@@ -52,3 +54,4 @@ workspace = true
 [dev-dependencies]
 ldgr-server = { path = "../ldgr-server" }
 axum.workspace = true
+tempfile = "3"
