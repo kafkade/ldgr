@@ -425,7 +425,6 @@ export function VaultProvider({ children }: { children: ReactNode }) {
       const { emergencyKit } = await signUp2skd(
         db,
         wasm,
-        vault,
         client,
         serverConfig.serverUrl,
         username,
@@ -449,7 +448,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
       if (!vault || !db || !serverConfig)
         throw new Error('Configure the server first');
       const client = buildClient(serverConfig);
-      await signIn2skd(db, vault, client, username, password, secretKey ?? null);
+      await signIn2skd(db, client, username, password, secretKey ?? null);
       clientRef.current = client;
       setServerAuthenticated(client.isAuthenticated());
       setHasSecretKey(true);

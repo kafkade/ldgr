@@ -18,25 +18,23 @@
 //! ## Auth
 //!
 //! Single-secret SRP via [`LdgrSyncClient::login`], and two-secret (2SKD,
-//! ADR-008) via [`LdgrSyncClient::login_2skd`] /
+//! ADR-008 + #296) via [`LdgrSyncClient::login_2skd`] /
 //! [`LdgrSyncClient::register_2skd`]. The 2SKD methods take the **human inputs**
-//! (password bytes + Secret Key text + the account's Argon2 salt/params) and
-//! derive `MK_auth` + parse the [`SecretKey`] *inside Rust* — raw key material
-//! never crosses the boundary.
+//! (password bytes + Secret Key text + the account-scoped Argon2 salt/params)
+//! and derive `MK_auth` + parse the [`SecretKey`] *inside Rust* — raw key
+//! material never crosses the boundary.
 //!
-//! NOTE: provisioning the Argon2 salt/params onto a brand-new device
-//! (Emergency-Kit / QR onboarding) is owned by the onboarding work (#181/#175)
-//! and is intentionally out of scope here; callers on an existing device read
-//! these from the local vault header.
+//! NOTE: the Argon2 salt/params are **account-scoped** (#296), generated at
+//! registration and decoupled from any vault header. On a new device they come
+//! from the Emergency Kit (passed to `login_2skd`) or are returned by the server
+//! at `login/init` (pass `None`); they are never read from a vault.
 
 use std::sync::Arc;
 
 use futures::lock::Mutex;
 use uuid::Uuid;
 
-use ldgr_core::crypto::{
-    Argon2Params, EmergencyKit, SecretKey, derive_auth_key, derive_master_key,
-};
+use ldgr_core::crypto::{AccountKdf, Argon2Params, EmergencyKit, SecretKey};
 use ldgr_core::sync::server::{
     HttpMethod, ListBatchesQuery, ListSnapshotsQuery, Pong, RawHttpSender, RawRequest, RawResponse,
     ServerInfo, ServerSyncClient, ServerSyncError,
@@ -328,7 +326,7 @@ pub struct FfiSecretKeyMaterial {
     pub account_hint: String,
 }
 
-/// Render-agnostic Emergency Kit data for new-device sign-in (ADR-008).
+/// Render-agnostic Emergency Kit data for new-device sign-in (ADR-008 + #296).
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct FfiEmergencyKit {
     pub version: u32,
@@ -337,6 +335,11 @@ pub struct FfiEmergencyKit {
     pub account_hint: String,
     /// Account Secret Key text. **Secret.**
     pub secret_key: String,
+    /// Account-scoped Argon2 salt for deriving `MK_auth` on a new device (#296).
+    /// Not secret. Pass to [`LdgrSyncClient::login_2skd`] on a scanning device.
+    pub account_kdf_salt: Vec<u8>,
+    /// Account-scoped Argon2 params for deriving `MK_auth` (#296).
+    pub account_kdf_params: FfiArgon2Params,
     /// Optional vault recovery key text (opt-in). **Secret.**
     pub recovery_key: Option<String>,
     /// Versioned JSON payload the host renders into the kit's QR code.
@@ -426,8 +429,11 @@ impl LdgrSyncClient {
 
     /// Register a new account using two-secret (2SKD) derivation.
     ///
-    /// Derives `MK_auth` from `password` + `argon2_salt`/`argon2_params` and
-    /// parses `secret_key` (canonical text form) — both stay in Rust.
+    /// `MK_auth` is derived from `password` + the **account-scoped**
+    /// `argon2_salt`/`argon2_params` (a fresh salt generated at sign-up,
+    /// decoupled from any vault, #296); `secret_key` is parsed from its canonical
+    /// text form. Both stay in Rust. The same salt/params must be carried in the
+    /// Emergency Kit and are returned by the server at `login/init`.
     pub async fn register_2skd(
         &self,
         username: String,
@@ -437,16 +443,11 @@ impl LdgrSyncClient {
         argon2_salt: Vec<u8>,
         argon2_params: FfiArgon2Params,
     ) -> Result<String, FfiSyncError> {
-        let (aid, mk_auth, sk) = derive_2skd(
-            &account_id,
-            &password,
-            &secret_key,
-            &argon2_salt,
-            argon2_params,
-        )?;
+        let (aid, sk, account_kdf) =
+            parse_2skd_register(&account_id, &secret_key, argon2_salt, argon2_params)?;
         let client = self.inner.lock().await;
         Ok(client
-            .register_2skd(&username, &aid, &mk_auth, &sk)
+            .register_2skd(&username, &aid, &password, &sk, &account_kdf)
             .await?
             .user_id)
     }
@@ -456,19 +457,24 @@ impl LdgrSyncClient {
     /// The account id is **not** required: the server returns the account's
     /// stored id at `login/init` and the client uses it to derive `x`
     /// (ADR-008). Callers on a new device supply the master `password` and the
-    /// account `secret_key` (typed or scanned from the Emergency Kit); the
-    /// Argon2 salt/params come from the local vault header.
+    /// account `secret_key` (typed or scanned from the Emergency Kit). The
+    /// account Argon2 salt/params (#296) are optional: pass them from the
+    /// Emergency Kit to override the server (defense-in-depth against a
+    /// substituted salt), or pass `None` to use the copy the server returns at
+    /// `login/init`.
     pub async fn login_2skd(
         &self,
         username: String,
         password: Vec<u8>,
         secret_key: String,
-        argon2_salt: Vec<u8>,
-        argon2_params: FfiArgon2Params,
+        argon2_salt: Option<Vec<u8>>,
+        argon2_params: Option<FfiArgon2Params>,
     ) -> Result<(), FfiSyncError> {
-        let (mk_auth, sk) = derive_login_2skd(&password, &secret_key, &argon2_salt, argon2_params)?;
+        let (sk, kit_kdf) = parse_2skd_login(&secret_key, argon2_salt, argon2_params)?;
         let mut client = self.inner.lock().await;
-        client.login_2skd(&username, &mk_auth, &sk).await?;
+        client
+            .login_2skd(&username, &password, &sk, kit_kdf.as_ref())
+            .await?;
         Ok(())
     }
 
@@ -626,54 +632,41 @@ fn put_result(resp: ldgr_core::sync::server::PutBlobResponse) -> FfiPutBlobResul
     }
 }
 
-/// Derive the 2SKD login/registration inputs from human-provided secrets,
-/// keeping all key material inside Rust.
-fn derive_2skd(
+/// Parse the 2SKD **registration** inputs, keeping all key material inside Rust.
+/// The Argon2 salt/params are account-scoped (#296).
+fn parse_2skd_register(
     account_id: &str,
-    password: &[u8],
     secret_key: &str,
-    argon2_salt: &[u8],
+    argon2_salt: Vec<u8>,
     argon2_params: FfiArgon2Params,
-) -> Result<(Uuid, ldgr_core::crypto::AuthKey, SecretKey), FfiSyncError> {
+) -> Result<(Uuid, SecretKey, AccountKdf), FfiSyncError> {
     let aid = Uuid::parse_str(account_id).map_err(|e| FfiSyncError::InvalidInput {
         message: format!("invalid account id: {e}"),
     })?;
-    let params: Argon2Params = argon2_params.into();
-    let master_key = derive_master_key(password, argon2_salt, &params).map_err(|e| {
-        FfiSyncError::InvalidInput {
-            message: format!("key derivation failed: {e}"),
-        }
-    })?;
-    let mk_auth = derive_auth_key(&master_key).map_err(|e| FfiSyncError::InvalidInput {
-        message: format!("key derivation failed: {e}"),
-    })?;
     let sk = SecretKey::parse(secret_key).map_err(|e| FfiSyncError::InvalidInput {
         message: format!("invalid secret key: {e}"),
     })?;
-    Ok((aid, mk_auth, sk))
+    let account_kdf = AccountKdf::from_parts(argon2_salt, argon2_params.into());
+    Ok((aid, sk, account_kdf))
 }
 
-/// Derive the 2SKD **login** inputs (no account id — the server supplies it at
-/// `login/init`).
-fn derive_login_2skd(
-    password: &[u8],
+/// Parse the 2SKD **login** inputs (no account id — the server supplies it at
+/// `login/init`). The account Argon2 salt/params are optional: `Some` carries an
+/// Emergency-Kit copy that overrides the server's; `None` defers to the copy the
+/// server returns at `login/init` (#296).
+fn parse_2skd_login(
     secret_key: &str,
-    argon2_salt: &[u8],
-    argon2_params: FfiArgon2Params,
-) -> Result<(ldgr_core::crypto::AuthKey, SecretKey), FfiSyncError> {
-    let params: Argon2Params = argon2_params.into();
-    let master_key = derive_master_key(password, argon2_salt, &params).map_err(|e| {
-        FfiSyncError::InvalidInput {
-            message: format!("key derivation failed: {e}"),
-        }
-    })?;
-    let mk_auth = derive_auth_key(&master_key).map_err(|e| FfiSyncError::InvalidInput {
-        message: format!("key derivation failed: {e}"),
-    })?;
+    argon2_salt: Option<Vec<u8>>,
+    argon2_params: Option<FfiArgon2Params>,
+) -> Result<(SecretKey, Option<AccountKdf>), FfiSyncError> {
     let sk = SecretKey::parse(secret_key).map_err(|e| FfiSyncError::InvalidInput {
         message: format!("invalid secret key: {e}"),
     })?;
-    Ok((mk_auth, sk))
+    let kit_kdf = match (argon2_salt, argon2_params) {
+        (Some(salt), Some(params)) => Some(AccountKdf::from_parts(salt, params.into())),
+        _ => None,
+    };
+    Ok((sk, kit_kdf))
 }
 
 /// Generate a fresh account id + account [`SecretKey`] for 2SKD sign-up
@@ -690,9 +683,24 @@ pub fn generate_secret_key() -> FfiSecretKeyMaterial {
     }
 }
 
+/// Generate a fresh **account-scoped** Argon2 salt for 2SKD sign-up (#296).
+///
+/// The caller pairs it with its chosen [`FfiArgon2Params`] to form the account
+/// KDF, then threads the same salt/params through
+/// [`register_2skd`](LdgrSyncClient::register_2skd), the Emergency Kit
+/// ([`build_emergency_kit`]), and secure local storage. This salt is decoupled
+/// from any vault header, so it reproduces `MK_auth` on any device.
+#[uniffi::export]
+#[must_use]
+pub fn generate_account_kdf_salt() -> Vec<u8> {
+    AccountKdf::generate(Argon2Params::mobile()).salt().to_vec()
+}
+
 /// Build an Emergency Kit (render-agnostic + QR payload) for new-device
-/// sign-in (ADR-008). `recovery_key` is an opt-in vault recovery key; omit it
-/// to keep the two recovery artifacts separate (recommended).
+/// sign-in (ADR-008 + #296). Carries the account-scoped Argon2 salt/params so a
+/// new device can derive `MK_auth` offline. `recovery_key` is an opt-in vault
+/// recovery key; omit it to keep the two recovery artifacts separate
+/// (recommended).
 ///
 /// # Errors
 ///
@@ -703,12 +711,15 @@ pub fn build_emergency_kit(
     address: String,
     email: String,
     secret_key: String,
+    account_kdf_salt: Vec<u8>,
+    account_kdf_params: FfiArgon2Params,
     recovery_key: Option<String>,
 ) -> Result<FfiEmergencyKit, FfiSyncError> {
     let sk = SecretKey::parse(&secret_key).map_err(|e| FfiSyncError::InvalidInput {
         message: format!("invalid secret key: {e}"),
     })?;
-    let mut kit = EmergencyKit::new(address, email, &sk);
+    let account_kdf = AccountKdf::from_parts(account_kdf_salt, account_kdf_params.into());
+    let mut kit = EmergencyKit::new(address, email, &sk, &account_kdf);
     if let Some(rk_text) = recovery_key.as_deref() {
         let rk = ldgr_core::crypto::decode_recovery_key(rk_text).map_err(|e| {
             FfiSyncError::InvalidInput {
@@ -722,13 +733,42 @@ pub fn build_emergency_kit(
         .map_err(|e| FfiSyncError::InvalidInput {
             message: format!("kit serialization failed: {e}"),
         })?;
-    Ok(FfiEmergencyKit {
+    Ok(ffi_kit(&kit, qr_payload))
+}
+
+/// Parse a scanned/typed Emergency Kit QR payload back into its fields (#296),
+/// so a new device can extract the Secret Key + account Argon2 KDF and call
+/// [`LdgrSyncClient::login_2skd`].
+///
+/// # Errors
+///
+/// Returns [`FfiSyncError::InvalidInput`] if the payload is malformed or an
+/// unsupported version.
+#[uniffi::export]
+pub fn parse_emergency_kit(qr_payload: String) -> Result<FfiEmergencyKit, FfiSyncError> {
+    let kit =
+        EmergencyKit::from_qr_payload(&qr_payload).map_err(|e| FfiSyncError::InvalidInput {
+            message: format!("invalid emergency kit: {e}"),
+        })?;
+    Ok(ffi_kit(&kit, qr_payload))
+}
+
+/// Project a core [`EmergencyKit`] into its FFI record form.
+fn ffi_kit(kit: &EmergencyKit, qr_payload: String) -> FfiEmergencyKit {
+    let params = kit.account_kdf().params();
+    FfiEmergencyKit {
         version: kit.version(),
         address: kit.address().to_string(),
         email: kit.email().to_string(),
         account_hint: kit.account_hint().to_string(),
         secret_key: kit.secret_key_text().to_string(),
+        account_kdf_salt: kit.account_kdf().salt().to_vec(),
+        account_kdf_params: FfiArgon2Params {
+            memory_cost_kib: params.memory_cost_kib,
+            iterations: params.iterations,
+            parallelism: params.parallelism,
+        },
         recovery_key: kit.recovery_key_text().map(str::to_string),
         qr_payload,
-    })
+    }
 }

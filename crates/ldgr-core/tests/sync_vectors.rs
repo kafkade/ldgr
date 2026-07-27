@@ -82,6 +82,8 @@ fn check_vector(name: &str, canonical: &[u8]) {
 
 const DEVICE: &str = "11111111-1111-7111-8111-111111111111";
 const ACCOUNT_ID: &str = "aaaaaaaa-0000-7000-8000-000000000001";
+/// Account id used by the 2SKD cross-client vectors (matches the register vector).
+const ACCOUNT_ID_2SKD: &str = "018f5a3c-0000-7000-8000-000000000001";
 const TXN_ID: &str = "bbbbbbbb-0000-7000-8000-000000000002";
 const CASH_POSTING_ID: &str = "cccccccc-0000-7000-8000-000000000003";
 const FOOD_POSTING_ID: &str = "dddddddd-0000-7000-8000-000000000004";
@@ -194,7 +196,7 @@ fn event_batch_vector_is_golden() {
 #[cfg(feature = "sync")]
 #[test]
 fn register_request_vectors_are_golden() {
-    use ldgr_core::sync::server::protocol::RegisterRequest;
+    use ldgr_core::sync::server::protocol::{AccountKdfWire, RegisterRequest};
 
     // Single-secret (legacy SRP): `auth_scheme` omitted from the wire.
     let one_secret = RegisterRequest {
@@ -203,19 +205,79 @@ fn register_request_vectors_are_golden() {
         verifier: "0123456789abcdef".into(),
         auth_scheme: None,
         account_id: None,
+        account_kdf: None,
     };
     let bytes = serde_json::to_vec(&one_secret).expect("serialize register request");
     check_vector("register_request_1secret_v1.json", &bytes);
 
-    // Two-secret (2SKD, ADR-008): `auth_scheme` and client-generated
-    // `account_id` present.
+    // Two-secret (2SKD, ADR-008 + #296): `auth_scheme`, client-generated
+    // `account_id`, and the account-scoped `account_kdf` all present.
     let two_skd = RegisterRequest {
         username: "carol".into(),
         salt: "ffeeddccbbaa99887766554433221100".into(),
         verifier: "fedcba9876543210".into(),
         auth_scheme: Some("srp-2skd-v1".into()),
         account_id: Some("018f5a3c-0000-7000-8000-000000000001".into()),
+        account_kdf: Some(AccountKdfWire {
+            salt: "11111111111111111111111111111111".into(),
+            memory_cost_kib: 65536,
+            iterations: 3,
+            parallelism: 1,
+        }),
     };
     let bytes = serde_json::to_vec(&two_skd).expect("serialize 2skd register request");
     check_vector("register_request_2skd_v1.json", &bytes);
+}
+
+/// Cross-client **account verifier** vector (#296): a fresh device reproduces
+/// the identical SRP verifier from the account secrets **alone** — master
+/// password, account [`SecretKey`], `account_id`, and the account-scoped
+/// [`AccountKdf`] — with **no vault header** anywhere in the derivation. This is
+/// the machine-checked proof that account auth is decoupled from any single
+/// vault, so iOS (`UniFFI`) and web (WASM) clients that feed the same inputs
+/// derive the same verifier.
+#[cfg(feature = "sync")]
+#[test]
+fn account_verifier_is_vault_independent_and_golden() {
+    use ldgr_core::crypto::{AccountKdf, Argon2Params, SecretKey, derive_account_auth_key};
+    use ldgr_core::sync::server::{hex_encode, register_2skd_with_salt};
+    use uuid::Uuid;
+
+    // Fixed account secrets. None of these come from a vault header.
+    let password = b"correct horse battery staple";
+    let account_id = Uuid::parse_str(ACCOUNT_ID_2SKD).expect("account id");
+    let secret_key_text = "A1-067NMF-J9C1-593R-HE5P-15B3-64C1-Q5ZT-D4";
+    let account_kdf = AccountKdf::from_parts(vec![0x11; 16], Argon2Params::test());
+    let srp_salt = vec![0x22u8; 16];
+
+    // Device A derives the verifier from the account secrets alone.
+    let sk_a = SecretKey::parse(secret_key_text).expect("parse secret key");
+    let mk_auth_a = derive_account_auth_key(password, &account_kdf).expect("derive MK_auth");
+    let reg_a = register_2skd_with_salt(&account_id, &mk_auth_a, &sk_a, srp_salt.clone());
+
+    // Pin the verifier (+ its inputs) as a known-answer vector so other clients
+    // can assert byte-identical output for the same account secrets.
+    let vector = serde_json::json!({
+        "account_id": ACCOUNT_ID_2SKD,
+        "secret_key": secret_key_text,
+        "srp_salt": hex_encode(&srp_salt),
+        "verifier": hex_encode(&reg_a.verifier),
+    });
+    check_vector(
+        "account_verifier_2skd_v1.json",
+        &serde_json::to_vec(&vector).expect("serialize verifier vector"),
+    );
+
+    // Device B — a brand-new device with no vault — reconstructs every input
+    // from the Emergency Kit / server (`account_id` + `AccountKdf` + Secret Key
+    // text) plus the memorized password, and reproduces the identical verifier.
+    let sk_b = SecretKey::parse(secret_key_text).expect("parse secret key");
+    let account_kdf_b = AccountKdf::from_parts(vec![0x11; 16], Argon2Params::test());
+    let mk_auth_b = derive_account_auth_key(password, &account_kdf_b).expect("derive MK_auth");
+    let reg_b = register_2skd_with_salt(&account_id, &mk_auth_b, &sk_b, srp_salt);
+
+    assert_eq!(
+        reg_a.verifier, reg_b.verifier,
+        "a new device must reproduce the verifier from account secrets alone (no vault header)"
+    );
 }

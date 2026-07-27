@@ -8,10 +8,10 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
-use ldgr_core::crypto::{
-    Argon2Params, AuthKey, EmergencyKit, SecretKey, derive_auth_key, derive_master_key, open_vault,
+use ldgr_core::crypto::{AccountKdf, Argon2Params, EmergencyKit, SecretKey};
+use ldgr_core::sync::server::{
+    AccountKdfWire, PROTOCOL_VERSION, ServerInfo, ServerSyncClient, ServerSyncError,
 };
-use ldgr_core::sync::server::{PROTOCOL_VERSION, ServerInfo, ServerSyncClient, ServerSyncError};
 use ldgr_core::sync::transport::{TransportConfig, device_path};
 use uuid::Uuid;
 
@@ -47,7 +47,7 @@ pub fn run_setup(vault_path: &Path) -> Result<()> {
     let config = match choice.trim() {
         "1" => setup_dropbox()?,
         "2" => setup_webdav()?,
-        "3" => setup_server(&db, vault_path, &vault_dir)?,
+        "3" => setup_server(&db, &vault_dir)?,
         _ => bail!("Invalid choice. Please enter 1, 2, or 3."),
     };
 
@@ -152,11 +152,7 @@ fn setup_webdav() -> Result<TransportConfig> {
 /// the Secret Key + Emergency Kit onboarding; a legacy single-secret server
 /// falls back to the plain SRP-6a flow. The master password is used only to
 /// derive keys locally and is never stored.
-fn setup_server(
-    conn: &rusqlite::Connection,
-    vault_path: &Path,
-    vault_dir: &Path,
-) -> Result<TransportConfig> {
+fn setup_server(conn: &rusqlite::Connection, vault_dir: &Path) -> Result<TransportConfig> {
     println!();
     println!("ldgr-server Setup (self-hosted)");
     println!("───────────────────────────────");
@@ -191,7 +187,7 @@ fn setup_server(
     print_server_info(&info);
 
     if info.two_secret_auth {
-        setup_server_2skd(&rt, conn, vault_path, vault_dir, base_url, &info)
+        setup_server_2skd(&rt, conn, vault_dir, base_url, &info)
     } else {
         println!("This server uses single-secret authentication.");
         println!();
@@ -225,13 +221,12 @@ fn print_server_info(info: &ServerInfo) {
     }
 }
 
-/// Two-secret (2SKD, ADR-008) onboarding: sign up (generating a Secret Key +
-/// Emergency Kit) or sign in — either on a device that already stores the
+/// Two-secret (2SKD, ADR-008 + #296) onboarding: sign up (generating a Secret
+/// Key + Emergency Kit) or sign in — either on a device that already stores the
 /// Secret Key, or a new device where the user supplies it.
 fn setup_server_2skd(
     rt: &tokio::runtime::Runtime,
     conn: &rusqlite::Connection,
-    vault_path: &Path,
     vault_dir: &Path,
     base_url: String,
     info: &ServerInfo,
@@ -251,32 +246,37 @@ fn setup_server_2skd(
         bail!("Password cannot be empty.");
     }
 
-    // MK_auth = HKDF(MK) where MK is the vault master key (ADR-008). Deriving it
-    // from the vault also validates that the password matches this vault.
-    let mk_auth = derive_server_auth_key(vault_path, password.as_bytes())?;
-
     let vault_id = get_vault_id(vault_dir);
     let device_id = crate::sync::bridge::resolve_device_id(conn, vault_dir)?;
 
-    // If this device already stored a Secret Key, sign in with password only.
+    // If this device already stored a Secret Key (and its account KDF), sign in
+    // with the password alone. The account KDF is decoupled from any vault
+    // (#296), so a fresh device with no vault can still authenticate.
     let existing_secret_key = load_secret_key(vault_dir)?;
+    let existing_account_kdf = load_account_kdf(vault_dir)?;
 
     let outcome = rt.block_on(async {
         let sender = ReqwestSender::new(base_url.clone());
         let mut client = ServerSyncClient::new(sender);
 
-        let secret_key_text = if let Some(sk_text) = existing_secret_key {
+        let (secret_key_text, account_kdf) = if let Some(sk_text) = existing_secret_key {
             let sk = SecretKey::parse(&sk_text)
                 .map_err(|e| anyhow::anyhow!("stored Secret Key is invalid: {e}"))?;
             client
-                .login_2skd(&username, &mk_auth, &sk)
+                .login_2skd(
+                    &username,
+                    password.as_bytes(),
+                    &sk,
+                    existing_account_kdf.as_ref(),
+                )
                 .await
                 .map_err(|e| anyhow::anyhow!("sign-in failed: {e}"))?;
             println!();
             println!("✓ Signed in with the Secret Key stored on this device.");
-            sk_text
+            (sk_text, existing_account_kdf)
         } else {
-            prompt_2skd_first_time(&mut client, &username, &mk_auth, &base_url, info).await?
+            prompt_2skd_first_time(&mut client, &username, password.as_bytes(), &base_url, info)
+                .await?
         };
 
         // Ensure the vault exists (idempotent — a 409 means it already does).
@@ -293,16 +293,23 @@ fn setup_server_2skd(
             .token()
             .map(str::to_string)
             .ok_or_else(|| anyhow::anyhow!("server did not return a session token"))?;
-        Ok::<(String, String), anyhow::Error>((token, secret_key_text))
+        Ok::<(String, String, Option<AccountKdf>), anyhow::Error>((
+            token,
+            secret_key_text,
+            account_kdf,
+        ))
     })?;
 
-    let (session_token, secret_key_text) = outcome;
+    let (session_token, secret_key_text, account_kdf) = outcome;
 
     println!();
     println!("✓ Authenticated to {base_url} and registered device {device_id}.");
 
     store_session_token(vault_dir, &session_token)?;
     store_secret_key(vault_dir, &secret_key_text)?;
+    if let Some(kdf) = &account_kdf {
+        store_account_kdf(vault_dir, kdf)?;
+    }
 
     Ok(TransportConfig::Server {
         base_url,
@@ -314,14 +321,17 @@ fn setup_server_2skd(
 
 /// First-time 2SKD onboarding on this device: choose to create a new account
 /// (generating a Secret Key + Emergency Kit) or sign in an existing account by
-/// entering its Secret Key. Returns the account Secret Key (canonical text).
+/// entering its Secret Key. Returns the account Secret Key (canonical text) and,
+/// when signing up, the account-scoped Argon2 KDF to persist locally (#296). On
+/// a typed-Secret-Key sign-in the KDF is `None` — the server returns it at
+/// `login/init`.
 async fn prompt_2skd_first_time(
     client: &mut ServerSyncClient<ReqwestSender>,
     username: &str,
-    mk_auth: &AuthKey,
+    password: &[u8],
     base_url: &str,
     info: &ServerInfo,
-) -> Result<String> {
+) -> Result<(String, Option<AccountKdf>)> {
     println!();
     println!("No Secret Key is stored on this device. Choose an option:");
     println!("  1. Create a new account (generates your Secret Key + Emergency Kit)");
@@ -345,18 +355,22 @@ async fn prompt_2skd_first_time(
             let account_id = Uuid::now_v7();
             let secret_key = SecretKey::generate(account_id);
             let secret_key_text = secret_key.encode();
+            // Account-scoped Argon2 KDF, generated once here and decoupled from
+            // any vault (#296). Stored server-side + in the Emergency Kit so a new
+            // device reproduces MK_auth from the account secrets alone.
+            let account_kdf = AccountKdf::generate(Argon2Params::desktop());
 
             client
-                .register_2skd(username, &account_id, mk_auth, &secret_key)
+                .register_2skd(username, &account_id, password, &secret_key, &account_kdf)
                 .await
                 .map_err(|e| anyhow::anyhow!("registration failed: {e}"))?;
             client
-                .login_2skd(username, mk_auth, &secret_key)
+                .login_2skd(username, password, &secret_key, Some(&account_kdf))
                 .await
                 .map_err(|e| anyhow::anyhow!("login after registration failed: {e}"))?;
 
-            render_emergency_kit(base_url, username, &secret_key)?;
-            Ok(secret_key_text)
+            render_emergency_kit(base_url, username, &secret_key, &account_kdf)?;
+            Ok((secret_key_text, Some(account_kdf)))
         }
         "2" => {
             let sk_text = rpassword::prompt_password("Account Secret Key (A1-…): ")
@@ -371,8 +385,9 @@ async fn prompt_2skd_first_time(
                      Copy it exactly from your Emergency Kit (starts with `A1-`)."
                 )
             })?;
+            // No local account KDF — the server returns it at `login/init` (#296).
             client
-                .login_2skd(username, mk_auth, &sk)
+                .login_2skd(username, password, &sk, None)
                 .await
                 .map_err(|e| {
                     anyhow::anyhow!(
@@ -380,31 +395,26 @@ async fn prompt_2skd_first_time(
                      Check the master password and Secret Key are both correct."
                     )
                 })?;
-            Ok(sk_text)
+            Ok((sk_text, None))
         }
         other => bail!("Invalid choice `{other}`. Enter 1 or 2."),
     }
 }
 
-/// Derive the server auth key (`MK_auth`, ADR-008) from the vault's master
-/// password, using the Argon2 salt/params stored in the vault header. Opening
-/// the vault first validates the password and yields those parameters.
-fn derive_server_auth_key(vault_path: &Path, password: &[u8]) -> Result<AuthKey> {
-    let bytes = std::fs::read(vault_path)
-        .with_context(|| format!("failed to read vault at {}", vault_path.display()))?;
-    let vault = open_vault(&bytes, password)
-        .map_err(|_| anyhow::anyhow!("Incorrect master password for this vault."))?;
-    let (salt, params) = vault.kdf_params();
-    let params: Argon2Params = params.clone();
-    let master_key = derive_master_key(password, salt, &params)
-        .map_err(|e| anyhow::anyhow!("key derivation failed: {e}"))?;
-    derive_auth_key(&master_key).map_err(|e| anyhow::anyhow!("key derivation failed: {e}"))
-}
-
 /// Render the Emergency Kit once at sign-up: human-readable details, a scannable
 /// terminal QR of the kit payload, and an optional file export.
-fn render_emergency_kit(base_url: &str, email: &str, secret_key: &SecretKey) -> Result<()> {
-    let kit = EmergencyKit::new(base_url.to_string(), email.to_string(), secret_key);
+fn render_emergency_kit(
+    base_url: &str,
+    email: &str,
+    secret_key: &SecretKey,
+    account_kdf: &AccountKdf,
+) -> Result<()> {
+    let kit = EmergencyKit::new(
+        base_url.to_string(),
+        email.to_string(),
+        secret_key,
+        account_kdf,
+    );
     let qr_payload = kit
         .to_qr_payload()
         .map_err(|e| anyhow::anyhow!("failed to build Emergency Kit QR: {e}"))?;
@@ -687,6 +697,60 @@ fn store_secret_key(vault_dir: &Path, secret_key: &str) -> Result<()> {
     };
     creds["secret_key"] = serde_json::Value::String(secret_key.to_string());
     // This file holds the account Secret Key — write it owner-only.
+    write_secret_file(
+        &creds_path,
+        &serde_json::to_string_pretty(&creds).context("failed to serialize credentials")?,
+    )?;
+
+    Ok(())
+}
+
+/// Load the account-scoped Argon2 KDF (salt + params) from
+/// `sync-credentials.json`, if present (#296).
+///
+/// Used on an existing device to derive `MK_auth` without a vault header and to
+/// cross-check the server's copy at `login/init`. Absent for accounts onboarded
+/// by typing only the Secret Key (the server then supplies the KDF).
+fn load_account_kdf(vault_dir: &Path) -> Result<Option<AccountKdf>> {
+    let creds_path = vault_dir.join(CREDENTIALS_FILE);
+    if !creds_path.exists() {
+        return Ok(None);
+    }
+    let existing =
+        std::fs::read_to_string(&creds_path).context("failed to read sync credentials")?;
+    if existing.trim().is_empty() {
+        return Ok(None);
+    }
+    let creds: serde_json::Value =
+        serde_json::from_str(&existing).context("failed to parse sync credentials")?;
+    let Some(value) = creds.get("account_kdf") else {
+        return Ok(None);
+    };
+    let wire: AccountKdfWire =
+        serde_json::from_value(value.clone()).context("failed to parse stored account KDF")?;
+    let kdf = wire
+        .to_account_kdf()
+        .map_err(|e| anyhow::anyhow!("stored account KDF is invalid: {e}"))?;
+    Ok(Some(kdf))
+}
+
+/// Persist the account-scoped Argon2 KDF into `sync-credentials.json` (0600 on
+/// Unix), preserving other providers' keys via read-merge-write (#296).
+fn store_account_kdf(vault_dir: &Path, account_kdf: &AccountKdf) -> Result<()> {
+    let creds_path = vault_dir.join(CREDENTIALS_FILE);
+    let mut creds: serde_json::Value = if creds_path.exists() {
+        let existing =
+            std::fs::read_to_string(&creds_path).context("failed to read sync credentials")?;
+        if existing.trim().is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::from_str(&existing).context("failed to parse sync credentials")?
+        }
+    } else {
+        serde_json::json!({})
+    };
+    creds["account_kdf"] = serde_json::to_value(AccountKdfWire::from_account_kdf(account_kdf))
+        .context("failed to serialize account KDF")?;
     write_secret_file(
         &creds_path,
         &serde_json::to_string_pretty(&creds).context("failed to serialize credentials")?,

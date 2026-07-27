@@ -344,11 +344,15 @@ Key** and shows it **once** inside a printable/QR **Emergency Kit** containing:
 | Sign-in address | Your server URL (e.g. `https://ledger.example.org`) |
 | Account identity | Email / username |
 | Account Secret Key | `A1-…` |
-| QR payload | The three items above, for fast new-device sign-in |
+| Account key-derivation salt/params | Account-scoped Argon2 salt + parameters (not secret) so a new device can reproduce `MK_auth` without your original vault |
+| QR payload | The items above, for fast new-device sign-in |
 
 **Save it before continuing** (password manager, print, or download). The
 Emergency Kit deliberately does **not** include your vault recovery key — that
-stays a separate artifact for the reasons above.
+stays a separate artifact for the reasons above. The account key-derivation
+salt/params are also returned by the server at sign-in, so signing in with only
+your typed Secret Key still works; the kit copy is a portability and
+tamper-resistance backup.
 
 ### The Secret Key format
 

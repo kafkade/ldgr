@@ -225,17 +225,33 @@ public enum LdgrSync {
         )
     }
 
+    /// Generate a fresh **account-scoped** Argon2 KDF for two-secret sign-up
+    /// (#296): a random salt paired with mobile Argon2 parameters. Decoupled
+    /// from any vault, so it reproduces `MK_auth` on any device. Thread the same
+    /// value through ``LdgrSyncSession/register2skd(...)``, ``buildEmergencyKit``,
+    /// and secure storage (Keychain).
+    public static func generateAccountKdf() -> KdfParams {
+        KdfParams(
+            salt: LdgrFFI.generateAccountKdfSalt(),
+            memoryCostKib: 64 * 1024,
+            iterations: 4,
+            parallelism: 2
+        )
+    }
+
     /// Assemble the Emergency Kit shown once after a successful sign-up.
     ///
     /// - Parameters:
     ///   - address: the server address the account lives on.
     ///   - email: the account's email/username.
     ///   - secretKey: the account Secret Key from ``generateSecretKey()``.
+    ///   - accountKdf: the account-scoped Argon2 KDF from ``generateAccountKdf()``.
     ///   - recoveryKey: optional vault recovery key to include.
     public static func buildEmergencyKit(
         address: String,
         email: String,
         secretKey: String,
+        accountKdf: KdfParams,
         recoveryKey: String? = nil
     ) throws -> EmergencyKit {
         do {
@@ -243,17 +259,25 @@ public enum LdgrSync {
                 address: address,
                 email: email,
                 secretKey: secretKey,
+                accountKdfSalt: accountKdf.salt,
+                accountKdfParams: FfiArgon2Params(
+                    memoryCostKib: accountKdf.memoryCostKib,
+                    iterations: accountKdf.iterations,
+                    parallelism: accountKdf.parallelism
+                ),
                 recoveryKey: recoveryKey
             )
-            return EmergencyKit(
-                version: k.version,
-                address: k.address,
-                email: k.email,
-                accountHint: k.accountHint,
-                secretKey: k.secretKey,
-                recoveryKey: k.recoveryKey,
-                qrPayload: k.qrPayload
-            )
+            return EmergencyKit(from: k)
+        } catch let error as FfiSyncError {
+            throw LdgrSyncError(from: error)
+        }
+    }
+
+    /// Parse a scanned/typed Emergency Kit QR payload back into its fields
+    /// (#296), so a new device can extract the Secret Key + account KDF.
+    public static func parseEmergencyKit(qrPayload: String) throws -> EmergencyKit {
+        do {
+            return EmergencyKit(from: try LdgrFFI.parseEmergencyKit(qrPayload: qrPayload))
         } catch let error as FfiSyncError {
             throw LdgrSyncError(from: error)
         }
@@ -262,10 +286,13 @@ public enum LdgrSync {
 
 // MARK: - Idiomatic session wrapper
 
-/// The vault's Argon2id salt and parameters (ADR-008 two-secret auth).
+/// An account-scoped Argon2id salt and parameters for two-secret auth
+/// (ADR-008 + #296).
 ///
-/// Returned by ``LdgrClient/kdfParams()``. `MK_auth` is derived from the master
-/// password with exactly these values; pass this to the 2SKD session methods.
+/// `MK_auth` is derived from the master password with exactly these values.
+/// Generated once at sign-up (``LdgrSync/generateAccountKdf()``), decoupled from
+/// any vault, and carried in the Emergency Kit / returned by the server at
+/// `login/init`. Pass it to the 2SKD session methods.
 public struct KdfParams: Sendable {
     public let salt: Data
     public let memoryCostKib: UInt32
@@ -314,7 +341,7 @@ public struct SecretKeyMaterial: Sendable {
     public let accountHint: String
 }
 
-/// Render-agnostic Emergency Kit data for new-device sign-in (ADR-008).
+/// Render-agnostic Emergency Kit data for new-device sign-in (ADR-008 + #296).
 public struct EmergencyKit: Sendable {
     public let version: UInt32
     public let address: String
@@ -322,10 +349,29 @@ public struct EmergencyKit: Sendable {
     public let accountHint: String
     /// Account Secret Key text. **Secret.**
     public let secretKey: String
+    /// Account-scoped Argon2 KDF (salt + params) for deriving `MK_auth` on a new
+    /// device (#296). Not secret.
+    public let accountKdf: KdfParams
     /// Optional vault recovery key text (opt-in). **Secret.**
     public let recoveryKey: String?
     /// Versioned JSON payload the host renders into the kit's QR code.
     public let qrPayload: String
+
+    init(from k: FfiEmergencyKit) {
+        self.version = k.version
+        self.address = k.address
+        self.email = k.email
+        self.accountHint = k.accountHint
+        self.secretKey = k.secretKey
+        self.accountKdf = KdfParams(
+            salt: k.accountKdfSalt,
+            memoryCostKib: k.accountKdfParams.memoryCostKib,
+            iterations: k.accountKdfParams.iterations,
+            parallelism: k.accountKdfParams.parallelism
+        )
+        self.recoveryKey = k.recoveryKey
+        self.qrPayload = k.qrPayload
+    }
 }
 
 /// Metadata about a remote encrypted batch, in Swift-native types.
@@ -414,17 +460,17 @@ public final class LdgrSyncSession: @unchecked Sendable {
 
     /// Register a new account using two-secret (2SKD) derivation.
     ///
-    /// `MK_auth` is derived from `password` + the vault's Argon2 salt/params
-    /// (see ``LdgrClient/kdfParams()``); the Secret Key comes from
-    /// ``LdgrSync/generateSecretKey()``. Returns the new user id. Both secrets
-    /// stay inside Rust.
+    /// `MK_auth` is derived from `password` + the **account-scoped** Argon2 KDF
+    /// (``LdgrSync/generateAccountKdf()``, decoupled from any vault, #296); the
+    /// Secret Key comes from ``LdgrSync/generateSecretKey()``. Returns the new
+    /// user id. Both secrets stay inside Rust.
     @discardableResult
     public func register2skd(
         username: String,
         accountId: String,
         password: Data,
         secretKey: String,
-        kdfParams: KdfParams
+        accountKdf: KdfParams
     ) async throws -> String {
         try await mapping {
             try await client.register2skd(
@@ -432,11 +478,11 @@ public final class LdgrSyncSession: @unchecked Sendable {
                 accountId: accountId,
                 password: password,
                 secretKey: secretKey,
-                argon2Salt: kdfParams.salt,
+                argon2Salt: accountKdf.salt,
                 argon2Params: FfiArgon2Params(
-                    memoryCostKib: kdfParams.memoryCostKib,
-                    iterations: kdfParams.iterations,
-                    parallelism: kdfParams.parallelism
+                    memoryCostKib: accountKdf.memoryCostKib,
+                    iterations: accountKdf.iterations,
+                    parallelism: accountKdf.parallelism
                 )
             )
         }
@@ -446,25 +492,28 @@ public final class LdgrSyncSession: @unchecked Sendable {
     ///
     /// The account id is not required — the server returns it at `login/init`.
     /// On a new device, supply the master `password` and the account
-    /// `secretKey` (typed or scanned from the Emergency Kit); the Argon2
-    /// salt/params come from the local vault header (``LdgrClient/kdfParams()``).
+    /// `secretKey` (typed or scanned from the Emergency Kit). `accountKdf` is
+    /// optional: pass the Emergency-Kit copy to override the server's (#296), or
+    /// `nil` to use the copy the server returns at `login/init`.
     public func login2skd(
         username: String,
         password: Data,
         secretKey: String,
-        kdfParams: KdfParams
+        accountKdf: KdfParams? = nil
     ) async throws {
         try await mapping {
             try await client.login2skd(
                 username: username,
                 password: password,
                 secretKey: secretKey,
-                argon2Salt: kdfParams.salt,
-                argon2Params: FfiArgon2Params(
-                    memoryCostKib: kdfParams.memoryCostKib,
-                    iterations: kdfParams.iterations,
-                    parallelism: kdfParams.parallelism
-                )
+                argon2Salt: accountKdf?.salt,
+                argon2Params: accountKdf.map {
+                    FfiArgon2Params(
+                        memoryCostKib: $0.memoryCostKib,
+                        iterations: $0.iterations,
+                        parallelism: $0.parallelism
+                    )
+                }
             )
         }
     }

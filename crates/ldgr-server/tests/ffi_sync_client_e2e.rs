@@ -334,7 +334,8 @@ async fn ffi_two_secret_full_round_trip() {
     .await
     .expect("register 2skd");
 
-    c.login_2skd(username, password, secret_key, SALT.to_vec(), test_argon2())
+    // Log in with no local KDF — the server returns it at `login/init` (#296).
+    c.login_2skd(username, password, secret_key, None, None)
         .await
         .expect("login 2skd");
     assert!(c.is_authenticated().await);
@@ -394,9 +395,7 @@ async fn ffi_login_2skd_with_wrong_secret_key_is_rejected() {
     .await
     .expect("register 2skd");
 
-    let result = c
-        .login_2skd(username, password, attacker, SALT.to_vec(), test_argon2())
-        .await;
+    let result = c.login_2skd(username, password, attacker, None, None).await;
     assert!(
         result.is_err(),
         "login with the wrong Secret Key must fail, got {result:?}"

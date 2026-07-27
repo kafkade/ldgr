@@ -14,14 +14,14 @@
 use zeroize::Zeroizing;
 
 use super::protocol::{
-    CreateOfferRequest, CreateOfferResponse, CreateVaultRequest, DeviceResponse, ErrorResponse,
-    GetResponseResponse, HexError, ListBatchesQuery, ListBlobsResponse, ListSnapshotsQuery,
-    LoginInitRequest, LoginInitResponse, LoginVerifyRequest, LoginVerifyResponse, OfferResponse,
-    Pong, PostResponseRequest, PutBlobResponse, RegisterRequest, RegisterResponse, ServerInfo,
-    VaultResponse, hex_decode, hex_encode,
+    AccountKdfWire, CreateOfferRequest, CreateOfferResponse, CreateVaultRequest, DeviceResponse,
+    ErrorResponse, GetResponseResponse, HexError, ListBatchesQuery, ListBlobsResponse,
+    ListSnapshotsQuery, LoginInitRequest, LoginInitResponse, LoginVerifyRequest,
+    LoginVerifyResponse, OfferResponse, Pong, PostResponseRequest, PutBlobResponse,
+    RegisterRequest, RegisterResponse, ServerInfo, VaultResponse, hex_decode, hex_encode,
 };
 use super::srp::{ClientLogin, SrpError};
-use crate::crypto::{AuthKey, SecretKey};
+use crate::crypto::{AccountKdf, SecretKey, derive_account_auth_key};
 use crate::sync::transport::{
     RemoteBatchMeta, RemoteSnapshotMeta, parse_batch_path, parse_snapshot_path,
 };
@@ -221,17 +221,21 @@ impl<T: RawHttpSender> ServerSyncClient<T> {
             verifier: hex_encode(&reg.verifier),
             auth_scheme: None,
             account_id: None,
+            account_kdf: None,
         };
         self.post_json(&format!("{API_PREFIX}/auth/register"), &body, false)
             .await
     }
 
-    /// Register a new account using **two-secret (2SKD)** derivation (ADR-008).
+    /// Register a new account using **two-secret (2SKD)** derivation (ADR-008,
+    /// #296).
     ///
-    /// The SRP verifier is derived from both the master auth key (`mk_auth`,
-    /// derived from the password) and the account [`SecretKey`]; the request
-    /// advertises `auth_scheme = "srp-2skd-v1"`. Neither secret leaves the
-    /// device — only `(salt, verifier)` is sent.
+    /// `MK_auth` is derived from the master `password` and the account-scoped
+    /// `account_kdf` (a fresh Argon2 salt/params generated at registration,
+    /// decoupled from any vault). The SRP verifier mixes `MK_auth` with the
+    /// account [`SecretKey`]; the request advertises `auth_scheme =
+    /// "srp-2skd-v1"` and carries `(salt, verifier, account_id, account_kdf)`.
+    /// Neither the password nor the Secret Key leaves the device.
     ///
     /// The Secret Key is **server-auth-only** (ADR-008, Decision 3): it
     /// participates in account authentication and is never used to decrypt the
@@ -239,22 +243,26 @@ impl<T: RawHttpSender> ServerSyncClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns an error if the transport fails or the server rejects the
-    /// request.
+    /// Returns an error if key derivation fails, the transport fails, or the
+    /// server rejects the request.
     pub async fn register_2skd(
         &self,
         username: &str,
         account_id: &Uuid,
-        mk_auth: &AuthKey,
+        password: &[u8],
         secret_key: &SecretKey,
+        account_kdf: &AccountKdf,
     ) -> Result<RegisterResponse, ServerSyncError> {
-        let reg = super::srp::register_2skd(account_id, mk_auth, secret_key);
+        let mk_auth = derive_account_auth_key(password, account_kdf)
+            .map_err(|e| ServerSyncError::Srp(SrpError::KeyDerivation(e.to_string())))?;
+        let reg = super::srp::register_2skd(account_id, &mk_auth, secret_key);
         let body = RegisterRequest {
             username: username.to_string(),
             salt: hex_encode(&reg.salt),
             verifier: hex_encode(&reg.verifier),
             auth_scheme: Some("srp-2skd-v1".to_string()),
             account_id: Some(account_id.to_string()),
+            account_kdf: Some(AccountKdfWire::from_account_kdf(account_kdf)),
         };
         self.post_json(&format!("{API_PREFIX}/auth/register"), &body, false)
             .await
@@ -274,16 +282,20 @@ impl<T: RawHttpSender> ServerSyncClient<T> {
     /// [`is_authenticated`]: Self::is_authenticated
     pub async fn login(&mut self, username: &str, password: &[u8]) -> Result<(), ServerSyncError> {
         let (login, a_pub) = ClientLogin::start(username, password);
-        self.run_login(username, login, a_pub).await
+        self.run_login(username, login, a_pub, None).await
     }
 
     /// Perform a **two-secret (2SKD)** SRP-6a login and store the session token
-    /// (ADR-008).
+    /// (ADR-008, #296).
     ///
-    /// `mk_auth` is the master auth key derived from the password; `secret_key`
-    /// is the account [`SecretKey`]. Both are required to reproduce the
-    /// verifier — neither alone authenticates. The account id is learned from
-    /// the server's `login/init` response, so callers need not supply it.
+    /// `password` is the master password and `secret_key` the account
+    /// [`SecretKey`]. Both are required to reproduce the verifier — neither alone
+    /// authenticates. `MK_auth` is derived **after** `login/init` using the
+    /// account Argon2 KDF: the server returns it alongside the SRP salt, and a
+    /// caller that already holds it (e.g. from a scanned Emergency Kit) may pass
+    /// `kit_kdf` to override the server's copy (defense-in-depth against a
+    /// substituted salt). The account id is likewise learned from `login/init`,
+    /// so callers need not supply it.
     ///
     /// The Secret Key is **server-auth-only** (ADR-008, Decision 3): it is used
     /// solely to prove account ownership to the server and is never used for
@@ -292,31 +304,38 @@ impl<T: RawHttpSender> ServerSyncClient<T> {
     /// # Errors
     ///
     /// Returns [`ServerSyncError::ProofMismatch`] if the server's proof fails to
-    /// verify, [`ServerSyncError::Srp`] with [`SrpError::MissingAccountId`] if
-    /// the server did not return an account id (e.g. a legacy single-secret
-    /// account), or a transport/HTTP error.
+    /// verify, [`ServerSyncError::Srp`] with [`SrpError::MissingAccountId`] or
+    /// [`SrpError::MissingAccountKdf`] if the server did not return the account
+    /// id / KDF (e.g. a legacy single-secret account and no kit copy), or a
+    /// transport/HTTP error.
     ///
     /// [`SrpError::MissingAccountId`]: super::srp::SrpError::MissingAccountId
+    /// [`SrpError::MissingAccountKdf`]: super::srp::SrpError::MissingAccountKdf
     pub async fn login_2skd(
         &mut self,
         username: &str,
-        mk_auth: &AuthKey,
+        password: &[u8],
         secret_key: &SecretKey,
+        kit_kdf: Option<&AccountKdf>,
     ) -> Result<(), ServerSyncError> {
-        let (login, a_pub) = ClientLogin::start_2skd(username, mk_auth.clone(), secret_key.clone());
-        self.run_login(username, login, a_pub).await
+        let (login, a_pub) = ClientLogin::start_2skd(username, password, secret_key.clone());
+        self.run_login(username, login, a_pub, kit_kdf.cloned())
+            .await
     }
 
     /// Drive the SRP-6a init → verify exchange common to every auth scheme.
     ///
     /// `login` is the started [`ClientLogin`] state and `a_pub` its public
-    /// value `A`. On success the client becomes authenticated and the SRP
-    /// session key is retained.
+    /// value `A`. `kit_kdf` is an optional caller-held account Argon2 KDF (from
+    /// an Emergency Kit) that takes precedence over the server-returned copy for
+    /// two-secret logins. On success the client becomes authenticated and the
+    /// SRP session key is retained.
     async fn run_login(
         &mut self,
         username: &str,
         mut login: ClientLogin,
         a_pub: Vec<u8>,
+        kit_kdf: Option<AccountKdf>,
     ) -> Result<(), ServerSyncError> {
         // Step 1: init.
         let init_req = LoginInitRequest {
@@ -334,6 +353,20 @@ impl<T: RawHttpSender> ServerSyncClient<T> {
             let account_id = Uuid::parse_str(account_id)
                 .map_err(|e| ServerSyncError::Decode(format!("invalid account_id: {e}")))?;
             login.set_account_id(account_id);
+        }
+
+        // Account Argon2 KDF for deriving `MK_auth` (#296). A caller-supplied kit
+        // copy is injected first so it wins over the server's (set_account_kdf
+        // never overwrites); the server-returned copy is the fallback for a
+        // device that only has the Secret Key. No-op for single-secret logins.
+        if let Some(kdf) = kit_kdf {
+            login.set_account_kdf(kdf);
+        }
+        if let Some(wire) = &init.account_kdf {
+            let kdf = wire
+                .to_account_kdf()
+                .map_err(|e| ServerSyncError::Decode(format!("invalid account_kdf: {e}")))?;
+            login.set_account_kdf(kdf);
         }
 
         let salt = hex_decode(&init.salt)?;

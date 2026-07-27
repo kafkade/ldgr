@@ -232,8 +232,9 @@ server name, protocol version, and auth mode. Then:
 
 - **Two-secret server, first device:** the CLI generates your Account Secret Key,
   registers, and renders your **Emergency Kit** — boxed text **and** a scannable
-  terminal QR code, with an option to export it to a `0600` file. The Secret Key is
-  stored in `sync-credentials.json` (`0600`); your master password is never stored.
+  terminal QR code, with an option to export it to a `0600` file. The Secret Key and
+  the account-scoped key-derivation salt/params are stored in `sync-credentials.json`
+  (`0600`); your master password is never stored.
 - **Two-secret server, new device:** paste (or point the CLI at a saved Kit file
   containing) your **Secret Key**; the CLI derives the login and signs in.
 - **Single-secret server:** enter **Username** and **Password**; if the account

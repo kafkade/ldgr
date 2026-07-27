@@ -20,6 +20,15 @@ pub struct User {
     /// `None` for legacy single-secret accounts. Returned at `login/init` so a
     /// new device can reproduce `x`.
     pub account_id: Option<String>,
+    /// Account-scoped Argon2id salt for deriving `MK_auth` on a new device
+    /// (#296). `None` for single-secret accounts. Returned at `login/init`.
+    pub account_kdf_salt: Option<Vec<u8>>,
+    /// Account Argon2id memory cost (KiB). `None` for single-secret accounts.
+    pub account_kdf_mem_kib: Option<i64>,
+    /// Account Argon2id iterations. `None` for single-secret accounts.
+    pub account_kdf_iters: Option<i64>,
+    /// Account Argon2id parallelism. `None` for single-secret accounts.
+    pub account_kdf_parallelism: Option<i64>,
 }
 
 /// Attributes set when creating an account, beyond the SRP `(salt, verifier)`.
@@ -36,6 +45,15 @@ pub struct NewUser<'a> {
     /// Client-generated account id for 2SKD accounts (ADR-008); `None` for
     /// single-secret.
     pub account_id: Option<&'a str>,
+    /// Account-scoped Argon2id salt for 2SKD accounts (#296); `None` for
+    /// single-secret.
+    pub account_kdf_salt: Option<&'a [u8]>,
+    /// Account Argon2id memory cost (KiB) for 2SKD accounts; `None` otherwise.
+    pub account_kdf_mem_kib: Option<i64>,
+    /// Account Argon2id iterations for 2SKD accounts; `None` otherwise.
+    pub account_kdf_iters: Option<i64>,
+    /// Account Argon2id parallelism for 2SKD accounts; `None` otherwise.
+    pub account_kdf_parallelism: Option<i64>,
 }
 
 /// A redeemed invite's metadata (role granted, optional bound email, issuer).
@@ -154,6 +172,10 @@ impl ServerDb {
             ),
             ("secret_key_version", "secret_key_version INTEGER"),
             ("account_id", "account_id TEXT"),
+            ("account_kdf_salt", "account_kdf_salt BLOB"),
+            ("account_kdf_mem_kib", "account_kdf_mem_kib INTEGER"),
+            ("account_kdf_iters", "account_kdf_iters INTEGER"),
+            ("account_kdf_parallelism", "account_kdf_parallelism INTEGER"),
         ];
 
         for (name, ddl) in additions {
@@ -214,15 +236,21 @@ impl ServerDb {
         let invited_by = new.invited_by.map(str::to_string);
         let created_at = new.created_at.to_string();
         let account_id = new.account_id.map(str::to_string);
+        let account_kdf_salt = new.account_kdf_salt.map(<[u8]>::to_vec);
+        let account_kdf_mem_kib = new.account_kdf_mem_kib;
+        let account_kdf_iters = new.account_kdf_iters;
+        let account_kdf_parallelism = new.account_kdf_parallelism;
         tokio::task::spawn_blocking(move || {
             let conn = conn
                 .lock()
                 .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
             conn.execute(
                 "INSERT INTO users \
-                 (id, username, email, salt, verifier, created_at, role, status, auth_scheme, invited_by, updated_at, account_id) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'active', ?8, ?9, ?6, ?10)",
-                params![id, username, email, salt, verifier, created_at, role, auth_scheme, invited_by, account_id],
+                 (id, username, email, salt, verifier, created_at, role, status, auth_scheme, invited_by, updated_at, account_id, \
+                  account_kdf_salt, account_kdf_mem_kib, account_kdf_iters, account_kdf_parallelism) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'active', ?8, ?9, ?6, ?10, ?11, ?12, ?13, ?14)",
+                params![id, username, email, salt, verifier, created_at, role, auth_scheme, invited_by, account_id,
+                        account_kdf_salt, account_kdf_mem_kib, account_kdf_iters, account_kdf_parallelism],
             ).map_err(|e| match e {
                 rusqlite::Error::SqliteFailure(err, _)
                     if err.code == rusqlite::ErrorCode::ConstraintViolation =>
@@ -296,7 +324,9 @@ impl ServerDb {
                 .lock()
                 .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
             let mut stmt = conn.prepare(
-                "SELECT id, username, salt, verifier, role, status, account_id FROM users WHERE username = ?1",
+                "SELECT id, username, salt, verifier, role, status, account_id, \
+                 account_kdf_salt, account_kdf_mem_kib, account_kdf_iters, account_kdf_parallelism \
+                 FROM users WHERE username = ?1",
             )?;
             let user = stmt
                 .query_row(params![username], |row| {
@@ -308,6 +338,10 @@ impl ServerDb {
                         role: row.get(4)?,
                         status: row.get(5)?,
                         account_id: row.get(6)?,
+                        account_kdf_salt: row.get(7)?,
+                        account_kdf_mem_kib: row.get(8)?,
+                        account_kdf_iters: row.get(9)?,
+                        account_kdf_parallelism: row.get(10)?,
                     })
                 })
                 .optional()?;

@@ -348,7 +348,7 @@ struct SyncSettingsView: View {
         defer { isAuthenticating = false }
 
         do {
-            let kdf = try client.kdfParams()
+            let kdf = LdgrSync.generateAccountKdf()
             let material = LdgrSync.generateSecretKey()
             let session = LdgrSync.makeSession(baseURL: url)
 
@@ -357,13 +357,13 @@ struct SyncSettingsView: View {
                 accountId: material.accountId,
                 password: passwordData,
                 secretKey: material.secretKey,
-                kdfParams: kdf
+                accountKdf: kdf
             )
             try await session.login2skd(
                 username: user,
                 password: passwordData,
                 secretKey: material.secretKey,
-                kdfParams: kdf
+                accountKdf: kdf
             )
 
             try await finishSignIn(session: session, user: user, vault: vault)
@@ -376,6 +376,7 @@ struct SyncSettingsView: View {
                 address: url.absoluteString,
                 email: user,
                 secretKey: material.secretKey,
+                accountKdf: kdf,
                 recoveryKey: nil
             )
             presentedKit = IdentifiableEmergencyKit(kit: kit)
@@ -407,13 +408,12 @@ struct SyncSettingsView: View {
         defer { isAuthenticating = false }
 
         do {
-            let kdf = try client.kdfParams()
             let session = LdgrSync.makeSession(baseURL: url)
+            // No local account KDF — the server returns it at `login/init` (#296).
             try await session.login2skd(
                 username: user,
                 password: passwordData,
-                secretKey: key,
-                kdfParams: kdf
+                secretKey: key
             )
             try await finishSignIn(session: session, user: user, vault: vault)
             try KeychainManager.storeSecretKey(key)

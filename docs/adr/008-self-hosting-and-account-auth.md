@@ -62,12 +62,30 @@ Key. Neither secret alone yields `x`; the server stores only `salt` and `v = g^x
 
 | Symbol | Definition |
 | --- | --- |
-| `MK` | `Argon2id(password, argon_salt, params)` — the existing 256-bit master key (`kdf.rs`). |
+| `MK` | `Argon2id(password, account_argon_salt, account_argon_params)` — the account-auth master key. |
 | `MK_auth` | `HKDF-SHA256(ikm = MK, salt = ∅, info = "ldgr-auth-v1")` — the existing AuthKey path, unchanged. |
 | `SK` | Account Secret Key, ≥128-bit random body decoded from its text form (Decision 2). |
 | `SK_derived` | `HKDF-SHA256(ikm = SK_body, salt = account_id, info = "ldgr-secretkey-v1")` → 32 bytes. |
-| `account_id` | Server-assigned UUIDv7 for the account; binds derivation to one identity. |
-| `srp_salt` | Per-account random salt (≥16 bytes), stored server-side as today. |
+| `account_id` | Client-generated UUIDv7 for the account; binds derivation to one identity. |
+| `account_argon_salt` / `account_argon_params` | **Account-scoped** Argon2id salt (≥16 bytes) + parameters, generated at registration and **decoupled from any vault header** (amended for #296 — see below). Stored server-side, returned at `login/init`, and carried in the Emergency Kit. |
+| `srp_salt` | Per-account random SRP salt (≥16 bytes), stored server-side as today. |
+
+> **Amendment (#296): `MK` for account auth is account-scoped, not vault-scoped.**
+> The original wording above tied `MK` to "the existing 256-bit master key
+> (`kdf.rs`)", which an early implementation read from the *vault header's* Argon2
+> salt/params. That welds account authentication to a single vault: the same
+> password + Secret Key yields a different verifier per vault, so a fresh device
+> (with no vault header) cannot reproduce the verifier. The corrected model derives
+> `MK_auth` from an **account-scoped** Argon2 salt/params generated once at
+> registration, independent of every vault. Those salt/params are **not secret**
+> (no more sensitive than the SRP salt): the server returns them at `login/init`
+> (primary source) and the Emergency Kit carries a copy (portability + defense
+> against a substituted-salt server — a wrong salt only fails the handshake, it
+> cannot leak secrets). Each vault keeps its **own** Argon2 salt/params in its
+> header for *vault decryption* (the MEK path), which is unchanged. One account may
+> therefore own **multiple vaults**: account-auth key material is per-account,
+> vault key material is per-vault. (Stable per-vault sync identity, sealed initial
+> upload, and account recovery are tracked separately.)
 
 #### Combine → SRP secret
 
@@ -95,7 +113,7 @@ v        = g^x mod N                                  # SRP-6a verifier (server-
 
 ```mermaid
 flowchart TD
-    PW["Master password"] -->|"Argon2id(argon_salt)"| MK["MK (256-bit)"]
+    PW["Master password"] -->|"Argon2id(account_argon_salt)"| MK["MK (256-bit)"]
     MK -->|"HKDF info=ldgr-auth-v1"| MKauth["MK_auth"]
     SKtxt["Account Secret Key (text)"] -->|"decode (Crockford Base32)"| SKb["SK_body (>=128-bit)"]
     SKb -->|"HKDF salt=account_id info=ldgr-secretkey-v1"| SKd["SK_derived"]
@@ -279,10 +297,13 @@ The change is **additive and backward compatible** at the server schema level.
 
 - **Schema**: add an `auth_scheme TEXT NOT NULL DEFAULT 'srp-1secret'` column (and optional
   `secret_key_version INTEGER`) to `users`. Existing rows default to `srp-1secret`; new 2SKD
-  accounts register as `srp-2skd-v1`. No existing column changes; the SRP handshake itself is
-  identical on the wire (both schemes submit `(salt, verifier)` and run RFC 5054 SRP-6a). The only
-  difference is **how the client derived `x`**, which the server neither sees nor needs to know to
-  verify a proof.
+  accounts register as `srp-2skd-v1`. Two-secret accounts additionally store the client-generated
+  `account_id` and, per #296, the account-scoped Argon2 KDF (`account_kdf_salt` +
+  `account_kdf_mem_kib`/`account_kdf_iters`/`account_kdf_parallelism`), all nullable and unset for
+  single-secret rows; the server returns them at `login/init`. No existing column changes; the SRP
+  handshake itself is identical on the wire (both schemes submit `(salt, verifier)` and run RFC 5054
+  SRP-6a). The only difference is **how the client derived `x`**, which the server neither sees nor
+  needs to know to verify a proof.
 - **Legacy accounts**: flagged by `auth_scheme = 'srp-1secret'`. They continue to authenticate with
   the existing single-secret derivation (`x` from `MK_auth` only) with no disruption.
 - **Upgrade flow**: an authenticated legacy user can opt into 2SKD: the client generates a Secret

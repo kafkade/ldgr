@@ -21,7 +21,6 @@
 import type { Database, SqlValue } from 'sql.js';
 import type {
   EmergencyKit,
-  KdfParams,
   LdgrWasm,
   SecretKeyMaterial,
   ServerInfo,
@@ -41,6 +40,7 @@ const CFG_USERNAME = 'sync:username';
 const CFG_VAULT_ID = 'sync:vault_id';
 const CFG_TOKEN = 'sync:token';
 const CFG_SECRET_KEY = 'sync:secret_key';
+const CFG_ACCOUNT_KDF = 'sync:account_kdf';
 
 // ── Enum wire mapping (serde variant names) ──────────────────────────────────────
 
@@ -740,6 +740,38 @@ export function clearSecretKey(db: Database): void {
   db.run('DELETE FROM sync_state WHERE key = ?', [CFG_SECRET_KEY]);
 }
 
+// ── Account KDF persistence (#296) ───────────────────────────────────────────────
+
+/**
+ * The account-scoped Argon2 salt/params used to derive `MK_auth`. Not secret —
+ * decoupled from any vault header — but persisted so this device can derive
+ * `MK_auth` and cross-check the server's copy at `login/init`.
+ */
+export interface StoredAccountKdf {
+  salt: number[];
+  memoryCostKib: number;
+  iterations: number;
+  parallelism: number;
+}
+
+export function loadAccountKdf(db: Database): StoredAccountKdf | null {
+  const raw = getState(db, CFG_ACCOUNT_KDF);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as StoredAccountKdf;
+  } catch {
+    return null;
+  }
+}
+
+export function saveAccountKdf(db: Database, kdf: StoredAccountKdf): void {
+  setState(db, CFG_ACCOUNT_KDF, JSON.stringify(kdf));
+}
+
+export function clearAccountKdf(db: Database): void {
+  db.run('DELETE FROM sync_state WHERE key = ?', [CFG_ACCOUNT_KDF]);
+}
+
 // ── Two-secret (2SKD) onboarding ─────────────────────────────────────────────────
 
 /** The Emergency Kit plus session token produced by a successful sign-up. */
@@ -755,40 +787,38 @@ export async function fetchServerInfo(
   return JSON.parse(await client.serverInfo()) as ServerInfo;
 }
 
-/** Read the vault's Argon2id salt/params (used to derive `MK_auth`). */
-function vaultKdfParams(vault: LdgrWasm): {
-  salt: Uint8Array;
-  memoryCostKib: number;
-  iterations: number;
-  parallelism: number;
-} {
-  const p = JSON.parse(vault.kdfParams()) as KdfParams;
-  return {
-    salt: Uint8Array.from(p.salt),
-    memoryCostKib: p.memoryCostKib,
-    iterations: p.iterations,
-    parallelism: p.parallelism,
-  };
-}
+/**
+ * Argon2id parameters for the account-scoped KDF on the web (#296). Matches
+ * `Argon2Params::wasm()` in ldgr-core: 64 MB, 3 iterations, single-threaded.
+ * Pinned at sign-up and carried with the account KDF so every device reproduces
+ * `MK_auth` identically.
+ */
+const WASM_ACCOUNT_ARGON2 = {
+  memoryCostKib: 64 * 1024,
+  iterations: 3,
+  parallelism: 1,
+} as const;
 
 /**
- * Two-secret **sign-up**: generate the account Secret Key, register + log in,
- * persist the token and Secret Key, and return the Emergency Kit to show once.
+ * Two-secret **sign-up**: generate the account Secret Key and a fresh
+ * account-scoped Argon2 salt, register + log in, persist the token / Secret Key
+ * / account KDF, and return the Emergency Kit to show once.
  *
- * `MK_auth` is derived inside WASM from the master `password` and the vault's
- * own Argon2 salt/params (ADR-008); the plaintext password never leaves memory.
+ * `MK_auth` is derived inside WASM from the master `password` and the
+ * **account-scoped** salt/params (decoupled from any vault, #296); the plaintext
+ * password never leaves memory.
  */
 export async function signUp2skd(
   db: Database,
   wasm: WasmModule,
-  vault: LdgrWasm,
   client: WasmSyncClient,
   serverUrl: string,
   username: string,
   password: string,
 ): Promise<SignUpResult> {
   const material = JSON.parse(wasm.generateSecretKey()) as SecretKeyMaterial;
-  const { salt, memoryCostKib, iterations, parallelism } = vaultKdfParams(vault);
+  const salt = wasm.generateAccountKdfSalt();
+  const { memoryCostKib, iterations, parallelism } = WASM_ACCOUNT_ARGON2;
 
   await client.register2skd(
     username,
@@ -813,9 +843,23 @@ export async function signUp2skd(
   const token = client.token ?? null;
   if (token) saveToken(db, token);
   saveSecretKey(db, material.secretKey);
+  saveAccountKdf(db, {
+    salt: Array.from(salt),
+    memoryCostKib,
+    iterations,
+    parallelism,
+  });
 
   const kit = JSON.parse(
-    wasm.buildEmergencyKit(serverUrl, username, material.secretKey),
+    wasm.buildEmergencyKit(
+      serverUrl,
+      username,
+      material.secretKey,
+      salt,
+      memoryCostKib,
+      iterations,
+      parallelism,
+    ),
   ) as EmergencyKit;
 
   return { emergencyKit: kit, token };
@@ -824,12 +868,12 @@ export async function signUp2skd(
 /**
  * Two-secret **sign-in**. On a device that already stored the Secret Key, pass
  * `secretKeyOverride = null` to reuse it; on a new device, pass the Secret Key
- * the user typed or scanned from their Emergency Kit. The account id is supplied
- * by the server at `login/init`, so it is never entered by hand.
+ * the user typed or scanned from their Emergency Kit. The account id — and the
+ * account Argon2 KDF when this device has no stored copy — are supplied by the
+ * server at `login/init` (#296), so neither is entered by hand.
  */
 export async function signIn2skd(
   db: Database,
-  vault: LdgrWasm,
   client: WasmSyncClient,
   username: string,
   password: string,
@@ -841,7 +885,15 @@ export async function signIn2skd(
       'No Secret Key on this device. Enter the Secret Key from your Emergency Kit.',
     );
   }
-  const { salt, memoryCostKib, iterations, parallelism } = vaultKdfParams(vault);
+
+  // Prefer this device's stored account KDF (defense-in-depth against a
+  // substituted-salt server); otherwise pass an empty salt so the client uses
+  // the copy the server returns at `login/init`.
+  const stored = loadAccountKdf(db);
+  const salt = stored ? Uint8Array.from(stored.salt) : new Uint8Array();
+  const memoryCostKib = stored?.memoryCostKib ?? 0;
+  const iterations = stored?.iterations ?? 0;
+  const parallelism = stored?.parallelism ?? 0;
 
   await client.login2skd(
     username,

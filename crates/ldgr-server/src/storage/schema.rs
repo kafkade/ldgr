@@ -21,7 +21,11 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at          TEXT,
     auth_scheme         TEXT NOT NULL DEFAULT 'srp-1secret',
     secret_key_version  INTEGER,
-    account_id          TEXT
+    account_id          TEXT,
+    account_kdf_salt          BLOB,
+    account_kdf_mem_kib       INTEGER,
+    account_kdf_iters         INTEGER,
+    account_kdf_parallelism   INTEGER
 );
 
 -- Minimal invite mechanism for the `invite-only` registration policy. Issuing
