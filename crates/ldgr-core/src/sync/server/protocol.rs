@@ -236,12 +236,25 @@ pub struct Pong {
 // ── Vaults ──────────────────────────────────────────────────────────────────────
 
 /// `POST /api/v1/vaults` request body.
+///
+/// `vault_id` is optional (ADR-011): a client that has no identifier yet omits
+/// it and the server mints a random one, returned in [`VaultResponse::id`].
+/// Clients that already hold an identifier — including pre-ADR-011 clients with
+/// a path-derived one — still send it so their existing blobs stay addressable.
+/// Either way the response is authoritative: the server may hand back a
+/// different identifier than the one requested (see [`VaultResponse`]).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateVaultRequest {
-    pub vault_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault_id: Option<String>,
 }
 
 /// Vault descriptor returned by create/list.
+///
+/// `id` is authoritative. On create it may differ from the requested identifier
+/// when that identifier is already owned by another account — the server mints a
+/// fresh one instead of failing, so one account can never lock another out of an
+/// identifier (ADR-011). Clients must persist what they receive here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VaultResponse {
     pub id: String,
@@ -479,9 +492,25 @@ mod tests {
     }
 
     #[test]
+    fn create_vault_request_omits_absent_vault_id() {
+        // A server-assigned identifier is requested by sending no field at all,
+        // which pre-ADR-011 servers reject — clients retry with an id.
+        let json = serde_json::to_string(&CreateVaultRequest { vault_id: None }).unwrap();
+        assert_eq!(json, "{}");
+
+        // And an empty body still parses, so old clients that send an id and new
+        // clients that don't are both accepted.
+        let parsed: CreateVaultRequest = serde_json::from_str("{}").unwrap();
+        assert!(parsed.vault_id.is_none());
+        let legacy: CreateVaultRequest =
+            serde_json::from_str(r#"{"vault_id":"vault_0123456789abcdef"}"#).unwrap();
+        assert_eq!(legacy.vault_id.as_deref(), Some("vault_0123456789abcdef"));
+    }
+
+    #[test]
     fn vault_and_blob_types_round_trip() {
         round_trip(&CreateVaultRequest {
-            vault_id: "v1".into(),
+            vault_id: Some("v1".into()),
         });
         round_trip(&VaultResponse {
             id: "v1".into(),

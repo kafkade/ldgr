@@ -359,14 +359,31 @@ impl WasmSyncClient {
         let pong = client.ping().await.map_err(sync_err)?;
         serde_json::to_string(&pong).map_err(|e| JsError::new(&format!("serialization error: {e}")))
     }
+    /// Claim a vault, returning the identifier the server put in force.
+    ///
+    /// Pass `undefined` to have the server mint a random identifier (ADR-011).
+    /// The result is authoritative and may differ from `vaultId` — callers must
+    /// persist what they get back.
     #[wasm_bindgen(js_name = createVault)]
-    pub async fn create_vault(&self, vault_id: String) -> Result<(), JsError> {
+    pub async fn create_vault(&self, vault_id: Option<String>) -> Result<String, JsError> {
         let client = self.client();
         client
-            .create_vault(&vault_id)
+            .create_vault(vault_id.as_deref())
             .await
-            .map(|_| ())
+            .map(|v| v.id)
             .map_err(sync_err)
+    }
+
+    /// List the vaults this account owns, as a JSON array of
+    /// `{ id, created_at }`. A device with no identifier of its own uses this to
+    /// adopt an existing vault rather than creating a second, empty one
+    /// (ADR-011).
+    #[wasm_bindgen(js_name = listVaults)]
+    pub async fn list_vaults(&self) -> Result<String, JsError> {
+        let client = self.client();
+        let vaults = client.list_vaults().await.map_err(sync_err)?;
+        serde_json::to_string(&vaults)
+            .map_err(|e| JsError::new(&format!("serialization error: {e}")))
     }
 
     /// Upload an encrypted event batch (put-if-absent).

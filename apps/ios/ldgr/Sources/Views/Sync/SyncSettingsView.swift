@@ -14,6 +14,8 @@ struct SyncSettingsView: View {
     // Server connection form (non-secret fields are persisted; secrets are not).
     @State private var baseURL = ""
     @State private var username = ""
+    /// Identifier this device's vault is known by on the server. Issued by the
+    /// server or adopted from the account (ADR-011) — never typed by the user.
     @State private var vaultId = ""
     @State private var password = ""
     @State private var secretKeyInput = ""
@@ -142,7 +144,11 @@ struct SyncSettingsView: View {
     private var connectedServerView: some View {
         LabeledContent("Server", value: baseURL)
         LabeledContent("Account", value: username)
-        LabeledContent("Vault", value: vaultId)
+        LabeledContent("Vault") {
+            Text(vaultId)
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+        }
         Button(role: .destructive) {
             signOut()
         } label: {
@@ -191,11 +197,6 @@ struct SyncSettingsView: View {
             .autocorrectionDisabled()
         SecureField("Password", text: $password)
             .textContentType(.password)
-        TextField("Vault ID", text: $vaultId)
-            #if os(iOS)
-            .textInputAutocapitalization(.never)
-            #endif
-            .autocorrectionDisabled()
 
         if info.twoSecretAuth {
             twoSecretButtons(info)
@@ -297,9 +298,7 @@ struct SyncSettingsView: View {
     // MARK: - Form helpers
 
     private var canSubmit: Bool {
-        !username.trimmingCharacters(in: .whitespaces).isEmpty
-            && !vaultId.trimmingCharacters(in: .whitespaces).isEmpty
-            && !password.isEmpty
+        !username.trimmingCharacters(in: .whitespaces).isEmpty && !password.isEmpty
     }
 
     private func loadConfig() {
@@ -451,7 +450,7 @@ struct SyncSettingsView: View {
 
     // MARK: - Shared sign-in tail
 
-    /// Persist the session token + device id, enroll the vault, save the config,
+    /// Persist the session token + device id, claim the vault, save the config,
     /// and (re)configure the sync manager. Shared by every auth path.
     private func finishSignIn(
         session: LdgrSyncSession,
@@ -462,21 +461,46 @@ struct SyncSettingsView: View {
             throw SyncSettingsError.noToken
         }
 
-        // Best-effort enrollment: create the vault if it doesn't exist yet.
-        _ = try? await session.createVault(vaultId: vault)
-
+        let resolvedVault = try await claimVault(session: session, existing: vault)
         let deviceId = try client.syncStatus().deviceId
 
         try KeychainManager.storeServerAuthToken(token)
         try KeychainManager.storeServerDeviceId(deviceId)
         ServerConfigStore.save(
-            ServerConfig(baseURL: baseURL, username: user, vaultId: vault)
+            ServerConfig(baseURL: baseURL, username: user, vaultId: resolvedVault)
         )
+        vaultId = resolvedVault
 
         password = ""
         serverInfo = nil
         syncManager.configure(client: client)
         await syncManager.refreshStatus(client: client)
+    }
+
+    /// Decide which server vault this device syncs to, and claim it (ADR-011).
+    ///
+    /// A device that has already synced keeps its identifier. One that has not
+    /// adopts the account's existing vault rather than creating a second, empty
+    /// one it would never converge out of. With several vaults on the account
+    /// the newest is taken, which is right for the case that actually occurs —
+    /// a fresh device joining the vault its owner most recently created.
+    ///
+    /// The identifier the server returns is authoritative: when the requested
+    /// one is already owned by another account the server mints a substitute
+    /// instead of failing, so no account can lock another out.
+    private func claimVault(session: LdgrSyncSession, existing: String) async throws -> String {
+        var requested: String? = existing.isEmpty ? nil : existing
+
+        if requested == nil {
+            // A listing failure must not be read as "this account owns no
+            // vaults" — that would mint a second, empty vault and persist it,
+            // stranding this device away from the user's real data with no way
+            // back. Fail the sign-in instead so it can simply be retried.
+            let owned = try await session.listVaults()
+            requested = owned.max(by: { $0.createdAt < $1.createdAt })?.id
+        }
+
+        return try await session.createVault(vaultId: requested)
     }
 
     private func signOut() {

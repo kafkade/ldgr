@@ -19,7 +19,7 @@
 /// let client = LdgrSync.makeClient(baseURL: URL(string: "https://sync.example.com")!)
 /// _ = try await client.register(username: "alice", password: Data("pw".utf8))
 /// try await client.login(username: "alice", password: Data("pw".utf8))
-/// try await client.createVault(vaultId: "vault-1")
+/// let vaultId = try await client.createVault()
 /// // `ciphertext` is an encrypted batch blob produced by the vault crypto layer.
 /// _ = try await client.putBatch(vaultId: "vault-1", deviceId: "dev-a",
 ///                               batchId: "batch-0001", ciphertext: ciphertext)
@@ -518,10 +518,24 @@ public final class LdgrSyncSession: @unchecked Sendable {
         }
     }
 
-    /// Create a vault on the server (idempotent enrollment). Returns its path.
+    /// Claim a vault on the server, returning the identifier it put in force.
+    ///
+    /// Pass `nil` to have the server mint a random identifier (ADR-011). The
+    /// returned identifier is authoritative and may differ from `vaultId`: when
+    /// the requested one is already owned by another account the server mints a
+    /// substitute rather than failing, so no account can lock another out.
+    /// Callers must persist what they get back.
     @discardableResult
-    public func createVault(vaultId: String) async throws -> String {
+    public func createVault(vaultId: String? = nil) async throws -> String {
         try await mapping { try await client.createVault(vaultId: vaultId) }
+    }
+
+    /// The vaults this account owns.
+    ///
+    /// A device with no identifier of its own adopts one of these rather than
+    /// creating a second, empty vault it would never converge out of.
+    public func listVaults() async throws -> [FfiVault] {
+        try await mapping { try await client.listVaults() }
     }
 
     /// Register/refresh this device's record on the server.

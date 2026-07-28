@@ -224,7 +224,9 @@ async fn ffi_single_secret_full_round_trip() {
     let token = c.token().await.expect("token present after login");
 
     let vault = "vault-1".to_string();
-    c.create_vault(vault.clone()).await.expect("create vault");
+    c.create_vault(Some(vault.clone()))
+        .await
+        .expect("create vault");
 
     // Device A: a real on-disk vault. Compose its pending events into a REAL
     // encrypted batch blob via the #201 pipeline (through the FFI `LdgrVault`
@@ -342,7 +344,9 @@ async fn ffi_two_secret_full_round_trip() {
     assert!(c.is_authenticated().await);
 
     let vault = "vault-2skd".to_string();
-    c.create_vault(vault.clone()).await.expect("create vault");
+    c.create_vault(Some(vault.clone()))
+        .await
+        .expect("create vault");
 
     // Push a REAL encrypted batch (composed from an on-disk vault) so the 2SKD
     // auth path is exercised against genuine ciphertext, not synthetic bytes.
@@ -424,7 +428,9 @@ async fn ffi_real_batch_conflict_surfaces_through_transport() {
     let token = c.token().await.expect("token present after login");
 
     let vault = "vault-conflict".to_string();
-    c.create_vault(vault.clone()).await.expect("create vault");
+    c.create_vault(Some(vault.clone()))
+        .await
+        .expect("create vault");
 
     // Device A: a real vault with a transaction; capture its id + session key.
     let dir_a = tempfile::tempdir().unwrap();
@@ -507,7 +513,7 @@ async fn ffi_real_batch_conflict_surfaces_through_transport() {
 async fn ffi_unauthenticated_call_is_rejected() {
     let (c, _s) = client_with_sender();
     // No register/login: the core client guards locally before sending.
-    let result = c.create_vault("nope".into()).await;
+    let result = c.create_vault(Some("nope".into())).await;
     assert!(
         matches!(result, Err(FfiSyncError::NotAuthenticated)),
         "expected NotAuthenticated, got {result:?}"

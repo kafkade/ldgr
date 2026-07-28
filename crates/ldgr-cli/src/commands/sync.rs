@@ -51,6 +51,18 @@ pub fn run_setup(vault_path: &Path) -> Result<()> {
         _ => bail!("Invalid choice. Please enter 1, 2, or 3."),
     };
 
+    // Freeze this vault's identifier *before* the new config overwrites the old
+    // one (ADR-011). Dropbox and WebDAV have no server to issue an identifier
+    // and record none in their config, so the choice is made here: a vault that
+    // synced before the upgrade adopts the path-derived identifier its blobs are
+    // already filed under, and one that never synced mints a random one. Doing
+    // this after the write would see the fresh config and wrongly treat a
+    // brand-new vault as an upgrading one. The ldgr-server path is excluded
+    // because `setup_server` has already claimed an identifier with the server.
+    if !matches!(config, TransportConfig::Server { .. }) {
+        crate::sync::bridge::resolve_vault_id(&db, &vault_dir)?;
+    }
+
     // Save config
     let config_path = vault_dir.join("sync-config.json");
     let json = serde_json::to_string_pretty(&config).context("failed to serialize config")?;
@@ -221,6 +233,114 @@ fn print_server_info(info: &ServerInfo) {
     }
 }
 
+/// Decide which server vault this device should sync to, and claim it.
+///
+/// A device that has already synced keeps its identifier. A device that has not
+/// adopts one from the account instead of inventing a second one — otherwise a
+/// newly paired device would quietly create an empty vault alongside the real
+/// one and never converge. Multi-vault accounts (#296) are disambiguated
+/// interactively.
+///
+/// Returns the identifier the **server** put in force, which is authoritative:
+/// when the requested one is already owned by another account the server mints a
+/// substitute rather than failing, so no account can lock another out (ADR-011).
+async fn claim_server_vault(
+    client: &ServerSyncClient<ReqwestSender>,
+    conn: &rusqlite::Connection,
+    vault_dir: &Path,
+) -> Result<String> {
+    let existing = crate::sync::bridge::existing_vault_id(conn, vault_dir)?;
+
+    let requested = if let Some(id) = existing {
+        Some(id)
+    } else {
+        // A listing failure must abort, never fall through to "the account has
+        // no vaults". Treating a timeout or 5xx as "none" would mint a second,
+        // empty vault and freeze it locally — the exact convergence failure this
+        // whole flow exists to prevent, with no way back afterwards.
+        let remote = client.list_vaults().await.map_err(|e| {
+            anyhow::anyhow!(
+                "could not check which vaults this account owns: {e}\n\
+                 Setup stopped rather than risk creating a second, empty vault. \
+                 Check your connection and re-run `ldgr sync setup`."
+            )
+        })?;
+        match remote.len() {
+            // No vault on the account yet — let the server mint one.
+            0 => None,
+            1 => {
+                let id = remote[0].id.clone();
+                println!();
+                println!("Adopting the vault already registered to this account.");
+                Some(id)
+            }
+            _ => Some(prompt_pick_vault(&remote)?),
+        }
+    };
+
+    let granted = match client.create_vault(requested.as_deref()).await {
+        Ok(vault) => vault.id,
+        // A pre-ADR-011 server can't mint identifiers — its `vault_id` field is
+        // required, so axum rejects the body outright (422 from the extractor,
+        // 400 if it ever reaches the handler). Pick one locally and retry.
+        Err(ServerSyncError::Http {
+            status: 400 | 422, ..
+        }) if requested.is_none() => {
+            let local = ldgr_core::sync::generate_vault_id();
+            client
+                .create_vault(Some(&local))
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to create vault: {e}"))?
+                .id
+        }
+        // A pre-ADR-011 server answers 409 when the vault already exists, which
+        // for an identifier we already hold means "yours, already registered".
+        // Upgrading the client before the server must not lock the user out of
+        // re-authenticating, so keep the identifier we asked for.
+        Err(ServerSyncError::Http { status: 409, .. }) => match requested.as_deref() {
+            Some(id) => id.to_string(),
+            None => bail!("failed to create vault: server reported a conflict"),
+        },
+        Err(e) => bail!("failed to create vault: {e}"),
+    };
+
+    if requested.as_deref().is_some_and(|r| r != granted) {
+        println!();
+        println!("Note: that vault identifier is already in use by another account.");
+        println!("This vault has been registered as `{granted}` instead.");
+    }
+
+    crate::sync::bridge::persist_vault_id(conn, &granted)?;
+    Ok(granted)
+}
+
+/// Ask which of an account's several vaults this device should sync to.
+fn prompt_pick_vault(vaults: &[ldgr_core::sync::server::VaultResponse]) -> Result<String> {
+    println!();
+    println!("This account has more than one vault. Choose the one to sync here:");
+    for (i, v) in vaults.iter().enumerate() {
+        println!("  {}. {} (created {})", i + 1, v.id, v.created_at);
+    }
+    println!("  {}. Create a new vault", vaults.len() + 1);
+    println!();
+    print!("Vault [1-{}]: ", vaults.len() + 1);
+    io::stdout().flush()?;
+
+    let mut choice = String::new();
+    io::stdin().read_line(&mut choice)?;
+    let index: usize = choice
+        .trim()
+        .parse()
+        .ok()
+        .filter(|n| (1..=vaults.len() + 1).contains(n))
+        .context("invalid choice")?;
+
+    if index == vaults.len() + 1 {
+        return Ok(ldgr_core::sync::generate_vault_id());
+    }
+    Ok(vaults[index - 1].id.clone())
+}
+
 /// Two-secret (2SKD, ADR-008 + #296) onboarding: sign up (generating a Secret
 /// Key + Emergency Kit) or sign in — either on a device that already stores the
 /// Secret Key, or a new device where the user supplies it.
@@ -246,7 +366,6 @@ fn setup_server_2skd(
         bail!("Password cannot be empty.");
     }
 
-    let vault_id = get_vault_id(vault_dir);
     let device_id = crate::sync::bridge::resolve_device_id(conn, vault_dir)?;
 
     // If this device already stored a Secret Key (and its account KDF), sign in
@@ -279,13 +398,9 @@ fn setup_server_2skd(
                 .await?
         };
 
-        // Ensure the vault exists (idempotent — a 409 means it already does).
-        if let Err(e) = client.create_vault(&vault_id).await {
-            match e {
-                ServerSyncError::Http { status: 409, .. } => {}
-                other => bail!("failed to create vault: {other}"),
-            }
-        }
+        // Adopt or claim this device's vault (ADR-011).
+        let vault_id = claim_server_vault(&client, conn, vault_dir).await?;
+
         // Best-effort device registration; the encrypted blob is sent on push.
         let _ = client.put_device(&vault_id, &device_id, b"{}").await;
 
@@ -293,14 +408,15 @@ fn setup_server_2skd(
             .token()
             .map(str::to_string)
             .ok_or_else(|| anyhow::anyhow!("server did not return a session token"))?;
-        Ok::<(String, String, Option<AccountKdf>), anyhow::Error>((
+        Ok::<(String, String, Option<AccountKdf>, String), anyhow::Error>((
             token,
             secret_key_text,
             account_kdf,
+            vault_id,
         ))
     })?;
 
-    let (session_token, secret_key_text, account_kdf) = outcome;
+    let (session_token, secret_key_text, account_kdf, vault_id) = outcome;
 
     println!();
     println!("✓ Authenticated to {base_url} and registered device {device_id}.");
@@ -562,10 +678,9 @@ fn setup_server_single_secret(
         bail!("Password cannot be empty.");
     }
 
-    let vault_id = get_vault_id(vault_dir);
     let device_id = crate::sync::bridge::resolve_device_id(conn, vault_dir)?;
 
-    let session_token = rt.block_on(async {
+    let (session_token, vault_id) = rt.block_on(async {
         let sender = ReqwestSender::new(base_url.clone());
         let mut client = ServerSyncClient::new(sender);
 
@@ -595,13 +710,8 @@ fn setup_server_single_secret(
             Err(e) => bail!("login failed: {e}"),
         }
 
-        // Ensure the vault exists (idempotent — a 409 means it already does).
-        if let Err(e) = client.create_vault(&vault_id).await {
-            match e {
-                ServerSyncError::Http { status: 409, .. } => {}
-                other => bail!("failed to create vault: {other}"),
-            }
-        }
+        // Adopt or claim this device's vault (ADR-011).
+        let vault_id = claim_server_vault(&client, conn, vault_dir).await?;
 
         // Register this device. The real encrypted device blob is uploaded on
         // `sync push`; this is a best-effort placeholder so the device is known.
@@ -611,7 +721,7 @@ fn setup_server_single_secret(
             .token()
             .map(str::to_string)
             .ok_or_else(|| anyhow::anyhow!("server did not return a session token"))?;
-        Ok::<String, anyhow::Error>(token)
+        Ok::<(String, String), anyhow::Error>((token, vault_id))
     })?;
 
     println!();
@@ -769,12 +879,12 @@ pub fn run_push(vault_path: &Path) -> Result<()> {
     let vault_dir = crate::session::resolve_vault_dir(Some(vault_path));
 
     let config = load_config(&vault_dir)?;
-    let vault_id = get_vault_id(&vault_dir);
+    let vault_id = crate::sync::bridge::resolve_vault_id(&conn, &vault_dir)?;
     let device_id = crate::sync::bridge::resolve_device_id(&conn, &vault_dir)?;
 
     let rt = tokio::runtime::Runtime::new().context("failed to create runtime")?;
     rt.block_on(async {
-        let transport = create_transport(&config, &vault_dir)?;
+        let transport = create_transport(&config, &vault_dir, &vault_id)?;
 
         println!("Pushing changes to {}…", config.provider().as_str());
 
@@ -826,12 +936,12 @@ pub fn run_pull(vault_path: &Path) -> Result<()> {
     let vault_dir = crate::session::resolve_vault_dir(Some(vault_path));
 
     let config = load_config(&vault_dir)?;
-    let vault_id = get_vault_id(&vault_dir);
+    let vault_id = crate::sync::bridge::resolve_vault_id(&conn, &vault_dir)?;
     let device_id = crate::sync::bridge::resolve_device_id(&conn, &vault_dir)?;
 
     let rt = tokio::runtime::Runtime::new().context("failed to create runtime")?;
     rt.block_on(async {
-        let transport = create_transport(&config, &vault_dir)?;
+        let transport = create_transport(&config, &vault_dir, &vault_id)?;
 
         println!("Pulling changes from {}…", config.provider().as_str());
 
@@ -880,6 +990,7 @@ pub fn run_status(vault_path: &Path) -> Result<()> {
 
     let config = load_config(&vault_dir)?;
     let device_id = crate::sync::bridge::resolve_device_id(&conn, &vault_dir)?;
+    let vault_id = crate::sync::bridge::resolve_vault_id(&conn, &vault_dir)?;
     let last_sync = crate::sync::bridge::last_sync_at(&conn)?;
     let pending_push = ldgr_core::storage::sync::pending_event_count(&conn)?;
     let conflicts = ldgr_core::storage::sync::unresolved_conflict_count(&conn)?;
@@ -887,6 +998,7 @@ pub fn run_status(vault_path: &Path) -> Result<()> {
     println!("Sync Status");
     println!("════════════");
     println!("  Provider:    {}", config.provider().as_str());
+    println!("  Vault ID:    {vault_id}");
     println!("  Device ID:   {device_id}");
     println!("  Last sync:   {}", last_sync.as_deref().unwrap_or("never"));
     println!("  Pending push: {pending_push} event(s)");
@@ -916,17 +1028,13 @@ pub fn run_status(vault_path: &Path) -> Result<()> {
             }
         }
         TransportConfig::Server {
-            base_url,
-            username,
-            vault_id,
-            ..
+            base_url, username, ..
         } => {
             println!();
             println!("  Server URL: {base_url}");
             if let Some(user) = username {
                 println!("  Username:   {user}");
             }
-            println!("  Vault ID:   {vault_id}");
         }
     }
 
@@ -1011,27 +1119,25 @@ fn load_config(vault_dir: &Path) -> Result<TransportConfig> {
     serde_json::from_str(&json).context("failed to parse sync config")
 }
 
-fn get_vault_id(vault_dir: &Path) -> String {
-    let path_str = vault_dir.to_string_lossy();
-    let hash = simple_hash(path_str.as_bytes());
-    format!("vault_{hash:016x}")
-}
-
-fn simple_hash(data: &[u8]) -> u64 {
-    let mut hash: u64 = 5381;
-    for &b in data {
-        hash = hash.wrapping_mul(33).wrapping_add(u64::from(b));
-    }
-    hash
-}
-
 fn hostname() -> String {
     std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
-fn create_transport(config: &TransportConfig, vault_dir: &Path) -> Result<Box<dyn BlobTransport>> {
+/// Build the configured blob transport for `vault_id`.
+///
+/// `vault_id` is the identifier resolved from the vault
+/// ([`resolve_vault_id`](crate::sync::bridge::resolve_vault_id)), not the copy
+/// echoed into `sync-config.json`. The two must be the same value: the server
+/// transport matches incoming list prefixes against its own id, and a mismatch
+/// used to fall through to the "no such prefix" arm — making `sync pull` report
+/// "Already up to date" while remote batches existed.
+fn create_transport(
+    config: &TransportConfig,
+    vault_dir: &Path,
+    vault_id: &str,
+) -> Result<Box<dyn BlobTransport>> {
     let policy = ldgr_core::sync::RetryPolicy::default();
 
     match config {
@@ -1071,9 +1177,7 @@ fn create_transport(config: &TransportConfig, vault_dir: &Path) -> Result<Box<dy
             let retry = RetryTransport::new(transport, policy);
             Ok(Box::new(retry))
         }
-        TransportConfig::Server {
-            base_url, vault_id, ..
-        } => {
+        TransportConfig::Server { base_url, .. } => {
             // The SRP session token is a secret kept in sync-credentials.json,
             // written at `sync setup` after login (same pattern as Dropbox).
             let creds_path = vault_dir.join(CREDENTIALS_FILE);
@@ -1097,9 +1201,228 @@ fn create_transport(config: &TransportConfig, vault_dir: &Path) -> Result<Box<dy
             // Token-based: the SRP login already happened at `sync setup`. The
             // password is never stored, so an expired token surfaces as an auth
             // error telling the user to re-run setup.
-            let transport = ServerTransport::new(base_url.clone(), token, vault_id.clone());
+            let transport = ServerTransport::new(base_url.clone(), token, vault_id.to_string());
             let retry = RetryTransport::new(transport, policy);
             Ok(Box::new(retry))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use ldgr_core::storage::sync as sync_storage;
+    use ldgr_server::auth::srp::SrpHandshakeStore;
+    use ldgr_server::config::{Config, RegistrationPolicy};
+    use ldgr_server::state::AppState;
+    use ldgr_server::storage::ServerDb;
+
+    use super::*;
+
+    /// The identifier a pre-ADR-011 client would derive at the default vault
+    /// path — the shape that used to collide across every account.
+    const COLLIDING_ID: &str = "vault_5f2e1c0a9b8d7e6f";
+
+    /// Boot a real `ldgr-server` on an ephemeral loopback port, mirroring
+    /// `tests/server_sync.rs`, so the claim flow runs against real HTTP.
+    async fn spawn_server() -> String {
+        let config = Config {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            db_path: ":memory:".into(),
+            session_ttl_hours: 720,
+            relay_ttl_minutes: 10,
+            max_blob_bytes: 50 * 1024 * 1024,
+            srp_handshake_ttl_secs: 120,
+            registration_policy: RegistrationPolicy::Open,
+            admin_email: None,
+            allowed_origins: Vec::new(),
+            default_user_quota_bytes: 1024 * 1024 * 1024,
+            server_name: "vault-claim-test".into(),
+        };
+        let state = Arc::new(AppState {
+            db: ServerDb::open(":memory:").expect("open in-memory db"),
+            srp_handshakes: SrpHandshakeStore::new(Duration::from_mins(2)),
+            config,
+        });
+        let app = ldgr_server::api::router(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve");
+        });
+        format!("http://{addr}")
+    }
+
+    async fn account(base_url: &str, username: &str) -> ServerSyncClient<ReqwestSender> {
+        let mut client = ServerSyncClient::new(ReqwestSender::new(base_url.to_string()));
+        let password = b"correct horse battery staple";
+        client.register(username, password).await.expect("register");
+        client.login(username, password).await.expect("login");
+        client
+    }
+
+    /// A local vault that already proposes `vault_id`, as an upgrading client
+    /// would: an unlocked working store plus a `sync-config.json` naming it.
+    fn configured_vault(vault_id: &str) -> (tempfile::TempDir, rusqlite::Connection) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory SQLite");
+        ldgr_core::storage::schema::initialize(&conn).expect("schema");
+
+        let config = TransportConfig::Server {
+            base_url: "https://sync.example.com".into(),
+            username: Some("user@example.com".into()),
+            vault_id: vault_id.into(),
+            device_id: "device-a".into(),
+        };
+        std::fs::write(
+            dir.path().join("sync-config.json"),
+            serde_json::to_string_pretty(&config).unwrap(),
+        )
+        .unwrap();
+        (dir, conn)
+    }
+
+    fn stored_vault_id(conn: &rusqlite::Connection) -> Option<String> {
+        sync_storage::get_state(conn, sync_storage::VAULT_ID_KEY).expect("read vault id state")
+    }
+
+    /// The identifier the client proposed is free, so the server grants it and
+    /// the client keeps addressing its existing blobs.
+    #[tokio::test]
+    async fn client_keeps_its_identifier_when_the_server_grants_it() {
+        let base_url = spawn_server().await;
+        let client = account(&base_url, "solo@example.com").await;
+        let (dir, conn) = configured_vault(COLLIDING_ID);
+
+        let granted = claim_server_vault(&client, &conn, dir.path())
+            .await
+            .expect("claim");
+
+        assert_eq!(granted, COLLIDING_ID, "a free identifier must be granted");
+        assert_eq!(stored_vault_id(&conn).as_deref(), Some(COLLIDING_ID));
+    }
+
+    /// The crux of ADR-011's client contract: when the server substitutes an
+    /// identifier, the client must persist and use **what came back**, not what
+    /// it asked for. Persisting its own proposal would leave it addressing
+    /// another account's vault and silently 404 on every push and pull.
+    #[tokio::test]
+    async fn client_persists_the_server_returned_identifier_not_its_own_proposal() {
+        let base_url = spawn_server().await;
+
+        // Another account claims the identifier first — the squatting scenario.
+        let first = account(&base_url, "first@example.com").await;
+        let taken = first
+            .create_vault(Some(COLLIDING_ID))
+            .await
+            .expect("first claim")
+            .id;
+        assert_eq!(taken, COLLIDING_ID);
+
+        // A second account's client proposes the very same identifier.
+        let second = account(&base_url, "second@example.com").await;
+        let (dir, conn) = configured_vault(COLLIDING_ID);
+
+        let granted = claim_server_vault(&second, &conn, dir.path())
+            .await
+            .expect("a taken identifier must not fail setup");
+
+        assert_ne!(
+            granted, COLLIDING_ID,
+            "server handed over a taken identifier"
+        );
+        assert_eq!(
+            stored_vault_id(&conn).as_deref(),
+            Some(granted.as_str()),
+            "client persisted its own proposal instead of the server's answer — \
+             every push and pull would 404"
+        );
+
+        // The identifier it persisted actually works, which is what the
+        // assertion above is really protecting.
+        second
+            .put_batch(&granted, "device-2", "batch-1", b"ciphertext")
+            .await
+            .expect("the persisted identifier must be usable");
+
+        // And a re-run is idempotent: the client now proposes the substitute it
+        // stored, and the server returns that same vault rather than minting a
+        // third one.
+        let again = claim_server_vault(&second, &conn, dir.path())
+            .await
+            .expect("re-claim");
+        assert_eq!(again, granted);
+        assert_eq!(
+            second.list_vaults().await.expect("list").len(),
+            1,
+            "re-running setup forked the vault"
+        );
+    }
+
+    /// Re-running setup on a device that already owns its vault must return the
+    /// same vault, never mint a second one — otherwise one vault silently forks
+    /// into two and the data is stranded.
+    #[tokio::test]
+    async fn owner_reclaim_is_idempotent_and_never_forks_the_vault() {
+        let base_url = spawn_server().await;
+        let client = account(&base_url, "owner@example.com").await;
+        let (dir, conn) = configured_vault(COLLIDING_ID);
+
+        let first = claim_server_vault(&client, &conn, dir.path())
+            .await
+            .expect("first claim");
+        client
+            .put_batch(&first, "device-1", "batch-1", b"ciphertext")
+            .await
+            .expect("push");
+
+        let second = claim_server_vault(&client, &conn, dir.path())
+            .await
+            .expect("second claim");
+
+        assert_eq!(second, first, "re-claim minted a different vault");
+        assert_eq!(
+            client.list_vaults().await.expect("list").len(),
+            1,
+            "re-claim forked the vault"
+        );
+        assert_eq!(
+            client
+                .get_batch(&first, "device-1", "batch-1")
+                .await
+                .expect("data survives a re-claim"),
+            b"ciphertext"
+        );
+    }
+
+    /// A device with no identifier of its own adopts the account's existing
+    /// vault instead of minting a second, empty one it would never converge
+    /// out of.
+    #[tokio::test]
+    async fn a_new_device_adopts_the_accounts_existing_vault() {
+        let base_url = spawn_server().await;
+        let client = account(&base_url, "twodevice@example.com").await;
+
+        let original = client.create_vault(None).await.expect("device A").id;
+
+        // Device B: unlocked store, no sync config, no stored identifier.
+        let dir = tempfile::tempdir().unwrap();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        ldgr_core::storage::schema::initialize(&conn).unwrap();
+
+        let adopted = claim_server_vault(&client, &conn, dir.path())
+            .await
+            .expect("device B claim");
+
+        assert_eq!(
+            adopted, original,
+            "device B did not converge on device A's vault"
+        );
+        assert_eq!(stored_vault_id(&conn).as_deref(), Some(original.as_str()));
+        assert_eq!(client.list_vaults().await.expect("list").len(), 1);
     }
 }
