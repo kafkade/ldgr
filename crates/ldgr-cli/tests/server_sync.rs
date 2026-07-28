@@ -76,7 +76,10 @@ async fn server_transport_round_trips_batch_and_snapshot() {
         let mut client = ServerSyncClient::new(sender);
         client.register(username, password).await.expect("register");
         client.login(username, password).await.expect("login");
-        client.create_vault(vault_id).await.expect("create vault");
+        client
+            .create_vault(Some(vault_id))
+            .await
+            .expect("create vault");
         client.token().expect("session token").to_string()
     };
 
@@ -166,7 +169,10 @@ async fn server_transport_lists_all_batches_across_pages() {
         let mut client = ServerSyncClient::new(sender);
         client.register(username, password).await.expect("register");
         client.login(username, password).await.expect("login");
-        client.create_vault(vault_id).await.expect("create vault");
+        client
+            .create_vault(Some(vault_id))
+            .await
+            .expect("create vault");
         client.token().expect("session token").to_string()
     };
 

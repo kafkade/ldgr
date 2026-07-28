@@ -11,6 +11,7 @@ pub mod onboarding;
 pub mod payload;
 pub mod snapshot;
 pub mod transport;
+pub mod vault_id;
 
 /// Server sync protocol (SRP-6a client + endpoint types). Requires the `sync`
 /// feature, which pulls in big-integer arithmetic for SRP.
@@ -48,4 +49,7 @@ pub use transport::{
     BatchRef, BlobEntry, BlobPath, BlobPrefix, DeviceInfo, ListResult, PutResult, RemoteBatchMeta,
     RemoteSnapshotMeta, RetryPolicy, SyncCheckpoint, TransportConfig, TransportErrorKind,
     TransportProvider,
+};
+pub use vault_id::{
+    MAX_VAULT_ID_LEN, generate_vault_id, is_legacy_vault_id, is_random_vault_id, is_valid_vault_id,
 };

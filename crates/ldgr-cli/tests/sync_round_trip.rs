@@ -94,7 +94,10 @@ async fn provision(base_url: &str, username: &str, vault_id: &str) -> String {
         .login(username, b"correct horse battery staple")
         .await
         .expect("login");
-    client.create_vault(vault_id).await.expect("create vault");
+    client
+        .create_vault(Some(vault_id))
+        .await
+        .expect("create vault");
     client.token().expect("session token").to_string()
 }
 

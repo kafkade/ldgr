@@ -93,7 +93,14 @@ export interface WasmSyncClient {
   serverInfo(): Promise<string>;
   /** Liveness probe (`GET /server/ping`); returns a JSON string. */
   ping(): Promise<string>;
-  createVault(vaultId: string): Promise<void>;
+  /**
+   * Claim a vault, returning the identifier the server put in force. Pass
+   * `undefined` to have the server mint a random one (ADR-011); the result is
+   * authoritative and may differ from `vaultId`.
+   */
+  createVault(vaultId?: string): Promise<string>;
+  /** List this account's vaults; returns a JSON array of `{ id, created_at }`. */
+  listVaults(): Promise<string>;
   putBatch(
     vaultId: string,
     deviceId: string,

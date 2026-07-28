@@ -56,7 +56,8 @@ declare module '*pkg/ldgr_wasm' {
     ): Promise<void>;
     serverInfo(): Promise<string>;
     ping(): Promise<string>;
-    createVault(vaultId: string): Promise<void>;
+    createVault(vaultId?: string): Promise<string>;
+    listVaults(): Promise<string>;
     putBatch(
       vaultId: string,
       deviceId: string,
