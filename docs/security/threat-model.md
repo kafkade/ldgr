@@ -148,7 +148,26 @@ secrets cannot leak into logs or crash dumps. These are **best-effort** mitigati
 cannot defeat a dump taken at the exact moment keys are live, and the OS may page memory to
 swap outside ldgr's control. Classified partial, honestly.
 
-### 4.5 Malicious app co-resident on the same device — **out of scope**
+### 4.5 Another tenant on a shared sync server — **in scope**
+
+*Capabilities:* a fully authenticated account on the same self-hosted or multi-tenant
+server, able to make any authenticated API call and to guess or enumerate identifiers.
+
+*Analysis:* every vault-scoped endpoint (batches, snapshots, devices) checks that the
+authenticated account owns the vault before doing anything, and answers `404 Not Found`
+rather than `403 Forbidden`, so a tenant cannot even confirm whether another tenant's
+vault exists. Relay offers used for device pairing are likewise bound to the account that
+created them. Vault identifiers carry 128 bits of CSPRNG entropy and are issued by the
+server, so they cannot be guessed, enumerated, or claimed — and a request for an
+identifier another account already holds is answered with a freshly minted one instead of
+a conflict, so a hostile tenant cannot deny service by squatting on it. Even a tenant who
+learns another's identifier reads nothing, because the ownership check is independent of
+how the identifier was obtained. **A co-tenant cannot read, write, or block another
+tenant's data.** Residual exposure: a co-tenant on a shared instance can still consume
+shared resources (disk, bandwidth) up to their quota. See
+[ADR-011](../adr/011-tenant-scoped-vault-identifiers.md).
+
+### 4.6 Malicious app co-resident on the same device — **out of scope**
 
 *Capabilities:* another application running on the same device, possibly with elevated or
 root privileges.
@@ -169,8 +188,9 @@ Out of scope; see [§6](#6-what-the-vault-does-not-protect-against).
 | In transit | **Network interception** | Client-side AES-256-GCM applied before the transport; TLS as a second layer; GCM tags detect tampering |
 | At rest | **At-rest exposure** (stolen disk/file) | Argon2id-derived MEK wraps the Vault Key; all items AES-256-GCM-encrypted; metadata encrypted too |
 | At rest | **Offline brute force** | Argon2id memory-hard KDF makes each password guess costly; per-platform parameters tuned for resistance (§7) |
+| Shared server | **Cross-tenant access & identifier squatting** | Every vault-scoped lookup is scoped to the authenticated account and answers `404` for anything else; vault identifiers are 128-bit random and server-issued, so they cannot be guessed or claimed (ADR-011) |
 
-In all four cases the attacker is left with authenticated ciphertext and, at most,
+In all five cases the attacker is left with authenticated ciphertext and, at most,
 coarse-grained metadata (bucketed sizes, item counts, sync timing).
 
 ---
@@ -188,7 +208,7 @@ security model.
   keys or plaintext directly. The vault format assumes the code decrypting it is honest.
 - **A compromised or rooted operating system.** Root-level access can read process memory,
   intercept syscalls, or harvest cached keys (including a biometric-unlock MEK in the OS
-  keychain). Application-level encryption cannot defeat a hostile OS (see §4.5).
+  keychain). Application-level encryption cannot defeat a hostile OS (see §4.6).
 - **Rubber-hose cryptanalysis.** Coercion, legal compulsion, or extortion to reveal your
   password or recovery key is outside any cryptographic defense.
 - **Lost password *and* lost recovery key — unrecoverable by design.** There is no master
@@ -281,6 +301,7 @@ Stated openly so reviewers know the current boundaries:
 | Network attacker (MITM) | ✅ Yes | Data encrypted before transport + TLS; per-blob GCM auth tags detect tampering | Traffic analysis; availability (drop/delay) |
 | Device thief — locked device / disk image | ✅ Yes (at rest) | Argon2id-wrapped Vault Key; all items + metadata encrypted | Offline guessing of weak passwords; out of scope if captured unlocked |
 | Forensic examiner — memory / swap dump | ⚠️ Partial | `Zeroize`/`ZeroizeOnDrop`, idle auto-lock, `Debug` redaction | Keys live in RAM while unlocked; OS may page to swap |
+| Another tenant on a shared sync server | ✅ Yes | Every vault lookup scoped to the authenticated account (404, never 403); 128-bit server-issued vault identifiers; a taken identifier is re-minted, never a conflict (ADR-011) | Shared-resource consumption up to quota |
 | Malicious co-resident / rooted OS | ❌ No | Relies on OS process/sandbox boundary | Full compromise if the OS is hostile |
 | Keylogger / screen capture | ❌ No | None (endpoint trust assumed) | Password and plaintext fully exposed |
 | Compromised app binary (supply chain) | ❌ No | Reproducible builds / signing are process controls, not format guarantees | Malicious binary can exfiltrate keys/plaintext |

@@ -267,6 +267,13 @@ pub struct FfiDevice {
     pub encrypted_info: String,
 }
 
+/// A vault the authenticated account owns.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiVault {
+    pub id: String,
+    pub created_at: String,
+}
+
 /// Server discovery document (`GET /server/info`), mirrors core `ServerInfo`.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct FfiServerInfo {
@@ -480,10 +487,30 @@ impl LdgrSyncClient {
 
     // ── Vaults ───────────────────────────────────────────────────────────────
 
-    /// Create a vault. Returns the server-assigned vault id.
-    pub async fn create_vault(&self, vault_id: String) -> Result<String, FfiSyncError> {
+    /// Claim a vault, returning the identifier the server put in force.
+    ///
+    /// Pass `None` to have the server mint a random identifier (ADR-011). The
+    /// returned identifier is authoritative and may differ from `vault_id` —
+    /// callers must persist what they get back.
+    pub async fn create_vault(&self, vault_id: Option<String>) -> Result<String, FfiSyncError> {
         let client = self.inner.lock().await;
-        Ok(client.create_vault(&vault_id).await?.id)
+        Ok(client.create_vault(vault_id.as_deref()).await?.id)
+    }
+
+    /// List the vaults this account owns.
+    ///
+    /// A device with no identifier of its own adopts one of these rather than
+    /// creating a second, empty vault it would never converge out of (ADR-011).
+    pub async fn list_vaults(&self) -> Result<Vec<FfiVault>, FfiSyncError> {
+        let client = self.inner.lock().await;
+        let vaults = client.list_vaults().await?;
+        Ok(vaults
+            .into_iter()
+            .map(|v| FfiVault {
+                id: v.id,
+                created_at: v.created_at,
+            })
+            .collect())
     }
 
     // ── Batches (opaque ciphertext) ──────────────────────────────────────────

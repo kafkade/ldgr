@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useVault } from '@/contexts/VaultContext';
 import EmergencyKitView from '@/components/EmergencyKitView';
 import type { EmergencyKit, ServerInfo } from '@/lib/wasm';
+import { NEW_VAULT, type RemoteVault } from '@/lib/sync';
 
 const cardClass =
   'rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5 space-y-3';
@@ -32,12 +33,21 @@ export default function SyncSettings() {
     signInServer,
     logoutServer,
     createRemoteVault,
+    listRemoteVaults,
     sync,
     resolveSyncConflict,
   } = useVault();
 
   const [serverUrl, setServerUrl] = useState('');
+  // The vault identifier is issued by the server and adopted from the account
+  // (ADR-011) — never typed. `vaultId` is empty until this browser has claimed
+  // or adopted one.
   const [vaultId, setVaultId] = useState('');
+  const [ownedVaults, setOwnedVaults] = useState<RemoteVault[]>([]);
+  // Distinguishes "no vaults on this account" from "we haven't looked yet", so
+  // the connect button can't be clicked into minting a vault before the picker
+  // has had a chance to appear.
+  const [vaultsLoading, setVaultsLoading] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [secretKey, setSecretKey] = useState('');
@@ -55,6 +65,32 @@ export default function SyncSettings() {
       setUsername(serverConfig.username);
     }
   }, [serverConfig]);
+
+  // Once signed in, discover which vaults the account already owns so a browser
+  // with no identifier of its own can adopt one instead of stranding itself in a
+  // second, empty vault.
+  useEffect(() => {
+    if (!serverAuthenticated || vaultId) {
+      setOwnedVaults([]);
+      setVaultsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setVaultsLoading(true);
+    listRemoteVaults()
+      .then((vaults) => {
+        if (!cancelled) setOwnedVaults(vaults);
+      })
+      .catch(() => {
+        if (!cancelled) setOwnedVaults([]);
+      })
+      .finally(() => {
+        if (!cancelled) setVaultsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [serverAuthenticated, vaultId, listRemoteVaults]);
 
   const run = async (label: string, fn: () => Promise<void>) => {
     setBusy(label);
@@ -113,10 +149,23 @@ export default function SyncSettings() {
       setMessage('Logged in.');
     });
 
+  // Claim a vault for this browser. With no identifier yet and exactly one
+  // vault on the account, `createRemoteVault` adopts it; otherwise the server
+  // mints a fresh, random, unguessable one (ADR-011).
   const handleCreateVault = () =>
     run('create-vault', async () => {
-      await createRemoteVault();
-      setMessage('Remote vault ready.');
+      const granted = await createRemoteVault(
+        ownedVaults.length > 1 ? NEW_VAULT : undefined,
+      );
+      setVaultId(granted);
+      setMessage(`Vault ready: ${granted}`);
+    });
+
+  const handleAdoptVault = (id: string) =>
+    run('create-vault', async () => {
+      const granted = await createRemoteVault(id);
+      setVaultId(granted);
+      setMessage(`Now syncing vault ${granted}.`);
     });
 
   const handleSync = () =>
@@ -175,17 +224,13 @@ export default function SyncSettings() {
                 }}
               />
             </label>
-            <label className="block text-xs text-[var(--color-text-secondary)]">
-              Vault ID
-              <input
-                className={inputClass}
-                type="text"
-                placeholder="my-vault"
-                value={vaultId}
-                onChange={(e) => setVaultId(e.target.value)}
-              />
-            </label>
           </div>
+
+          {vaultId && (
+            <p className="text-xs text-[var(--color-text-secondary)]">
+              Vault <span className="font-mono">{vaultId}</span>
+            </p>
+          )}
 
           {!serverInfo && (
             <button
@@ -374,21 +419,55 @@ export default function SyncSettings() {
           </div>
 
           {serverAuthenticated && (
-            <div className="flex flex-wrap gap-2 border-t border-[var(--color-border)] pt-3">
-              <button
-                className={btnSecondary}
-                onClick={handleCreateVault}
-                disabled={busy !== null || !vaultId}
-              >
-                {busy === 'create-vault' ? 'Creating…' : 'Create remote vault'}
-              </button>
-              <button
-                className={btnPrimary}
-                onClick={handleSync}
-                disabled={busy !== null || syncing || !vaultId}
-              >
-                {syncing || busy === 'sync' ? 'Syncing…' : '🔄 Sync now'}
-              </button>
+            <div className="space-y-2 border-t border-[var(--color-border)] pt-3">
+              {/* Several vaults on one account (#296): the user picks which one
+                  this browser syncs to, rather than typing an identifier. */}
+              {!vaultId && ownedVaults.length > 1 && (
+                <div className="space-y-1">
+                  <p className="text-xs text-[var(--color-text-secondary)]">
+                    This account has more than one vault. Choose the one to sync
+                    in this browser:
+                  </p>
+                  {ownedVaults.map((v) => (
+                    <button
+                      key={v.id}
+                      className={`${btnSecondary} w-full text-left font-mono`}
+                      onClick={() => handleAdoptVault(v.id)}
+                      disabled={busy !== null}
+                    >
+                      {v.id}{' '}
+                      <span className="opacity-60">
+                        · created {v.created_at.slice(0, 10)}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-2">
+                {!vaultId && (
+                  <button
+                    className={btnSecondary}
+                    onClick={handleCreateVault}
+                    disabled={busy !== null || vaultsLoading}
+                  >
+                    {vaultsLoading
+                      ? 'Checking…'
+                      : busy === 'create-vault'
+                      ? 'Connecting…'
+                      : ownedVaults.length > 1
+                        ? 'Create a new vault instead'
+                        : 'Connect this browser to a vault'}
+                  </button>
+                )}
+                <button
+                  className={btnPrimary}
+                  onClick={handleSync}
+                  disabled={busy !== null || syncing || !vaultId}
+                >
+                  {syncing || busy === 'sync' ? 'Syncing…' : '🔄 Sync now'}
+                </button>
+              </div>
             </div>
           )}
         </>

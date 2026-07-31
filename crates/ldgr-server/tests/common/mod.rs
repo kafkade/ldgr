@@ -118,6 +118,13 @@ pub fn client() -> ServerSyncClient<RouterSender> {
     ServerSyncClient::new(RouterSender::new())
 }
 
+/// A [`ServerSyncClient`] sharing an **already booted** server with another
+/// client, so two accounts can be exercised against the same database. Used by
+/// the tenant-isolation suite.
+pub fn client_on(sender: &RouterSender) -> ServerSyncClient<RouterSender> {
+    ServerSyncClient::new(sender.clone())
+}
+
 /// Derive the master auth key (`MK_auth`) from a password, as a client would.
 pub fn auth_key(password: &[u8]) -> AuthKey {
     let mk = derive_master_key(password, b"argon-salt-16byte", &Argon2Params::test())

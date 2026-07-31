@@ -34,7 +34,7 @@ async fn single_secret_full_round_trip() {
     assert!(c.is_authenticated());
 
     let vault = "vault-1";
-    c.create_vault(vault).await.expect("create vault");
+    c.create_vault(Some(vault)).await.expect("create vault");
 
     // Upload an encrypted batch and read it back byte-for-byte.
     let device = "device-a";
@@ -109,7 +109,7 @@ async fn two_secret_full_round_trip() {
 
     // An authenticated call must succeed and a blob must round-trip.
     let vault = "vault-2skd";
-    c.create_vault(vault).await.expect("create vault");
+    c.create_vault(Some(vault)).await.expect("create vault");
 
     let device = "device-2skd";
     let batch = "batch-2skd-1";
@@ -148,6 +148,6 @@ async fn login_2skd_with_wrong_secret_key_is_rejected() {
 async fn unauthenticated_call_is_rejected() {
     let c = client();
     // No register/login: the client guards locally before sending.
-    let result = c.create_vault("nope").await;
+    let result = c.create_vault(Some("nope")).await;
     assert_eq!(result.unwrap_err(), ServerSyncError::NotAuthenticated);
 }
