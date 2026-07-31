@@ -139,7 +139,10 @@ async fn authenticated_vault_and_batch_flow() {
     client.login("carol", b"s3cr3t").await.expect("login");
 
     // Create a vault, then list it back.
-    let vault = client.create_vault("vault-1").await.expect("create vault");
+    let vault = client
+        .create_vault(Some("vault-1"))
+        .await
+        .expect("create vault");
     assert_eq!(vault.id, "vault-1");
 
     let vaults = client.list_vaults().await.expect("list vaults");
@@ -175,7 +178,7 @@ async fn authenticated_vault_and_batch_flow() {
 async fn unauthenticated_request_without_token_fails_locally() {
     let client = ServerSyncClient::new(RouterTransport::new());
     let err = client
-        .create_vault("vault-x")
+        .create_vault(Some("vault-x"))
         .await
         .expect_err("should fail");
     assert!(matches!(err, ServerSyncError::NotAuthenticated));

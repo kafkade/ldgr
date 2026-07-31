@@ -198,6 +198,11 @@ impl ServerDb {
         // schema again is enough to add them to a legacy DB.
         conn.execute_batch(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email);
+             -- Tenant-scoped vault lookups (ADR-011). Additive and safe on a
+             -- pre-ADR-011 database: `vaults.id` was already a global primary
+             -- key there, so (user_id, id) is trivially unique and no existing
+             -- row can violate it.
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_vaults_user_id ON vaults(user_id, id);
              CREATE TABLE IF NOT EXISTS settings (
                  key   TEXT PRIMARY KEY,
                  value TEXT NOT NULL
@@ -867,29 +872,105 @@ impl ServerDb {
 
     // ── Vaults ────────────────────────────────────────────────────────────────
 
-    pub async fn create_vault(&self, id: &str, user_id: &str) -> Result<String, ServerError> {
+    /// Claim a vault identifier for `user_id`, returning the identifier now in
+    /// force (ADR-011).
+    ///
+    /// Resolution order, evaluated under a single connection lock so concurrent
+    /// claims cannot race past each other:
+    ///
+    /// 1. the account already owns `requested` — return it unchanged, whatever
+    ///    it looks like, so re-running setup on a configured device is
+    ///    idempotent even for a hand-typed identifier from an older client;
+    /// 2. `requested` is free and well-formed — claim it (this is how a
+    ///    pre-ADR-011 client keeps its path-derived identifier, and therefore
+    ///    its already-uploaded blobs);
+    /// 3. `requested` is owned by a **different** account, is absent, or is not
+    ///    path-safe — mint a fresh random identifier instead.
+    ///
+    /// Step 3 is the anti-squatting rule. Returning a conflict here is what
+    /// allowed the first account to claim a guessable, path-derived identifier
+    /// to permanently lock every other account out of it. It also keeps a
+    /// path-unsafe identifier from ever entering the blob namespace, without
+    /// failing the request.
+    pub async fn claim_vault(
+        &self,
+        requested: Option<&str>,
+        user_id: &str,
+    ) -> Result<Vault, ServerError> {
         let conn = self.conn.clone();
-        let id = id.to_string();
+        let requested = requested.map(String::from);
         let user_id = user_id.to_string();
         let created_at = chrono::Utc::now().to_rfc3339();
-        let ts = created_at.clone();
+
         tokio::task::spawn_blocking(move || {
             let conn = conn
                 .lock()
                 .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
-            conn.execute(
-                "INSERT INTO vaults (id, user_id, created_at) VALUES (?1, ?2, ?3)",
-                params![id, user_id, ts],
-            )
-            .map_err(|e| match e {
-                rusqlite::Error::SqliteFailure(err, _)
-                    if err.code == rusqlite::ErrorCode::ConstraintViolation =>
-                {
-                    ServerError::Conflict("vault already exists".into())
+
+            if let Some(id) = requested.as_deref() {
+                let owner: Option<(String, String)> = conn
+                    .query_row(
+                        "SELECT user_id, created_at FROM vaults WHERE id = ?1",
+                        params![id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?;
+
+                match owner {
+                    // Already ours — idempotent.
+                    Some((owner_id, existing_created_at)) if owner_id == user_id => {
+                        return Ok(Vault {
+                            id: id.to_string(),
+                            user_id,
+                            created_at: existing_created_at,
+                        });
+                    }
+                    // Free, and safe to interpolate into a blob path.
+                    None if ldgr_core::sync::is_valid_vault_id(id) => {
+                        // `INSERT OR IGNORE` rather than a plain insert: another
+                        // server process sharing this database file could have
+                        // claimed the identifier between the SELECT and here, and
+                        // that must mint a substitute like any other taken
+                        // identifier, not surface a constraint violation.
+                        let inserted = conn.execute(
+                            "INSERT OR IGNORE INTO vaults (id, user_id, created_at) \
+                             VALUES (?1, ?2, ?3)",
+                            params![id, user_id, created_at],
+                        )?;
+                        if inserted == 1 {
+                            return Ok(Vault {
+                                id: id.to_string(),
+                                user_id,
+                                created_at,
+                            });
+                        }
+                    }
+                    // Taken by another account, or not path-safe — fall through
+                    // and mint a substitute rather than failing the request.
+                    Some(_) | None => {}
                 }
-                other => ServerError::from(other),
-            })?;
-            Ok(created_at)
+            }
+
+            // Mint a random identifier. Retry on the (astronomically unlikely)
+            // collision rather than surfacing a constraint violation.
+            for _ in 0..8 {
+                let id = ldgr_core::sync::generate_vault_id();
+                let inserted = conn.execute(
+                    "INSERT OR IGNORE INTO vaults (id, user_id, created_at) VALUES (?1, ?2, ?3)",
+                    params![id, user_id, created_at],
+                )?;
+                if inserted == 1 {
+                    return Ok(Vault {
+                        id,
+                        user_id,
+                        created_at,
+                    });
+                }
+            }
+
+            Err(ServerError::Internal(
+                "failed to mint a unique vault identifier".into(),
+            ))
         })
         .await?
     }
