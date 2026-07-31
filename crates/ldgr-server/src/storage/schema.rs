@@ -21,7 +21,11 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at          TEXT,
     auth_scheme         TEXT NOT NULL DEFAULT 'srp-1secret',
     secret_key_version  INTEGER,
-    account_id          TEXT
+    account_id          TEXT,
+    account_kdf_salt          BLOB,
+    account_kdf_mem_kib       INTEGER,
+    account_kdf_iters         INTEGER,
+    account_kdf_parallelism   INTEGER
 );
 
 -- Minimal invite mechanism for the `invite-only` registration policy. Issuing
@@ -62,6 +66,13 @@ CREATE TABLE IF NOT EXISTS vaults (
 );
 
 CREATE INDEX IF NOT EXISTS idx_vaults_user ON vaults(user_id);
+
+-- Vault identifiers are tenant-scoped (ADR-011): a vault is only ever addressed
+-- as (owning account, id), which is what every API lookup joins on. `id` stays
+-- the global primary key so `blobs.path` (`{vault_id}/...`) remains unambiguous
+-- across accounts; identifiers minted since ADR-011 carry 128 bits of entropy,
+-- so the global namespace cannot be enumerated or squatted.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vaults_user_id ON vaults(user_id, id);
 
 CREATE TABLE IF NOT EXISTS blobs (
     path          TEXT PRIMARY KEY,

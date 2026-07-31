@@ -24,7 +24,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-use crate::crypto::{AuthKey, SecretKey, derive_x_seed};
+use crate::crypto::{AccountKdf, AuthKey, SecretKey, derive_account_auth_key, derive_x_seed};
 
 // ── RFC 5054 2048-bit Group Parameters ────────────────────────────────────────
 
@@ -184,6 +184,14 @@ pub enum SrpError {
     /// account or an outdated server).
     #[error("missing account id for two-secret login")]
     MissingAccountId,
+    /// A two-secret (2SKD) login was finished without the account Argon2 KDF —
+    /// neither the caller (Emergency Kit) nor the server's `login/init` supplied
+    /// the account-scoped salt/params needed to derive `MK_auth` (#296).
+    #[error("missing account KDF for two-secret login")]
+    MissingAccountKdf,
+    /// Deriving `MK_auth` from the account KDF failed (invalid Argon2 params).
+    #[error("account auth key derivation failed: {0}")]
+    KeyDerivation(String),
 }
 
 // ── Registration ───────────────────────────────────────────────────────────────
@@ -274,15 +282,17 @@ pub fn register_2skd_with_salt(
 enum Credential {
     /// Legacy single-secret: `x = H(salt || H(username || ":" || password))`.
     Password(Zeroizing<Vec<u8>>),
-    /// Two-secret (2SKD): `x = OS2IP(x_seed) mod N` (ADR-008).
+    /// Two-secret (2SKD): `x = OS2IP(x_seed) mod N` (ADR-008, #296).
     ///
-    /// `account_id` is resolved from the server's `login/init` response
-    /// ([`ClientLogin::set_account_id`]) before [`ClientLogin::finish`], so it
-    /// starts unset.
+    /// `MK_auth` is derived at [`ClientLogin::finish`] time from the master
+    /// `password` and the account-scoped [`AccountKdf`], so both the KDF and the
+    /// `account_id` start unset and are injected from the server's `login/init`
+    /// response (or supplied up-front from an Emergency Kit).
     TwoSecret {
         account_id: Option<Uuid>,
-        mk_auth: AuthKey,
+        password: Zeroizing<Vec<u8>>,
         secret_key: SecretKey,
+        account_kdf: Option<AccountKdf>,
     },
 }
 
@@ -320,27 +330,33 @@ impl ClientLogin {
         )
     }
 
-    /// Begin a **two-secret (2SKD)** login (ADR-008).
+    /// Begin a **two-secret (2SKD)** login (ADR-008, #296).
     ///
-    /// `mk_auth` is the existing [`AuthKey`] derived from the master password;
-    /// `secret_key` is the account [`SecretKey`]. Both are required to
-    /// reproduce the verifier's `x` — the password or Secret Key alone cannot.
+    /// `password` is the master password and `secret_key` the account
+    /// [`SecretKey`]. Both are required to reproduce the verifier's `x` — the
+    /// password or Secret Key alone cannot.
     ///
-    /// The account id is **not** required here: it is learned from the server's
-    /// `login/init` response and injected via [`set_account_id`] before
-    /// [`finish`]. Calling `finish` without it yields
-    /// [`SrpError::MissingAccountId`].
+    /// Neither the account id nor the account Argon2 [`AccountKdf`] is required
+    /// here: both are learned from the server's `login/init` response and
+    /// injected via [`set_account_id`] / [`set_account_kdf`] before [`finish`].
+    /// A caller that already holds the KDF (e.g. from a scanned Emergency Kit)
+    /// may inject it up-front with [`set_account_kdf`]; a caller-supplied KDF
+    /// takes precedence over the server's. Calling `finish` without an account
+    /// id yields [`SrpError::MissingAccountId`]; without any KDF yields
+    /// [`SrpError::MissingAccountKdf`].
     ///
     /// [`set_account_id`]: ClientLogin::set_account_id
+    /// [`set_account_kdf`]: ClientLogin::set_account_kdf
     /// [`finish`]: ClientLogin::finish
     #[must_use]
-    pub fn start_2skd(username: &str, mk_auth: AuthKey, secret_key: SecretKey) -> (Self, Vec<u8>) {
+    pub fn start_2skd(username: &str, password: &[u8], secret_key: SecretKey) -> (Self, Vec<u8>) {
         Self::start_with_credential(
             username,
             Credential::TwoSecret {
                 account_id: None,
-                mk_auth,
+                password: Zeroizing::new(password.to_vec()),
                 secret_key,
+                account_kdf: None,
             },
         )
     }
@@ -357,6 +373,22 @@ impl ClientLogin {
         } = &mut self.credential
         {
             *slot = Some(account_id);
+        }
+    }
+
+    /// Provide the account-scoped Argon2 [`AccountKdf`] used to derive `MK_auth`
+    /// (#296), either up-front from an Emergency Kit or after `login/init` from
+    /// the server. A KDF already set on this login is **not** overwritten, so an
+    /// Emergency Kit copy injected before the server's takes precedence.
+    ///
+    /// No-op for a single-secret login.
+    pub fn set_account_kdf(&mut self, kdf: AccountKdf) {
+        if let Credential::TwoSecret {
+            account_kdf: slot, ..
+        } = &mut self.credential
+            && slot.is_none()
+        {
+            *slot = Some(kdf);
         }
     }
 
@@ -415,11 +447,15 @@ impl ClientLogin {
             Credential::Password(password) => compute_x(&self.username, password, salt),
             Credential::TwoSecret {
                 account_id,
-                mk_auth,
+                password,
                 secret_key,
+                account_kdf,
             } => {
                 let account_id = (*account_id).ok_or(SrpError::MissingAccountId)?;
-                compute_x_2skd(&account_id, mk_auth, secret_key, salt)
+                let kdf = account_kdf.as_ref().ok_or(SrpError::MissingAccountKdf)?;
+                let mk_auth = derive_account_auth_key(password, kdf)
+                    .map_err(|e| SrpError::KeyDerivation(e.to_string()))?;
+                compute_x_2skd(&account_id, &mk_auth, secret_key, salt)
             }
         };
 
@@ -636,12 +672,17 @@ mod tests {
 
     // ── Two-secret key derivation (2SKD, ADR-008) ───────────────────────────
 
-    use crate::crypto::{Argon2Params, SecretKey, derive_auth_key, derive_master_key};
+    use crate::crypto::{AccountKdf, Argon2Params, SecretKey, derive_account_auth_key};
     use uuid::Uuid;
 
+    /// Fixed account KDF (salt + params) used by the 2SKD tests so registration
+    /// and login derive the same `MK_auth` deterministically.
+    fn test_account_kdf() -> AccountKdf {
+        AccountKdf::from_parts(b"argon-salt-16byte".to_vec(), Argon2Params::test())
+    }
+
     fn auth_key(password: &[u8]) -> AuthKey {
-        let mk = derive_master_key(password, b"argon-salt-16byte", &Argon2Params::test()).unwrap();
-        derive_auth_key(&mk).unwrap()
+        derive_account_auth_key(password, &test_account_kdf()).unwrap()
     }
 
     /// A full 2SKD registration + login handshake against the server's verifier
@@ -649,15 +690,15 @@ mod tests {
     fn run_2skd_handshake(
         username: &str,
         account_id: Uuid,
-        mk_auth: &AuthKey,
+        password: &[u8],
         secret_key: &SecretKey,
     ) -> bool {
         let salt = vec![9u8; SALT_LEN];
-        let reg = register_2skd_with_salt(&account_id, mk_auth, secret_key, salt);
+        let reg = register_2skd_with_salt(&account_id, &auth_key(password), secret_key, salt);
 
-        let (mut login, a_pub) =
-            ClientLogin::start_2skd(username, mk_auth.clone(), secret_key.clone());
+        let (mut login, a_pub) = ClientLogin::start_2skd(username, password, secret_key.clone());
         login.set_account_id(account_id);
+        login.set_account_kdf(test_account_kdf());
         let server = ReferenceServer::initiate(username, &reg.salt, &reg.verifier, &a_pub);
 
         let session = login
@@ -673,12 +714,11 @@ mod tests {
     #[test]
     fn two_secret_handshake_succeeds() {
         let account_id = Uuid::from_bytes([3u8; 16]);
-        let mk_auth = auth_key(b"correct horse battery staple");
         let secret_key = SecretKey::generate(account_id);
         assert!(run_2skd_handshake(
             "alice",
             account_id,
-            &mk_auth,
+            b"correct horse battery staple",
             &secret_key
         ));
     }
@@ -711,8 +751,9 @@ mod tests {
         );
 
         // Login with the wrong Secret Key (but correct password) is rejected.
-        let (mut login, a_pub) = ClientLogin::start_2skd("eve", mk_auth.clone(), attacker.clone());
+        let (mut login, a_pub) = ClientLogin::start_2skd("eve", b"password", attacker.clone());
         login.set_account_id(account_id);
+        login.set_account_kdf(test_account_kdf());
         let server = ReferenceServer::initiate("eve", &reg.salt, &reg.verifier, &a_pub);
         let session = login
             .finish(&reg.salt, &server.server_public_bytes())
@@ -730,13 +771,52 @@ mod tests {
             register_2skd_with_salt(&account_id, &auth_key(b"right-password"), &secret_key, salt);
 
         let (mut login, a_pub) =
-            ClientLogin::start_2skd("frank", auth_key(b"wrong-password"), secret_key.clone());
+            ClientLogin::start_2skd("frank", b"wrong-password", secret_key.clone());
         login.set_account_id(account_id);
+        login.set_account_kdf(test_account_kdf());
         let server = ReferenceServer::initiate("frank", &reg.salt, &reg.verifier, &a_pub);
         let session = login
             .finish(&reg.salt, &server.server_public_bytes())
             .expect("client finish");
         assert!(server.verify(session.proof()).is_none());
+    }
+
+    #[test]
+    fn finish_without_account_kdf_errors() {
+        let account_id = Uuid::from_bytes([1u8; 16]);
+        let secret_key = SecretKey::generate(account_id);
+        let (mut login, _a) = ClientLogin::start_2skd("no-kdf", b"password", secret_key);
+        login.set_account_id(account_id);
+        // No set_account_kdf → finish must surface MissingAccountKdf.
+        let err = login
+            .finish(&[9u8; SALT_LEN], &get_g().to_bytes_be())
+            .unwrap_err();
+        assert_eq!(err, SrpError::MissingAccountKdf);
+    }
+
+    #[test]
+    fn caller_supplied_kdf_takes_precedence_over_server() {
+        // A KDF injected up-front (e.g. from a scanned Emergency Kit) must not be
+        // overwritten by a later server-provided one — the handshake still
+        // succeeds because finish() uses the correct (first) KDF.
+        let account_id = Uuid::from_bytes([2u8; 16]);
+        let password = b"password";
+        let secret_key = SecretKey::generate(account_id);
+        let salt = vec![9u8; SALT_LEN];
+        let reg = register_2skd_with_salt(&account_id, &auth_key(password), &secret_key, salt);
+
+        let (mut login, a_pub) = ClientLogin::start_2skd("kit", password, secret_key.clone());
+        login.set_account_id(account_id);
+        // Correct KDF first (from the kit) …
+        login.set_account_kdf(test_account_kdf());
+        // … then a bogus server KDF that must be ignored.
+        login.set_account_kdf(AccountKdf::from_parts(vec![0u8; 16], Argon2Params::test()));
+
+        let server = ReferenceServer::initiate("kit", &reg.salt, &reg.verifier, &a_pub);
+        let session = login
+            .finish(&reg.salt, &server.server_public_bytes())
+            .expect("client finish");
+        assert!(server.verify(session.proof()).is_some(), "kit KDF must win");
     }
 
     #[test]
@@ -796,9 +876,8 @@ mod tests {
             account_bytes in proptest::array::uniform16(any::<u8>()),
         ) {
             let account_id = Uuid::from_bytes(account_bytes);
-            let mk_auth = auth_key(&password);
             let secret_key = SecretKey::generate(account_id);
-            prop_assert!(run_2skd_handshake(&username, account_id, &mk_auth, &secret_key));
+            prop_assert!(run_2skd_handshake(&username, account_id, &password, &secret_key));
         }
 
         /// A 2SKD login with the correct password but a different Secret Key is
@@ -817,8 +896,9 @@ mod tests {
 
             let reg = register_2skd_with_salt(&account_id, &mk_auth, &registered, salt);
             let (mut login, a_pub) =
-                ClientLogin::start_2skd(&username, mk_auth.clone(), attacker);
+                ClientLogin::start_2skd(&username, &password, attacker);
             login.set_account_id(account_id);
+            login.set_account_kdf(test_account_kdf());
             let server = ReferenceServer::initiate(&username, &reg.salt, &reg.verifier, &a_pub);
             let session = login
                 .finish(&reg.salt, &server.server_public_bytes())

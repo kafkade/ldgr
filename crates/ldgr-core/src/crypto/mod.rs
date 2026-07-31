@@ -5,6 +5,7 @@
 //! All key types implement [`Zeroize`] and [`ZeroizeOnDrop`].
 //! [`Debug`] implementations redact secret values.
 
+mod account_kdf;
 mod crockford;
 mod emergency_kit;
 mod envelope;
@@ -18,6 +19,7 @@ mod two_skd;
 mod vault;
 mod wrap;
 
+pub use account_kdf::{AccountKdf, derive_account_auth_key};
 pub use emergency_kit::EmergencyKit;
 pub use envelope::{SealedEnvelope, decrypt_item, encrypt_item};
 pub use errors::CryptoError;

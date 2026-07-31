@@ -165,6 +165,10 @@ pub struct CreateUserRequest {
     /// `auth_scheme = srp-2skd-v1`.
     #[serde(default)]
     pub account_id: Option<String>,
+    /// Account-scoped Argon2 KDF for a 2SKD account (#296). Required when
+    /// `auth_scheme = srp-2skd-v1`.
+    #[serde(default)]
+    pub account_kdf: Option<ldgr_core::sync::server::AccountKdfWire>,
 }
 
 /// Admin-created account. Bypasses the registration policy (this *is* the admin
@@ -204,6 +208,7 @@ pub async fn create_user(
     }
 
     let account_id = super::auth::resolve_account_id(auth_scheme, req.account_id.as_deref())?;
+    let account_kdf = super::auth::resolve_account_kdf(auth_scheme, req.account_kdf.as_ref())?;
 
     let email = req
         .email
@@ -237,6 +242,18 @@ pub async fn create_user(
             invited_by: Some(&admin),
             created_at: &created_at,
             account_id: account_id.as_deref(),
+            account_kdf_salt: account_kdf
+                .as_ref()
+                .map(ldgr_core::crypto::AccountKdf::salt),
+            account_kdf_mem_kib: account_kdf
+                .as_ref()
+                .map(|k| i64::from(k.params().memory_cost_kib)),
+            account_kdf_iters: account_kdf
+                .as_ref()
+                .map(|k| i64::from(k.params().iterations)),
+            account_kdf_parallelism: account_kdf
+                .as_ref()
+                .map(|k| i64::from(k.params().parallelism)),
         })
         .await?;
 

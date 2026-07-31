@@ -3,6 +3,8 @@
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
+use ldgr_core::crypto::AccountKdf;
+use ldgr_core::sync::server::AccountKdfWire;
 use num_bigint::BigUint;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -41,6 +43,11 @@ pub struct RegisterRequest {
     /// echoed back at `login/init` so a new device can reproduce `x`.
     #[serde(default)]
     pub account_id: Option<String>,
+    /// Account-scoped Argon2id salt + params used to derive `MK_auth` (#296).
+    /// Required for `srp-2skd-v1`; ignored otherwise. Stored and echoed back at
+    /// `login/init` so a new device (no vault header) can reproduce the verifier.
+    #[serde(default)]
+    pub account_kdf: Option<AccountKdfWire>,
 }
 
 #[derive(Serialize)]
@@ -76,6 +83,55 @@ pub(crate) fn resolve_account_id(
     }
 }
 
+/// Validate + decode the client-supplied `account_kdf` against the auth scheme
+/// (#296).
+///
+/// Two-secret (`srp-2skd-v1`) accounts must carry a valid account Argon2 KDF —
+/// it is stored and echoed back at `login/init` so a new device can derive
+/// `MK_auth`. Single-secret accounts must not set one.
+pub(crate) fn resolve_account_kdf(
+    auth_scheme: &str,
+    account_kdf: Option<&AccountKdfWire>,
+) -> Result<Option<AccountKdf>, ServerError> {
+    match (auth_scheme, account_kdf) {
+        ("srp-2skd-v1", Some(wire)) => {
+            let kdf = wire
+                .to_account_kdf()
+                .map_err(|e| ServerError::BadRequest(format!("invalid account_kdf salt: {e}")))?;
+            if kdf.salt().len() < 16 {
+                return Err(ServerError::BadRequest(
+                    "account_kdf salt must be at least 16 bytes".into(),
+                ));
+            }
+            let p = kdf.params();
+            if p.memory_cost_kib < 8 || p.iterations < 1 || p.parallelism < 1 {
+                return Err(ServerError::BadRequest("invalid account_kdf params".into()));
+            }
+            Ok(Some(kdf))
+        }
+        ("srp-2skd-v1", None) => Err(ServerError::BadRequest(
+            "account_kdf is required for srp-2skd-v1".into(),
+        )),
+        _ => Ok(None),
+    }
+}
+
+/// Rebuild the 2SKD account KDF wire form from a stored user row, if the row
+/// carries one (#296). Returned at `login/init` for two-secret accounts.
+pub(crate) fn stored_account_kdf(user: &crate::storage::User) -> Option<AccountKdfWire> {
+    let salt = user.account_kdf_salt.as_ref()?;
+    let mem = user.account_kdf_mem_kib?;
+    let iters = user.account_kdf_iters?;
+    let par = user.account_kdf_parallelism?;
+    Some(AccountKdfWire {
+        salt: hex_encode(salt),
+        memory_cost_kib: u32::try_from(mem).unwrap_or_default(),
+        iterations: u32::try_from(iters).unwrap_or_default(),
+        parallelism: u32::try_from(par).unwrap_or_default(),
+    })
+}
+
+#[allow(clippy::too_many_lines)]
 pub async fn register(
     State(state): State<SharedState>,
     Json(req): Json<RegisterRequest>,
@@ -122,6 +178,9 @@ pub async fn register(
     // into the verifier; it is stored and returned at `login/init`. Single-
     // secret accounts must not set one.
     let account_id = resolve_account_id(auth_scheme, req.account_id.as_deref())?;
+    // Likewise the account-scoped Argon2 KDF (#296): required for 2SKD, stored
+    // and returned at `login/init` so a new device can derive `MK_auth`.
+    let account_kdf = resolve_account_kdf(auth_scheme, req.account_kdf.as_ref())?;
 
     let user_id = uuid::Uuid::now_v7().to_string();
     let created_at = chrono::Utc::now().to_rfc3339();
@@ -131,14 +190,60 @@ pub async fn register(
     // Two supported modes:
     //   * Env-seeded (preferred for unattended docker-compose): if
     //     `LDGR_ADMIN_EMAIL` is set, the account registering with that email
-    //     becomes admin and bypasses the registration policy.
+    //     becomes admin and bypasses the registration policy. Safe under
+    //     concurrent registration via the UNIQUE(email) index.
     //   * First-user fallback: if no admin email is configured, the very first
     //     account to register (empty user table) becomes admin and bypasses the
-    //     policy. After that, the policy governs all sign-ups.
+    //     policy. This election + insert is performed ATOMICALLY (single
+    //     transaction) so that at most one admin is ever elected even under
+    //     concurrent registration. After that, the policy governs all sign-ups.
+    if state.config.admin_email.is_none() {
+        let elected = state
+            .db
+            .try_bootstrap_first_admin(&NewUser {
+                id: &user_id,
+                username: &req.username,
+                email: Some(&email),
+                salt: &salt,
+                verifier: &verifier,
+                role: "admin",
+                auth_scheme,
+                invited_by: None,
+                created_at: &created_at,
+                account_id: account_id.as_deref(),
+                account_kdf_salt: account_kdf.as_ref().map(AccountKdf::salt),
+                account_kdf_mem_kib: account_kdf
+                    .as_ref()
+                    .map(|k| i64::from(k.params().memory_cost_kib)),
+                account_kdf_iters: account_kdf
+                    .as_ref()
+                    .map(|k| i64::from(k.params().iterations)),
+                account_kdf_parallelism: account_kdf
+                    .as_ref()
+                    .map(|k| i64::from(k.params().parallelism)),
+            })
+            .await?;
+        if let crate::storage::BootstrapElection::ElectedAdmin = elected {
+            tracing::info!("registered bootstrap admin: {} (role=admin)", req.username);
+            return Ok((
+                StatusCode::CREATED,
+                Json(RegisterResponse {
+                    user_id,
+                    role: "admin".to_string(),
+                }),
+            ));
+        }
+        // NotFirst → fall through to the policy-governed path as a normal user.
+    }
+
     let is_bootstrap_admin = if let Some(admin_email) = state.config.admin_email.as_deref() {
         email.eq_ignore_ascii_case(admin_email) && !state.db.email_exists(admin_email).await?
     } else {
-        state.db.count_users().await? == 0
+        // The no-admin-email fallback election was already resolved atomically
+        // above (early return when this request won the admin slot), so any
+        // request reaching here in fallback mode is definitively NOT the first
+        // user and must be governed by the registration policy.
+        false
     };
 
     // ── Registration policy enforcement ─────────────────────────────────────
@@ -198,6 +303,16 @@ pub async fn register(
             invited_by: invited_by.as_deref(),
             created_at: &created_at,
             account_id: account_id.as_deref(),
+            account_kdf_salt: account_kdf.as_ref().map(AccountKdf::salt),
+            account_kdf_mem_kib: account_kdf
+                .as_ref()
+                .map(|k| i64::from(k.params().memory_cost_kib)),
+            account_kdf_iters: account_kdf
+                .as_ref()
+                .map(|k| i64::from(k.params().iterations)),
+            account_kdf_parallelism: account_kdf
+                .as_ref()
+                .map(|k| i64::from(k.params().parallelism)),
         })
         .await?;
 
@@ -226,6 +341,11 @@ pub struct LoginInitResponse {
     /// client can derive `x` (ADR-008). Omitted for single-secret accounts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account_id: Option<String>,
+    /// The account's stored Argon2 KDF (salt + params) for two-secret accounts,
+    /// so a new device can derive `MK_auth` without a vault header (#296).
+    /// Omitted for single-secret accounts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_kdf: Option<AccountKdfWire>,
 }
 
 pub async fn login_init(
@@ -250,6 +370,7 @@ pub async fn login_init(
     let verifier = BigUint::from_bytes_be(&user.verifier);
     let handshake_id = uuid::Uuid::now_v7().to_string();
     let account_id = user.account_id.clone();
+    let account_kdf = stored_account_kdf(&user);
 
     let b_pub = state
         .srp_handshakes
@@ -267,6 +388,7 @@ pub async fn login_init(
         salt: hex_encode(&user.salt),
         server_public: hex_encode(&b_pub.to_bytes_be()),
         account_id,
+        account_kdf,
     }))
 }
 

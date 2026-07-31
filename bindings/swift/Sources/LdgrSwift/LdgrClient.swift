@@ -291,12 +291,12 @@ public final class LdgrClient: @unchecked Sendable {
         }
     }
 
-    /// The vault's Argon2id salt and parameters, for two-secret (2SKD) sign-in.
+    /// The **vault's** Argon2id salt and parameters (from the vault header).
     ///
-    /// Two-secret auth derives the server auth key `MK_auth` from the master
-    /// password using exactly these values (ADR-008). Requires the vault to be
-    /// unlocked. Pass the result to ``LdgrSyncSession/register2skd(...)`` or
-    /// ``LdgrSyncSession/login2skd(...)``.
+    /// This is the *vault-decryption* KDF and is **not** used for two-secret
+    /// account auth: `MK_auth` is derived from an account-scoped KDF
+    /// (``LdgrSync/generateAccountKdf()``), decoupled from any vault (#296).
+    /// Requires the vault to be unlocked.
     public func kdfParams() throws -> KdfParams {
         do {
             let p = try vault.kdfParams()
@@ -320,6 +320,70 @@ public final class LdgrClient: @unchecked Sendable {
             Task.detached { [vault] in
                 do {
                     try vault.openWithSessionKey(key: Array(key))
+                    continuation.resume()
+                } catch let error as LdgrError {
+                    continuation.resume(throwing: LdgrClientError(from: error))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    // MARK: - At-Rest Migration (issue #315)
+
+    /// Whether the on-disk working store is a legacy **plaintext** database that
+    /// must be migrated to the encrypted (SQLCipher) format before it can be
+    /// opened.
+    ///
+    /// Only reads the file header — does not require the vault to be unlocked.
+    /// Callers should check this before ``open(password:)`` /
+    /// ``openWithSessionKey(_:)`` and, if `true`, run ``migrate(password:)``
+    /// (password path) or ``migrateWithSessionKey(_:)`` (biometric path) first.
+    public func needsMigration() throws -> Bool {
+        do {
+            return try vault.needsMigration()
+        } catch let error as LdgrError {
+            throw LdgrClientError(from: error)
+        }
+    }
+
+    /// Migrate a legacy plaintext working store to the encrypted format, keyed by
+    /// the vault key derived from `password`.
+    ///
+    /// Mirrors the CLI's explicit `ldgr migrate`: verifies the password, rewrites
+    /// the store as SQLCipher-encrypted, checks the copy preserves the schema and
+    /// every table's row count, then atomically swaps it in — keeping the original
+    /// as a `.plaintext.bak` backup. A no-op if the store is already encrypted.
+    /// Leaves the vault **locked**; call ``open(password:)`` afterwards. Runs on a
+    /// background thread (SQLCipher export can be expensive for large ledgers).
+    public func migrate(password: String) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            Task.detached { [vault] in
+                do {
+                    try vault.migrate(password: password)
+                    continuation.resume()
+                } catch let error as LdgrError {
+                    continuation.resume(throwing: LdgrClientError(from: error))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// Migrate a legacy plaintext working store using a previously exported
+    /// session key (biometric-unlock path).
+    ///
+    /// Like ``migrate(password:)`` but keyed from the cached 32-byte session key,
+    /// so a biometric user upgrading from an unencrypted build is not forced to
+    /// re-enter their password. Leaves the vault **locked**; call
+    /// ``openWithSessionKey(_:)`` afterwards.
+    public func migrateWithSessionKey(_ key: Data) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            Task.detached { [vault] in
+                do {
+                    try vault.migrateWithSessionKey(key: Array(key))
                     continuation.resume()
                 } catch let error as LdgrError {
                     continuation.resume(throwing: LdgrClientError(from: error))

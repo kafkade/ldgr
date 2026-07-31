@@ -118,6 +118,15 @@ interface LdgrVault {
     [Throws=LdgrError]
     void open_with_session_key(sequence<u8> key);
 
+    [Throws=LdgrError]
+    boolean needs_migration();
+
+    [Throws=LdgrError]
+    void migrate(string password);
+
+    [Throws=LdgrError]
+    void migrate_with_session_key(sequence<u8> key);
+
     boolean is_unlocked();
 
     [Throws=LdgrError]

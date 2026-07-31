@@ -20,6 +20,15 @@ pub struct User {
     /// `None` for legacy single-secret accounts. Returned at `login/init` so a
     /// new device can reproduce `x`.
     pub account_id: Option<String>,
+    /// Account-scoped Argon2id salt for deriving `MK_auth` on a new device
+    /// (#296). `None` for single-secret accounts. Returned at `login/init`.
+    pub account_kdf_salt: Option<Vec<u8>>,
+    /// Account Argon2id memory cost (KiB). `None` for single-secret accounts.
+    pub account_kdf_mem_kib: Option<i64>,
+    /// Account Argon2id iterations. `None` for single-secret accounts.
+    pub account_kdf_iters: Option<i64>,
+    /// Account Argon2id parallelism. `None` for single-secret accounts.
+    pub account_kdf_parallelism: Option<i64>,
 }
 
 /// Attributes set when creating an account, beyond the SRP `(salt, verifier)`.
@@ -36,6 +45,15 @@ pub struct NewUser<'a> {
     /// Client-generated account id for 2SKD accounts (ADR-008); `None` for
     /// single-secret.
     pub account_id: Option<&'a str>,
+    /// Account-scoped Argon2id salt for 2SKD accounts (#296); `None` for
+    /// single-secret.
+    pub account_kdf_salt: Option<&'a [u8]>,
+    /// Account Argon2id memory cost (KiB) for 2SKD accounts; `None` otherwise.
+    pub account_kdf_mem_kib: Option<i64>,
+    /// Account Argon2id iterations for 2SKD accounts; `None` otherwise.
+    pub account_kdf_iters: Option<i64>,
+    /// Account Argon2id parallelism for 2SKD accounts; `None` otherwise.
+    pub account_kdf_parallelism: Option<i64>,
 }
 
 /// A redeemed invite's metadata (role granted, optional bound email, issuer).
@@ -102,6 +120,15 @@ pub struct RelayOffer {
     pub expires_at: String,
 }
 
+/// Outcome of the atomic first-admin election (`try_bootstrap_first_admin`).
+pub enum BootstrapElection {
+    /// The users table was empty, so this registration was inserted as `admin`.
+    ElectedAdmin,
+    /// A user already existed; nothing was inserted. The caller must fall back
+    /// to the normal, policy-governed registration path.
+    NotFirst,
+}
+
 // ── Database ──────────────────────────────────────────────────────────────────
 
 /// Server-side `SQLite` storage. All operations run in `spawn_blocking`
@@ -154,6 +181,10 @@ impl ServerDb {
             ),
             ("secret_key_version", "secret_key_version INTEGER"),
             ("account_id", "account_id TEXT"),
+            ("account_kdf_salt", "account_kdf_salt BLOB"),
+            ("account_kdf_mem_kib", "account_kdf_mem_kib INTEGER"),
+            ("account_kdf_iters", "account_kdf_iters INTEGER"),
+            ("account_kdf_parallelism", "account_kdf_parallelism INTEGER"),
         ];
 
         for (name, ddl) in additions {
@@ -167,6 +198,11 @@ impl ServerDb {
         // schema again is enough to add them to a legacy DB.
         conn.execute_batch(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email);
+             -- Tenant-scoped vault lookups (ADR-011). Additive and safe on a
+             -- pre-ADR-011 database: `vaults.id` was already a global primary
+             -- key there, so (user_id, id) is trivially unique and no existing
+             -- row can violate it.
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_vaults_user_id ON vaults(user_id, id);
              CREATE TABLE IF NOT EXISTS settings (
                  key   TEXT PRIMARY KEY,
                  value TEXT NOT NULL
@@ -202,6 +238,31 @@ impl ServerDb {
 
     // ── Users ─────────────────────────────────────────────────────────────────
 
+    /// Insert a single `users` row on an already-held connection (or an open
+    /// transaction, via `Deref`). Shared by [`create_user`](Self::create_user)
+    /// and [`try_bootstrap_first_admin`](Self::try_bootstrap_first_admin) so the
+    /// column list can never drift between the two insert paths. A unique-index
+    /// violation (duplicate username/email) is mapped to [`ServerError::Conflict`].
+    fn insert_user_row(conn: &Connection, new: &NewUser<'_>) -> Result<(), ServerError> {
+        conn.execute(
+            "INSERT INTO users \
+             (id, username, email, salt, verifier, created_at, role, status, auth_scheme, invited_by, updated_at, account_id, \
+              account_kdf_salt, account_kdf_mem_kib, account_kdf_iters, account_kdf_parallelism) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'active', ?8, ?9, ?6, ?10, ?11, ?12, ?13, ?14)",
+            params![new.id, new.username, new.email, new.salt, new.verifier, new.created_at, new.role,
+                    new.auth_scheme, new.invited_by, new.account_id, new.account_kdf_salt,
+                    new.account_kdf_mem_kib, new.account_kdf_iters, new.account_kdf_parallelism],
+        ).map_err(|e| match e {
+            rusqlite::Error::SqliteFailure(err, _)
+                if err.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                ServerError::Conflict("username or email already exists".into())
+            }
+            other => ServerError::from(other),
+        })?;
+        Ok(())
+    }
+
     pub async fn create_user(&self, new: &NewUser<'_>) -> Result<(), ServerError> {
         let conn = self.conn.clone();
         let id = new.id.to_string();
@@ -214,24 +275,105 @@ impl ServerDb {
         let invited_by = new.invited_by.map(str::to_string);
         let created_at = new.created_at.to_string();
         let account_id = new.account_id.map(str::to_string);
+        let account_kdf_salt = new.account_kdf_salt.map(<[u8]>::to_vec);
+        let account_kdf_mem_kib = new.account_kdf_mem_kib;
+        let account_kdf_iters = new.account_kdf_iters;
+        let account_kdf_parallelism = new.account_kdf_parallelism;
         tokio::task::spawn_blocking(move || {
             let conn = conn
                 .lock()
                 .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
-            conn.execute(
-                "INSERT INTO users \
-                 (id, username, email, salt, verifier, created_at, role, status, auth_scheme, invited_by, updated_at, account_id) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'active', ?8, ?9, ?6, ?10)",
-                params![id, username, email, salt, verifier, created_at, role, auth_scheme, invited_by, account_id],
-            ).map_err(|e| match e {
-                rusqlite::Error::SqliteFailure(err, _)
-                    if err.code == rusqlite::ErrorCode::ConstraintViolation =>
-                {
-                    ServerError::Conflict("username or email already exists".into())
-                }
-                other => ServerError::from(other),
-            })?;
-            Ok(())
+            Self::insert_user_row(
+                &conn,
+                &NewUser {
+                    id: &id,
+                    username: &username,
+                    email: email.as_deref(),
+                    salt: &salt,
+                    verifier: &verifier,
+                    role: &role,
+                    auth_scheme: &auth_scheme,
+                    invited_by: invited_by.as_deref(),
+                    created_at: &created_at,
+                    account_id: account_id.as_deref(),
+                    account_kdf_salt: account_kdf_salt.as_deref(),
+                    account_kdf_mem_kib,
+                    account_kdf_iters,
+                    account_kdf_parallelism,
+                },
+            )
+        })
+        .await?
+    }
+
+    /// Atomically elect the first-ever account as `admin` (first-run bootstrap
+    /// fallback, used only when `LDGR_ADMIN_EMAIL` is unset — ADR-008 Decision 5).
+    ///
+    /// In a single `BEGIN IMMEDIATE` write transaction on the serialized
+    /// connection: if `users` is empty, insert `new` (expected `role = "admin"`)
+    /// and commit, returning [`BootstrapElection::ElectedAdmin`]; otherwise insert
+    /// nothing, roll back, and return [`BootstrapElection::NotFirst`] so the
+    /// caller runs the normal, policy-governed registration path.
+    ///
+    /// This is the race-free replacement for the old `count_users() == 0`
+    /// check-then-insert: the count and the insert share one transaction, and the
+    /// single `Mutex<Connection>` (plus `BEGIN IMMEDIATE` + WAL `busy_timeout`)
+    /// serialize writers, so **at most one** admin is ever elected even under
+    /// concurrent registration.
+    pub async fn try_bootstrap_first_admin(
+        &self,
+        new: &NewUser<'_>,
+    ) -> Result<BootstrapElection, ServerError> {
+        let conn = self.conn.clone();
+        let id = new.id.to_string();
+        let username = new.username.to_string();
+        let email = new.email.map(str::to_string);
+        let salt = new.salt.to_vec();
+        let verifier = new.verifier.to_vec();
+        let role = new.role.to_string();
+        let auth_scheme = new.auth_scheme.to_string();
+        let created_at = new.created_at.to_string();
+        let account_id = new.account_id.map(str::to_string);
+        let account_kdf_salt = new.account_kdf_salt.map(<[u8]>::to_vec);
+        let account_kdf_mem_kib = new.account_kdf_mem_kib;
+        let account_kdf_iters = new.account_kdf_iters;
+        let account_kdf_parallelism = new.account_kdf_parallelism;
+        tokio::task::spawn_blocking(move || {
+            let mut conn = conn
+                .lock()
+                .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
+            let tx = conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(ServerError::from)?;
+
+            let count: i64 = tx.query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))?;
+            if count != 0 {
+                // A user already exists; leave the table untouched. Dropping the
+                // transaction rolls it back.
+                return Ok(BootstrapElection::NotFirst);
+            }
+
+            Self::insert_user_row(
+                &tx,
+                &NewUser {
+                    id: &id,
+                    username: &username,
+                    email: email.as_deref(),
+                    salt: &salt,
+                    verifier: &verifier,
+                    role: &role,
+                    auth_scheme: &auth_scheme,
+                    invited_by: None,
+                    created_at: &created_at,
+                    account_id: account_id.as_deref(),
+                    account_kdf_salt: account_kdf_salt.as_deref(),
+                    account_kdf_mem_kib,
+                    account_kdf_iters,
+                    account_kdf_parallelism,
+                },
+            )?;
+            tx.commit().map_err(ServerError::from)?;
+            Ok(BootstrapElection::ElectedAdmin)
         })
         .await?
     }
@@ -296,7 +438,9 @@ impl ServerDb {
                 .lock()
                 .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
             let mut stmt = conn.prepare(
-                "SELECT id, username, salt, verifier, role, status, account_id FROM users WHERE username = ?1",
+                "SELECT id, username, salt, verifier, role, status, account_id, \
+                 account_kdf_salt, account_kdf_mem_kib, account_kdf_iters, account_kdf_parallelism \
+                 FROM users WHERE username = ?1",
             )?;
             let user = stmt
                 .query_row(params![username], |row| {
@@ -308,6 +452,10 @@ impl ServerDb {
                         role: row.get(4)?,
                         status: row.get(5)?,
                         account_id: row.get(6)?,
+                        account_kdf_salt: row.get(7)?,
+                        account_kdf_mem_kib: row.get(8)?,
+                        account_kdf_iters: row.get(9)?,
+                        account_kdf_parallelism: row.get(10)?,
                     })
                 })
                 .optional()?;
@@ -724,29 +872,105 @@ impl ServerDb {
 
     // ── Vaults ────────────────────────────────────────────────────────────────
 
-    pub async fn create_vault(&self, id: &str, user_id: &str) -> Result<String, ServerError> {
+    /// Claim a vault identifier for `user_id`, returning the identifier now in
+    /// force (ADR-011).
+    ///
+    /// Resolution order, evaluated under a single connection lock so concurrent
+    /// claims cannot race past each other:
+    ///
+    /// 1. the account already owns `requested` — return it unchanged, whatever
+    ///    it looks like, so re-running setup on a configured device is
+    ///    idempotent even for a hand-typed identifier from an older client;
+    /// 2. `requested` is free and well-formed — claim it (this is how a
+    ///    pre-ADR-011 client keeps its path-derived identifier, and therefore
+    ///    its already-uploaded blobs);
+    /// 3. `requested` is owned by a **different** account, is absent, or is not
+    ///    path-safe — mint a fresh random identifier instead.
+    ///
+    /// Step 3 is the anti-squatting rule. Returning a conflict here is what
+    /// allowed the first account to claim a guessable, path-derived identifier
+    /// to permanently lock every other account out of it. It also keeps a
+    /// path-unsafe identifier from ever entering the blob namespace, without
+    /// failing the request.
+    pub async fn claim_vault(
+        &self,
+        requested: Option<&str>,
+        user_id: &str,
+    ) -> Result<Vault, ServerError> {
         let conn = self.conn.clone();
-        let id = id.to_string();
+        let requested = requested.map(String::from);
         let user_id = user_id.to_string();
         let created_at = chrono::Utc::now().to_rfc3339();
-        let ts = created_at.clone();
+
         tokio::task::spawn_blocking(move || {
             let conn = conn
                 .lock()
                 .map_err(|e| ServerError::Internal(format!("lock poisoned: {e}")))?;
-            conn.execute(
-                "INSERT INTO vaults (id, user_id, created_at) VALUES (?1, ?2, ?3)",
-                params![id, user_id, ts],
-            )
-            .map_err(|e| match e {
-                rusqlite::Error::SqliteFailure(err, _)
-                    if err.code == rusqlite::ErrorCode::ConstraintViolation =>
-                {
-                    ServerError::Conflict("vault already exists".into())
+
+            if let Some(id) = requested.as_deref() {
+                let owner: Option<(String, String)> = conn
+                    .query_row(
+                        "SELECT user_id, created_at FROM vaults WHERE id = ?1",
+                        params![id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?;
+
+                match owner {
+                    // Already ours — idempotent.
+                    Some((owner_id, existing_created_at)) if owner_id == user_id => {
+                        return Ok(Vault {
+                            id: id.to_string(),
+                            user_id,
+                            created_at: existing_created_at,
+                        });
+                    }
+                    // Free, and safe to interpolate into a blob path.
+                    None if ldgr_core::sync::is_valid_vault_id(id) => {
+                        // `INSERT OR IGNORE` rather than a plain insert: another
+                        // server process sharing this database file could have
+                        // claimed the identifier between the SELECT and here, and
+                        // that must mint a substitute like any other taken
+                        // identifier, not surface a constraint violation.
+                        let inserted = conn.execute(
+                            "INSERT OR IGNORE INTO vaults (id, user_id, created_at) \
+                             VALUES (?1, ?2, ?3)",
+                            params![id, user_id, created_at],
+                        )?;
+                        if inserted == 1 {
+                            return Ok(Vault {
+                                id: id.to_string(),
+                                user_id,
+                                created_at,
+                            });
+                        }
+                    }
+                    // Taken by another account, or not path-safe — fall through
+                    // and mint a substitute rather than failing the request.
+                    Some(_) | None => {}
                 }
-                other => ServerError::from(other),
-            })?;
-            Ok(created_at)
+            }
+
+            // Mint a random identifier. Retry on the (astronomically unlikely)
+            // collision rather than surfacing a constraint violation.
+            for _ in 0..8 {
+                let id = ldgr_core::sync::generate_vault_id();
+                let inserted = conn.execute(
+                    "INSERT OR IGNORE INTO vaults (id, user_id, created_at) VALUES (?1, ?2, ?3)",
+                    params![id, user_id, created_at],
+                )?;
+                if inserted == 1 {
+                    return Ok(Vault {
+                        id,
+                        user_id,
+                        created_at,
+                    });
+                }
+            }
+
+            Err(ServerError::Internal(
+                "failed to mint a unique vault identifier".into(),
+            ))
         })
         .await?
     }

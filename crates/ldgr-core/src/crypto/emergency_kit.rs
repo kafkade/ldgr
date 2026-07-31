@@ -24,13 +24,17 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::account_kdf::AccountKdf;
 use super::errors::CryptoError;
 use super::keys::RecoveryKey;
 use super::recovery::{decode_recovery_key, encode_recovery_key};
 use super::secret_key::SecretKey;
 
 /// Schema version for the kit + QR payload. Bump for breaking changes.
-const KIT_VERSION: u32 = 1;
+///
+/// v2 (#296) adds the account-scoped Argon2 [`AccountKdf`] needed to derive
+/// `MK_auth` on a new device without the original vault header.
+const KIT_VERSION: u32 = 2;
 
 /// An account Emergency Kit: render-agnostic onboarding data for new-device
 /// server sign-in.
@@ -50,6 +54,11 @@ pub struct EmergencyKit {
     account_hint: String,
     /// Account Secret Key in canonical `A1-…` text form. Secret.
     secret_key: String,
+    /// Account-scoped Argon2id salt + params for deriving `MK_auth` on a new
+    /// device (ADR-008 / #296). Not secret — no more sensitive than the SRP
+    /// salt the server returns pre-auth — but carried here so onboarding works
+    /// offline and as a cross-check against a substituted-salt server.
+    account_kdf: AccountKdf,
     /// Optional vault recovery key text. Absent by default (ADR-008). Secret.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     recovery_key: Option<String>,
@@ -57,7 +66,8 @@ pub struct EmergencyKit {
 
 impl EmergencyKit {
     /// Build a kit from account-creation outputs: the sign-in `address`, the
-    /// account `email`/username, and the account `secret_key`. The vault
+    /// account `email`/username, the account `secret_key`, and the account-scoped
+    /// `account_kdf` (used to derive `MK_auth` on a new device). The vault
     /// recovery key is **not** included (use [`with_recovery_key`] to opt in).
     ///
     /// [`with_recovery_key`]: EmergencyKit::with_recovery_key
@@ -66,6 +76,7 @@ impl EmergencyKit {
         address: impl Into<String>,
         email: impl Into<String>,
         secret_key: &SecretKey,
+        account_kdf: &AccountKdf,
     ) -> Self {
         Self {
             version: KIT_VERSION,
@@ -73,6 +84,7 @@ impl EmergencyKit {
             email: email.into(),
             account_hint: secret_key.account_hint().to_string(),
             secret_key: secret_key.encode(),
+            account_kdf: account_kdf.clone(),
             recovery_key: None,
         }
     }
@@ -117,6 +129,13 @@ impl EmergencyKit {
     #[must_use]
     pub fn secret_key_text(&self) -> &str {
         &self.secret_key
+    }
+
+    /// The account-scoped Argon2id KDF (salt + params) for deriving `MK_auth`
+    /// on a new device (#296). Non-secret.
+    #[must_use]
+    pub fn account_kdf(&self) -> &AccountKdf {
+        &self.account_kdf
     }
 
     /// The vault recovery key text, if the kit bundles one. Secret material.
@@ -190,6 +209,7 @@ impl std::fmt::Debug for EmergencyKit {
             .field("email", &self.email)
             .field("account_hint", &self.account_hint)
             .field("secret_key", &"[REDACTED]")
+            .field("account_kdf", &self.account_kdf)
             .field(
                 "recovery_key",
                 &self.recovery_key.as_ref().map(|_| "[REDACTED]"),
@@ -201,15 +221,25 @@ impl std::fmt::Debug for EmergencyKit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::Argon2Params;
     use uuid::Uuid;
 
     fn fixed_uuid() -> Uuid {
         Uuid::from_bytes([9u8; 16])
     }
 
+    fn test_kdf() -> AccountKdf {
+        AccountKdf::from_parts(vec![3u8; 16], Argon2Params::test())
+    }
+
     fn kit() -> EmergencyKit {
         let sk = SecretKey::generate(fixed_uuid());
-        EmergencyKit::new("https://ledger.example.org", "user@example.org", &sk)
+        EmergencyKit::new(
+            "https://ledger.example.org",
+            "user@example.org",
+            &sk,
+            &test_kdf(),
+        )
     }
 
     #[test]
@@ -218,6 +248,7 @@ mod tests {
         assert_eq!(k.address(), "https://ledger.example.org");
         assert_eq!(k.email(), "user@example.org");
         assert!(k.secret_key_text().starts_with("A1-"));
+        assert_eq!(k.account_kdf(), &test_kdf());
         assert!(k.recovery_key_text().is_none());
         assert!(k.recovery_key().unwrap().is_none());
     }
@@ -225,7 +256,7 @@ mod tests {
     #[test]
     fn account_hint_matches_secret_key() {
         let sk = SecretKey::generate(fixed_uuid());
-        let k = EmergencyKit::new("a", "b", &sk);
+        let k = EmergencyKit::new("a", "b", &sk, &test_kdf());
         assert_eq!(k.account_hint(), sk.account_hint());
     }
 
@@ -237,6 +268,7 @@ mod tests {
         assert_eq!(parsed.address(), k.address());
         assert_eq!(parsed.email(), k.email());
         assert_eq!(parsed.secret_key_text(), k.secret_key_text());
+        assert_eq!(parsed.account_kdf(), k.account_kdf());
         assert_eq!(
             parsed.secret_key().unwrap().encode(),
             k.secret_key().unwrap().encode()
@@ -263,7 +295,7 @@ mod tests {
     #[test]
     fn parse_helpers_return_typed_values() {
         let sk = SecretKey::generate(fixed_uuid());
-        let k = EmergencyKit::new("a", "b", &sk);
+        let k = EmergencyKit::new("a", "b", &sk, &test_kdf());
         assert_eq!(k.secret_key().unwrap().body(), sk.body());
     }
 
@@ -272,7 +304,7 @@ mod tests {
         let payload = kit()
             .to_qr_payload()
             .unwrap()
-            .replace("\"version\":1", "\"version\":99");
+            .replace("\"version\":2", "\"version\":99");
         assert!(EmergencyKit::from_qr_payload(&payload).is_err());
     }
 
@@ -310,7 +342,7 @@ mod tests {
                 with_rk in any::<bool>(),
             ) {
                 let sk = SecretKey::generate(Uuid::from_bytes(bytes));
-                let mut k = EmergencyKit::new("https://h", "id", &sk);
+                let mut k = EmergencyKit::new("https://h", "id", &sk, &test_kdf());
                 if with_rk {
                     k = k.with_recovery_key(&RecoveryKey::generate());
                 }

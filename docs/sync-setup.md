@@ -27,8 +27,8 @@ All encryption happens on your devices.
                        └──────────────┘
 ```
 
-Both devices use the **same account** and the **same vault ID**; the server only
-relays encrypted batches between them.
+Both devices are signed in to the **same account** and connected to the **same vault**;
+the server only relays encrypted batches between them.
 
 ---
 
@@ -180,8 +180,20 @@ How you authenticate depends on what your server advertises at
 Either way your password never leaves the device (SRP-6a): the server stores only a
 verifier, never the password itself (see [Threat-model recap](#threat-model-recap)).
 
-Pick a **vault ID** and use the **same vault ID and the same account** on every device
-you want to keep in sync.
+### Vault identifiers
+
+You never choose or type a vault identifier. Each vault is issued a random, unguessable
+one the first time it connects to a server, and it is stored inside the vault from then
+on — so it survives moving or renaming your vault directory, and two accounts can never
+collide on a shared server (see [ADR-011](adr/011-tenant-scoped-vault-identifiers.md)).
+
+A new device connects to your existing vault in one of two ways: sign in to the same
+account and it adopts the vault already registered there (picking one if you have
+several), or pair it with `ldgr devices add` / `join`, which transfers the vault key and
+the vault identifier together.
+
+Upgrading from v1.2.0 or earlier keeps your existing identifier, so everything you have
+already synced stays reachable — there is nothing to do.
 
 > **Save your Emergency Kit.** The Secret Key is shown **once**, at sign-up. If you
 > lose it you can still use every device already signed in, but you won't be able to
@@ -194,14 +206,18 @@ In the vault's **Settings → Sync (ldgr-server)** panel:
 1. Enter the **Server URL** (e.g. `https://sync.example.com`) and click **Connect**.
    The panel shows the server name, protocol version, and whether it uses two-secret
    auth.
-2. Fill in **Vault ID**, **Username**, and **Password**.
+2. Fill in **Username** and **Password**.
 3. On your first device, click **Create Account**. On a two-secret server the app
    generates your Secret Key and shows the **Emergency Kit** — save it (copy /
    download / print) before continuing.
 4. On later devices, click **Sign In**. On a new device the app prompts for your
    **Secret Key** (paste it from the Kit); after that it's remembered for that device.
+5. Click **Connect this browser to a vault**. If your account already has one vault the
+   browser adopts it; if it has several you pick which one; if it has none the server
+   issues a new one.
 
-The panel shows **🟢 Authenticated** with a short device ID when you're signed in.
+The panel shows **🟢 Authenticated** with a short device ID when you're signed in, and
+the vault identifier once one is in force.
 
 ### iOS / iPadOS app
 
@@ -209,7 +225,7 @@ In **Sync** settings:
 
 1. Enter the **Server URL** and tap **Connect** to validate it and read the server's
    capabilities.
-2. Enter **Username**, **Password**, and **Vault ID**.
+2. Enter **Username** and **Password**.
 3. Tap **Create Account** on your first device — the app generates your Secret Key and
    presents the **Emergency Kit** (share sheet / screenshot / QR) to save once. On a
    new device tap **Sign In on This Device** and enter the **Secret Key** from your
@@ -232,8 +248,9 @@ server name, protocol version, and auth mode. Then:
 
 - **Two-secret server, first device:** the CLI generates your Account Secret Key,
   registers, and renders your **Emergency Kit** — boxed text **and** a scannable
-  terminal QR code, with an option to export it to a `0600` file. The Secret Key is
-  stored in `sync-credentials.json` (`0600`); your master password is never stored.
+  terminal QR code, with an option to export it to a `0600` file. The Secret Key and
+  the account-scoped key-derivation salt/params are stored in `sync-credentials.json`
+  (`0600`); your master password is never stored.
 - **Two-secret server, new device:** paste (or point the CLI at a saved Kit file
   containing) your **Secret Key**; the CLI derives the login and signs in.
 - **Single-secret server:** enter **Username** and **Password**; if the account
@@ -245,7 +262,7 @@ On success it saves a non-secret `sync-config.json` and the SRP session token in
 ```sh
 ldgr sync push      # upload your local encrypted batches
 ldgr sync pull      # download other devices' encrypted batches
-ldgr sync status    # show provider, device ID, last sync, pending counts
+ldgr sync status    # show provider, vault ID, device ID, last sync, pending counts
 ```
 
 To pair another device without re-entering your account credentials by hand, use
@@ -269,9 +286,10 @@ ldgr devices remove <id>     # deregister a device
 
 ## Step 3 — Sync a transaction between two devices
 
-This walkthrough uses two clients signed in to the **same account** with the **same
-vault ID** (two browsers, two devices, or one of each). The Web and iOS/macOS apps
-both apply pulled changes; the CLI does not yet (see the note above).
+This walkthrough uses two clients signed in to the **same account** and connected to the
+**same vault** (two browsers, two devices, or one of each). You never type a vault
+identifier — each client adopts one at sign-in, or receives it while pairing. The Web
+and iOS/macOS apps both apply pulled changes; the CLI does not yet (see the note above).
 
 1. **Device A** — add a transaction in the app as you normally would.
 2. **Device A** — open Sync and click **Sync now** (Web) or **Sync Now** (iOS/macOS).
@@ -390,7 +408,7 @@ single-secret (password-only) SRP-6a automatically.
 | `registration is invite-only` (403) on register | Default policy. Set `LDGR_REGISTRATION=open`, or register your first/admin account first, or issue an invite token via the admin API. |
 | Other devices can't reach the server | Running directly binds loopback (`127.0.0.1`). Set `LDGR_BIND_ADDR=0.0.0.0:8080` or front it with a reverse proxy. |
 | TLS / certificate errors | The server is plain HTTP. Terminate HTTPS at a reverse proxy (Caddy/nginx/Traefik) and point clients at the `https://` proxy URL. |
-| A transaction won't appear on the other device | Confirm both devices use the **same account** and the **same vault ID**, and that you ran **Sync now** on both. Remember the CLI does not apply pulled batches yet — use the Web or iOS/macOS app. |
+| A transaction won't appear on the other device | Confirm both devices are signed in to the **same account** and report the **same vault ID** (`ldgr sync status`, or the Sync panel in the apps), and that you ran **Sync now** on both. If they differ, the second device created its own vault — pair it with `ldgr devices join` instead. Remember the CLI does not apply pulled batches yet — use the Web or iOS/macOS app. |
 | Data lost after restarting the container | Persist the database with a volume: `-v ldgr-data:/data`. |
 | Login token stopped working after ~30 days | Sessions expire per `LDGR_SESSION_TTL_HOURS` (default 720 h). Sign in again. |
 

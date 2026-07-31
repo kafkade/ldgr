@@ -40,11 +40,14 @@ rust_decimal = { version = "1", features = ["serde-with-str"] }
 #   - ldgr-cli enables `bundled-sqlcipher-vendored-openssl` (SQLCipher, encrypts
 #     `vault.db` at rest for issue #295); vendored OpenSSL builds from source for
 #     portable, reproducible client builds.
-#   - ldgr-core / ldgr-ffi / ldgr-server enable plain `bundled`. Issue #295 is
-#     scoped to the CLI + core; extending at-rest encryption to the iOS/FFI path
-#     (keyed `PRAGMA key` open, which plain SQLite treats as a no-op) and web/WASM
-#     is tracked separately in issue #315, so the FFI crate stays on plain SQLite
-#     here and avoids pulling vendored OpenSSL into the Apple cross-compile.
+#   - ldgr-ffi enables SQLCipher per-target (issue #315 extends at-rest encryption
+#     to the iOS/FFI working store): `bundled-sqlcipher-vendored-openssl` on every
+#     Apple target except watchOS, and plain `bundled` on watchOS (openssl-src
+#     cannot configure OpenSSL for aarch64-apple-watchos, and the watch app never
+#     opens a vault DB). See crates/ldgr-ffi/Cargo.toml.
+#   - ldgr-core / ldgr-server enable plain `bundled`. The server's encrypted-blob
+#     store never keys the working SQLite, and core stays SQLCipher-free so it
+#     keeps compiling to WASM without vendored OpenSSL.
 # NOTE: Cargo unifies features across a full `cargo build --workspace`, so a
 # combined/dev build links SQLCipher into the shared rusqlite; the SHIPPED server
 # is always built isolated with `cargo build -p ldgr-server` (Dockerfile /

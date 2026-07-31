@@ -28,6 +28,7 @@ pub const MAX_PROTOCOL_VERSION: u32 = PROTOCOL_VERSION;
 pub mod api;
 pub mod auth;
 pub mod config;
+pub mod cors;
 pub mod error;
 pub mod settings;
 pub mod state;

@@ -15,7 +15,7 @@
 
 mod common;
 
-use common::{auth_key, client};
+use common::{account_kdf, client};
 use ldgr_core::crypto::SecretKey;
 use ldgr_core::sync::server::{ListBatchesQuery, ServerSyncError};
 
@@ -34,7 +34,7 @@ async fn single_secret_full_round_trip() {
     assert!(c.is_authenticated());
 
     let vault = "vault-1";
-    c.create_vault(vault).await.expect("create vault");
+    c.create_vault(Some(vault)).await.expect("create vault");
 
     // Upload an encrypted batch and read it back byte-for-byte.
     let device = "device-a";
@@ -94,20 +94,22 @@ async fn two_secret_full_round_trip() {
     let mut c = client();
     let username = "carol";
     let account_id = uuid::Uuid::from_bytes([0x42; 16]);
-    let mk_auth = auth_key(b"correct horse battery staple");
+    let password = b"correct horse battery staple";
+    let kdf = account_kdf();
     let secret_key = SecretKey::generate(account_id);
 
-    c.register_2skd(username, &account_id, &mk_auth, &secret_key)
+    c.register_2skd(username, &account_id, password, &secret_key, &kdf)
         .await
         .expect("register 2skd");
-    c.login_2skd(username, &mk_auth, &secret_key)
+    // Log in with no local KDF — the server returns it at `login/init` (#296).
+    c.login_2skd(username, password, &secret_key, None)
         .await
         .expect("login 2skd");
     assert!(c.is_authenticated());
 
     // An authenticated call must succeed and a blob must round-trip.
     let vault = "vault-2skd";
-    c.create_vault(vault).await.expect("create vault");
+    c.create_vault(Some(vault)).await.expect("create vault");
 
     let device = "device-2skd";
     let batch = "batch-2skd-1";
@@ -123,15 +125,16 @@ async fn login_2skd_with_wrong_secret_key_is_rejected() {
     let mut c = client();
     let username = "dave";
     let account_id = uuid::Uuid::from_bytes([0x77; 16]);
-    let mk_auth = auth_key(b"correct horse battery staple");
+    let password = b"correct horse battery staple";
+    let kdf = account_kdf();
     let registered = SecretKey::generate(account_id);
     let attacker = SecretKey::generate(account_id); // correct password, wrong Secret Key
 
-    c.register_2skd(username, &account_id, &mk_auth, &registered)
+    c.register_2skd(username, &account_id, password, &registered, &kdf)
         .await
         .expect("register 2skd");
 
-    let result = c.login_2skd(username, &mk_auth, &attacker).await;
+    let result = c.login_2skd(username, password, &attacker, None).await;
     assert!(
         result.is_err(),
         "login with the wrong Secret Key must fail, got {result:?}"
@@ -145,6 +148,6 @@ async fn login_2skd_with_wrong_secret_key_is_rejected() {
 async fn unauthenticated_call_is_rejected() {
     let c = client();
     // No register/login: the client guards locally before sending.
-    let result = c.create_vault("nope").await;
+    let result = c.create_vault(Some("nope")).await;
     assert_eq!(result.unwrap_err(), ServerSyncError::NotAuthenticated);
 }

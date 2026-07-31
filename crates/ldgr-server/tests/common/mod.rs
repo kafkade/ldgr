@@ -39,6 +39,7 @@ pub fn open_config() -> Config {
         srp_handshake_ttl_secs: 120,
         registration_policy: RegistrationPolicy::Open,
         admin_email: None,
+        allowed_origins: Vec::new(),
         default_user_quota_bytes: 1_073_741_824,
         server_name: "e2e-server".into(),
     }
@@ -117,9 +118,22 @@ pub fn client() -> ServerSyncClient<RouterSender> {
     ServerSyncClient::new(RouterSender::new())
 }
 
+/// A [`ServerSyncClient`] sharing an **already booted** server with another
+/// client, so two accounts can be exercised against the same database. Used by
+/// the tenant-isolation suite.
+pub fn client_on(sender: &RouterSender) -> ServerSyncClient<RouterSender> {
+    ServerSyncClient::new(sender.clone())
+}
+
 /// Derive the master auth key (`MK_auth`) from a password, as a client would.
 pub fn auth_key(password: &[u8]) -> AuthKey {
     let mk = derive_master_key(password, b"argon-salt-16byte", &Argon2Params::test())
         .expect("derive master key");
     derive_auth_key(&mk).expect("derive auth key")
+}
+
+/// Fixed account-scoped Argon2 KDF (salt + params) for 2SKD tests, matching the
+/// salt/params [`auth_key`] uses so registration and login agree (#296).
+pub fn account_kdf() -> ldgr_core::crypto::AccountKdf {
+    ldgr_core::crypto::AccountKdf::from_parts(b"argon-salt-16byte".to_vec(), Argon2Params::test())
 }

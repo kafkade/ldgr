@@ -56,6 +56,7 @@ async fn spawn_server() -> String {
         srp_handshake_ttl_secs: 120,
         registration_policy: RegistrationPolicy::Open,
         admin_email: None,
+        allowed_origins: Vec::new(),
         default_user_quota_bytes: 1024 * 1024 * 1024,
         server_name: "ldgr-test-server".into(),
     };
@@ -93,7 +94,10 @@ async fn provision(base_url: &str, username: &str, vault_id: &str) -> String {
         .login(username, b"correct horse battery staple")
         .await
         .expect("login");
-    client.create_vault(vault_id).await.expect("create vault");
+    client
+        .create_vault(Some(vault_id))
+        .await
+        .expect("create vault");
     client.token().expect("session token").to_string()
 }
 

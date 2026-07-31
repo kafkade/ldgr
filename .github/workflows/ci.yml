@@ -253,7 +253,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'npm'
@@ -269,6 +269,16 @@ jobs:
       - name: Run tests
         working-directory: apps/web
         run: npm test
+      - name: Add wasm target
+        run: rustup target add wasm32-unknown-unknown
+      - name: Install wasm-pack
+        run: curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
+      - name: Build WASM bundle
+        working-directory: apps/web
+        run: npm run build:wasm
+      - name: Build static export
+        working-directory: apps/web
+        run: npm run build
 
   # ── Infra (Cloudflare Worker) ─────────────────────────────────────────────────
 
@@ -279,7 +289,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'npm'

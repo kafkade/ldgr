@@ -37,7 +37,9 @@ import {
   listOpenConflicts,
   resolveConflict,
   makeFetchCallback,
+  NEW_VAULT,
   type ServerConfig,
+  type RemoteVault,
   type SyncOutcome,
   type ConflictRow,
 } from '@/lib/sync';
@@ -103,7 +105,13 @@ interface VaultContextValue {
     secretKey?: string | null,
   ) => Promise<void>;
   logoutServer: () => Promise<void>;
-  createRemoteVault: () => Promise<void>;
+  /**
+   * Claim or adopt this browser's server vault, returning the identifier the
+   * server put in force. Pass an id to adopt a specific vault of the account's.
+   */
+  createRemoteVault: (adoptVaultId?: string) => Promise<string>;
+  /** The vaults this account owns, newest first. */
+  listRemoteVaults: () => Promise<RemoteVault[]>;
   sync: () => Promise<SyncOutcome>;
   resolveSyncConflict: (id: string, keepRemote: boolean) => Promise<void>;
 
@@ -425,7 +433,6 @@ export function VaultProvider({ children }: { children: ReactNode }) {
       const { emergencyKit } = await signUp2skd(
         db,
         wasm,
-        vault,
         client,
         serverConfig.serverUrl,
         username,
@@ -449,7 +456,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
       if (!vault || !db || !serverConfig)
         throw new Error('Configure the server first');
       const client = buildClient(serverConfig);
-      await signIn2skd(db, vault, client, username, password, secretKey ?? null);
+      await signIn2skd(db, client, username, password, secretKey ?? null);
       clientRef.current = client;
       setServerAuthenticated(client.isAuthenticated());
       setHasSecretKey(true);
@@ -471,17 +478,65 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     await saveVault();
   }, [db, saveVault]);
 
-  const createRemoteVault = useCallback(async () => {
+  /**
+   * Claim this browser's vault on the server (ADR-011).
+   *
+   * A browser that has already synced keeps its identifier. One that has not
+   * adopts the account's existing vault instead of creating a second, empty one
+   * — otherwise it would never converge with the user's other devices. With
+   * several vaults on the account (#296) the caller must pick one; we take the
+   * most recently created as the default and surface the rest for selection.
+   *
+   * The identifier the server returns is authoritative: when the requested one
+   * is already owned by another account the server mints a substitute rather
+   * than failing, so no account can lock another out.
+   */
+  /** The vaults this account owns, newest first. */
+  const listRemoteVaults = useCallback(async (): Promise<RemoteVault[]> => {
     if (!db || !serverConfig) throw new Error('Configure the server first');
     const client =
       clientRef.current ?? buildClient(serverConfig, loadToken(db));
     clientRef.current = client;
-    await client.createVault(serverConfig.vaultId);
+    const parsed = JSON.parse(await client.listVaults()) as RemoteVault[];
+    return parsed.sort((a, b) => b.created_at.localeCompare(a.created_at));
   }, [db, serverConfig, buildClient]);
+
+  const createRemoteVault = useCallback(
+    async (adoptVaultId?: string): Promise<string> => {
+      if (!db || !serverConfig) throw new Error('Configure the server first');
+      const client =
+        clientRef.current ?? buildClient(serverConfig, loadToken(db));
+      clientRef.current = client;
+
+      let requested = adoptVaultId === NEW_VAULT ? '' : (adoptVaultId ?? serverConfig.vaultId);
+      if (!requested && adoptVaultId !== NEW_VAULT) {
+        const owned = await listRemoteVaults();
+        if (owned.length === 1) {
+          requested = owned[0].id;
+        } else if (owned.length > 1) {
+          // Minting here would strand this browser in a fresh, empty vault with
+          // no UI to switch away from it. Make the caller choose explicitly.
+          throw new Error(
+            'This account has several vaults — choose which one to sync here.',
+          );
+        }
+      }
+
+      const granted = await client.createVault(requested || undefined);
+      const updated = { ...serverConfig, vaultId: granted };
+      saveServerConfig(db, updated);
+      setServerConfig(updated);
+      await saveVault();
+      return granted;
+    },
+    [db, serverConfig, buildClient, listRemoteVaults, saveVault],
+  );
 
   const sync = useCallback(async (): Promise<SyncOutcome> => {
     if (!wasm || !vault || !db || !serverConfig)
       throw new Error('Sync is not configured');
+    if (!serverConfig.vaultId)
+      throw new Error('No vault claimed yet — connect this browser to a vault first');
     const client =
       clientRef.current ?? buildClient(serverConfig, loadToken(db));
     clientRef.current = client;
@@ -605,6 +660,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
         signInServer,
         logoutServer,
         createRemoteVault,
+        listRemoteVaults,
         sync,
         resolveSyncConflict,
         getBalanceReport,
