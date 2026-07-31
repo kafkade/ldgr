@@ -166,6 +166,27 @@ Compose recreates the `server` container with the new image; the `ldgr-data`
 volume (your database) is preserved. Back up before upgrading (below), and pin
 `LDGR_VERSION` so upgrades are deliberate rather than implicit.
 
+### Upgrading past v1.2.0: vault identifiers
+
+Schema migrations run automatically when the server starts, and this one is purely
+additive — a unique index on `vaults(user_id, id)`. No table is rebuilt and no blob is
+rewritten, so the upgrade is fast regardless of how much data you host, and rolling
+back to the previous image works too (older builds simply ignore the extra index).
+
+What changes operationally: vault identifiers are now random, unguessable, and issued
+by the server rather than derived by the client
+(see [ADR-011](adr/011-tenant-scoped-vault-identifiers.md)). Before this release nearly
+every client derived the *same* identifier from its default vault path, so on a shared
+server the first account to register it locked every other account out of that
+identifier permanently — `sync setup` appeared to succeed and every later push or pull
+then failed with a 404. That failure mode is gone: a request for an identifier another
+account already owns is now answered with a freshly minted one instead of a conflict.
+
+Existing vaults keep their identifiers, so your users need to do nothing. Users still
+stuck behind a squatted identifier are unblocked as soon as they update their client —
+it will be issued a working identifier on the next `sync setup`. Because they were
+never able to sync under the squatted identifier, there is no data to migrate.
+
 ## Backup and restore
 
 All server state lives in the named volume `ldgr-data` (the SQLite database at
@@ -450,6 +471,13 @@ For the full rationale see
 | Encrypted vault blobs | No — AES-256-GCM ciphertext, size-bucket padded |
 | `(salt, verifier)` per account | No — the verifier is `g^x mod N`, not your password |
 | Email / username | Identity only |
+| Vault identifiers | Random 128-bit values; they reveal nothing about the vault or where it lives |
+
+**Tenant isolation.** Every vault-scoped endpoint checks that the authenticated
+account owns the vault, and answers `404 Not Found` rather than `403 Forbidden` so the
+identifier namespace cannot be probed for existence. Identifiers carry 128 bits of
+entropy, so one account can neither guess another's nor claim it
+([ADR-011](adr/011-tenant-scoped-vault-identifiers.md)).
 
 **What the server never sees:** your password, your Account Secret Key, your
 encryption keys, or any plaintext financial data. With SRP-6a your password is

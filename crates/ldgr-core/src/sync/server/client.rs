@@ -428,9 +428,22 @@ impl<T: RawHttpSender> ServerSyncClient<T> {
     // ── Vaults ──────────────────────────────────────────────────────────────
 
     /// Create a vault.
-    pub async fn create_vault(&self, vault_id: &str) -> Result<VaultResponse, ServerSyncError> {
+    ///
+    /// Pass `None` to have the server mint a random identifier (ADR-011), or
+    /// `Some(id)` to request a specific one — which an already-synced vault must
+    /// do so its existing blobs stay addressable.
+    ///
+    /// The returned [`VaultResponse::id`] is **authoritative** and may differ
+    /// from `vault_id`: when the requested identifier is already owned by
+    /// another account the server mints a fresh one rather than failing, so no
+    /// account can lock another out of an identifier. Callers must persist the
+    /// identifier they get back.
+    pub async fn create_vault(
+        &self,
+        vault_id: Option<&str>,
+    ) -> Result<VaultResponse, ServerSyncError> {
         let body = CreateVaultRequest {
-            vault_id: vault_id.to_string(),
+            vault_id: vault_id.map(str::to_string),
         };
         self.post_json(&format!("{API_PREFIX}/vaults"), &body, true)
             .await
@@ -971,7 +984,7 @@ mod tests {
     fn authenticated_call_requires_token() {
         let sender = MockSender::new(vec![]);
         let client = ServerSyncClient::new(sender);
-        let err = block_on(client.create_vault("v1")).unwrap_err();
+        let err = block_on(client.create_vault(Some("v1"))).unwrap_err();
         assert_eq!(err, ServerSyncError::NotAuthenticated);
     }
 
@@ -982,7 +995,7 @@ mod tests {
             &serde_json::json!({ "id": "v1", "created_at": "t" }),
         )]);
         let client = ServerSyncClient::with_token(sender, "tok-abc".into());
-        let resp = block_on(client.create_vault("v1")).expect("create");
+        let resp = block_on(client.create_vault(Some("v1"))).expect("create");
         assert_eq!(resp.id, "v1");
 
         let req = client.sender.last_request();

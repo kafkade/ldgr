@@ -67,6 +67,13 @@ CREATE TABLE IF NOT EXISTS vaults (
 
 CREATE INDEX IF NOT EXISTS idx_vaults_user ON vaults(user_id);
 
+-- Vault identifiers are tenant-scoped (ADR-011): a vault is only ever addressed
+-- as (owning account, id), which is what every API lookup joins on. `id` stays
+-- the global primary key so `blobs.path` (`{vault_id}/...`) remains unambiguous
+-- across accounts; identifiers minted since ADR-011 carry 128 bits of entropy,
+-- so the global namespace cannot be enumerated or squatted.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vaults_user_id ON vaults(user_id, id);
+
 CREATE TABLE IF NOT EXISTS blobs (
     path          TEXT PRIMARY KEY,
     vault_id      TEXT NOT NULL REFERENCES vaults(id) ON DELETE CASCADE,

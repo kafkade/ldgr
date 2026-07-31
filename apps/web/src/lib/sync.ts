@@ -62,7 +62,25 @@ const OP_TO_WIRE: Record<string, string> = {
 export interface ServerConfig {
   serverUrl: string;
   username: string;
+  /**
+   * Identifier this vault is known by on the server (ADR-011). Empty until the
+   * account is signed in and a vault has been claimed or adopted — it is never
+   * typed by the user, and never derived from anything guessable.
+   */
   vaultId: string;
+}
+
+/**
+ * Sentinel for `createRemoteVault`: mint a brand-new vault instead of adopting
+ * one, even when the account already owns several. Distinct from `''`, which
+ * means "work out which vault to adopt".
+ */
+export const NEW_VAULT = '\u0000new';
+
+/** A vault the signed-in account owns, as returned by `listVaults`. */
+export interface RemoteVault {
+  id: string;
+  created_at: string;
 }
 
 export interface SyncOutcome {
@@ -688,19 +706,21 @@ export async function runSync(
 
 export function loadServerConfig(db: Database): ServerConfig | null {
   const serverUrl = getState(db, CFG_SERVER_URL);
-  const vaultId = getState(db, CFG_VAULT_ID);
-  if (!serverUrl || !vaultId) return null;
+  if (!serverUrl) return null;
   return {
     serverUrl,
     username: getState(db, CFG_USERNAME) ?? '',
-    vaultId,
+    // Absent until the first successful claim; sync refuses to run without it.
+    vaultId: getState(db, CFG_VAULT_ID) ?? '',
   };
 }
 
 export function saveServerConfig(db: Database, cfg: ServerConfig): void {
   setState(db, CFG_SERVER_URL, cfg.serverUrl);
   setState(db, CFG_USERNAME, cfg.username);
-  setState(db, CFG_VAULT_ID, cfg.vaultId);
+  // Only ever overwrite a known identifier with another known one — a config
+  // save that predates the first claim must not wipe it.
+  if (cfg.vaultId) setState(db, CFG_VAULT_ID, cfg.vaultId);
 }
 
 /**

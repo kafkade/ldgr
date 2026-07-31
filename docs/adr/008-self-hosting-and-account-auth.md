@@ -315,6 +315,11 @@ The change is **additive and backward compatible** at the server schema level.
 
 ## See also
 
+- [ADR-011: Stable, Tenant-Scoped Vault Identifiers](011-tenant-scoped-vault-identifiers.md) —
+  refines the multi-tenant story this ADR opens up. ADR-008 makes an instance
+  multi-account; ADR-011 makes vault identifiers random, server-issued, and
+  scoped to the owning account, so two accounts on one instance cannot collide,
+  enumerate each other, or squat an identifier.
 - [Self-Hosting guide](../self-hosting.md) — the operator's walkthrough that
   applies this ADR: deploy, first-run admin onboarding, registration policy,
   adding users, the two-secret account model + Emergency Kit, and the threat
