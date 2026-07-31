@@ -202,7 +202,7 @@ async fn logged_in_client(vault_id: &str) -> ServerSyncClient<common::RouterSend
     c.login("alice", b"correct horse battery staple")
         .await
         .expect("login");
-    c.create_vault(vault_id).await.expect("create vault");
+    c.create_vault(Some(vault_id)).await.expect("create vault");
     c
 }
 
