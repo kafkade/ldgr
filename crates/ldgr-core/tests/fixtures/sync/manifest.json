@@ -31,7 +31,13 @@
       "name": "register_request_2skd_v1.json",
       "type": "sync::server::protocol::RegisterRequest",
       "producer": "serde_json::to_vec",
-      "description": "Two-secret (2SKD, ADR-008) registration body, with auth_scheme set to srp-2skd-v1."
+      "description": "Two-secret (2SKD, ADR-008 + #296) registration body, with auth_scheme set to srp-2skd-v1, a client-generated account_id, and the account-scoped account_kdf (Argon2 salt/params) used to derive MK_auth on a new device."
+    },
+    {
+      "name": "account_verifier_2skd_v1.json",
+      "type": "sync::server::srp verifier (hex)",
+      "producer": "ldgr_core::sync::server::register_2skd_with_salt",
+      "description": "Cross-client known-answer for account authentication (#296): the SRP verifier derived from the account secrets ALONE (master password + account SecretKey + account_id + account-scoped AccountKdf + srp_salt), with NO vault header. Proves a fresh device reproduces the identical verifier; iOS (UniFFI) and web (WASM) clients feeding the same inputs must produce the same verifier hex."
     }
   ]
 }

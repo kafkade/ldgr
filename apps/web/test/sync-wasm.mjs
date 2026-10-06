@@ -202,6 +202,14 @@ describe('cross-language sync wire vectors (golden)', () => {
       verifier: 'fedcba9876543210',
       auth_scheme: 'srp-2skd-v1',
       account_id: '018f5a3c-0000-7000-8000-000000000001',
+      // Account-scoped Argon2 KDF (#296). Key order matches the Rust
+      // AccountKdfWire struct: salt, memory_cost_kib, iterations, parallelism.
+      account_kdf: {
+        salt: '11111111111111111111111111111111',
+        memory_cost_kib: 65536,
+        iterations: 3,
+        parallelism: 1,
+      },
     };
     assert.equal(JSON.stringify(req), fixture('register_request_2skd_v1.json'));
   });

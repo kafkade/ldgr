@@ -1,0 +1,15 @@
+# Docker build-context excludes (shared by crates/ldgr-server/Dockerfile and
+# apps/web/Dockerfile, both of which build from the repository root). Only build
+# artifacts, dependencies, and VCS metadata are excluded — never source needed by
+# either image build.
+**/target
+**/node_modules
+**/*.tsbuildinfo
+apps/web/out
+apps/web/.next
+apps/web/pkg
+apps/web/public/sql.js
+
+.git
+.github
+.DS_Store

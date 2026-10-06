@@ -93,7 +93,14 @@ export interface WasmSyncClient {
   serverInfo(): Promise<string>;
   /** Liveness probe (`GET /server/ping`); returns a JSON string. */
   ping(): Promise<string>;
-  createVault(vaultId: string): Promise<void>;
+  /**
+   * Claim a vault, returning the identifier the server put in force. Pass
+   * `undefined` to have the server mint a random one (ADR-011); the result is
+   * authoritative and may differ from `vaultId`.
+   */
+  createVault(vaultId?: string): Promise<string>;
+  /** List this account's vaults; returns a JSON array of `{ id, created_at }`. */
+  listVaults(): Promise<string>;
   putBatch(
     vaultId: string,
     deviceId: string,
@@ -142,6 +149,14 @@ export interface EmergencyKit {
   email: string;
   accountHint: string;
   secretKey: string;
+  /** Account-scoped Argon2 salt bytes for deriving `MK_auth` on a new device (#296). */
+  accountKdfSalt: number[];
+  /** Account-scoped Argon2 params for deriving `MK_auth` (#296). */
+  accountKdfParams: {
+    memoryCostKib: number;
+    iterations: number;
+    parallelism: number;
+  };
   recoveryKey: string | null;
   qrPayload: string;
 }
@@ -164,13 +179,21 @@ export interface WasmModule {
   parseJournal(text: string): string;
   /** Generate a fresh account id + Secret Key; returns JSON (see {@link SecretKeyMaterial}). */
   generateSecretKey(): string;
+  /** Generate a fresh account-scoped Argon2 salt for 2SKD sign-up (#296). */
+  generateAccountKdfSalt(): Uint8Array;
   /** Build an Emergency Kit; returns JSON (see {@link EmergencyKit}). */
   buildEmergencyKit(
     address: string,
     email: string,
     secretKey: string,
+    accountKdfSalt: Uint8Array,
+    memoryCostKib: number,
+    iterations: number,
+    parallelism: number,
     recoveryKey?: string | null,
   ): string;
+  /** Parse a scanned Emergency Kit QR payload; returns JSON (see {@link EmergencyKit}). */
+  parseEmergencyKit(qrPayload: string): string;
   computeBalance(
     transactionsJson: string,
     accountFilter?: string,

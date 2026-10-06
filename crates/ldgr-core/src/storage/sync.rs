@@ -278,6 +278,54 @@ pub fn device_id(conn: &Connection) -> Result<String, StorageError> {
     Ok(id)
 }
 
+/// Key under which the vault's sync identifier is persisted in `sync_state`.
+pub const VAULT_ID_KEY: &str = "vault_id";
+
+/// Get this vault's sync identifier, minting a random one if it isn't set yet
+/// (ADR-011).
+///
+/// The identifier is persisted rather than derived, so it survives moving or
+/// renaming the vault directory. Earlier clients recomputed it as a hash of the
+/// vault path on every call, which made it predictable and — since most vaults
+/// live at the default path — identical across unrelated accounts.
+///
+/// Callers upgrading an already-synced vault must seed the existing identifier
+/// with [`adopt_vault_id`] *before* the first call here, otherwise this mints a
+/// new one and the vault is orphaned from its already-uploaded blobs.
+pub fn vault_id(conn: &Connection) -> Result<String, StorageError> {
+    if let Some(id) = get_state(conn, VAULT_ID_KEY)? {
+        return Ok(id);
+    }
+
+    let id = crate::sync::vault_id::generate_vault_id();
+    set_state(conn, VAULT_ID_KEY, &id)?;
+    Ok(id)
+}
+
+/// Persist `id` as this vault's sync identifier, but only if none is set yet.
+///
+/// Returns the identifier now in force. Used for two things: adopting the
+/// legacy path-derived identifier of an already-synced vault on upgrade, and
+/// adopting the identifier of an existing server vault when a newly paired
+/// device joins. Never overwrites an established identifier, so it is safe to
+/// call unconditionally.
+pub fn adopt_vault_id(conn: &Connection, id: &str) -> Result<String, StorageError> {
+    if let Some(existing) = get_state(conn, VAULT_ID_KEY)? {
+        return Ok(existing);
+    }
+    set_state(conn, VAULT_ID_KEY, id)?;
+    Ok(id.to_string())
+}
+
+/// Replace this vault's sync identifier, even if one is already set.
+///
+/// Only for the two cases where the previous identifier is known to be wrong:
+/// the server handed back a different identifier than the one requested, or a
+/// freshly paired device must switch to the vault it just received the key for.
+pub fn set_vault_id(conn: &Connection, id: &str) -> Result<(), StorageError> {
+    set_state(conn, VAULT_ID_KEY, id)
+}
+
 /// Count events originating from a specific device (synced or not).
 ///
 /// Used by the sync pipeline to compute this device's own vector-clock
@@ -481,6 +529,45 @@ mod tests {
         let id2 = device_id(&conn).unwrap();
         assert_eq!(id1, id2); // idempotent
         assert!(!id1.is_empty());
+    }
+
+    #[test]
+    fn vault_id_auto_generates_and_is_stable() {
+        let conn = setup_db();
+        let id1 = vault_id(&conn).unwrap();
+        let id2 = vault_id(&conn).unwrap();
+        assert_eq!(id1, id2, "vault id must be persisted, not regenerated");
+        assert!(crate::sync::vault_id::is_random_vault_id(&id1), "{id1}");
+    }
+
+    #[test]
+    fn vault_id_differs_between_vaults() {
+        let a = vault_id(&setup_db()).unwrap();
+        let b = vault_id(&setup_db()).unwrap();
+        assert_ne!(a, b, "two vaults must not share an identifier");
+    }
+
+    #[test]
+    fn adopt_vault_id_seeds_only_when_unset() {
+        let conn = setup_db();
+        // A legacy identifier adopted on upgrade wins over minting a new one.
+        let adopted = adopt_vault_id(&conn, "vault_0123456789abcdef").unwrap();
+        assert_eq!(adopted, "vault_0123456789abcdef");
+        assert_eq!(vault_id(&conn).unwrap(), "vault_0123456789abcdef");
+
+        // A second adoption must not clobber the established identifier.
+        let again = adopt_vault_id(&conn, "v1_ffffffffffffffffffffffffffffffff").unwrap();
+        assert_eq!(again, "vault_0123456789abcdef");
+    }
+
+    #[test]
+    fn set_vault_id_overrides_an_established_id() {
+        let conn = setup_db();
+        let original = vault_id(&conn).unwrap();
+        set_vault_id(&conn, "v1_ffffffffffffffffffffffffffffffff").unwrap();
+        let updated = vault_id(&conn).unwrap();
+        assert_ne!(updated, original);
+        assert_eq!(updated, "v1_ffffffffffffffffffffffffffffffff");
     }
 
     #[test]

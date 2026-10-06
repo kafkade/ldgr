@@ -117,7 +117,7 @@ async fn devices_list_register_and_remove_round_trip() {
     let (a, _b) = two_devices().await;
 
     let vault = "vault-pair";
-    a.create_vault(vault).await.expect("create vault");
+    a.create_vault(Some(vault)).await.expect("create vault");
 
     // No devices registered yet.
     let devices = a.list_devices(vault).await.expect("list empty");

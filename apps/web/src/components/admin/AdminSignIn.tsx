@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAdmin } from '@/contexts/AdminContext';
 import { fetchServerInfo, type ServerInfo } from '@/lib/admin';
 import {
@@ -25,6 +25,14 @@ export function AdminSignIn() {
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<ServerInfo | null>(null);
   const [probing, setProbing] = useState(false);
+
+  // Default the server URL to the panel's own origin so the batteries-included
+  // deploy (panel served by Caddy alongside the reverse-proxied API) works
+  // without typing a URL. Operators hosting the panel on a separate origin can
+  // still edit it. Runs client-side only to avoid a hydration mismatch.
+  useEffect(() => {
+    setServerUrl((prev) => prev || window.location.origin);
+  }, []);
 
   const probe = async () => {
     const url = serverUrl.trim();

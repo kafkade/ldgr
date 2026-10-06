@@ -35,6 +35,7 @@ async fn spawn_server() -> (String, Arc<AppState>) {
         srp_handshake_ttl_secs: 120,
         registration_policy: RegistrationPolicy::Open,
         admin_email: None,
+        allowed_origins: Vec::new(),
         default_user_quota_bytes: 1024 * 1024 * 1024,
         server_name: "ldgr-test-server".into(),
     };
@@ -75,7 +76,10 @@ async fn server_transport_round_trips_batch_and_snapshot() {
         let mut client = ServerSyncClient::new(sender);
         client.register(username, password).await.expect("register");
         client.login(username, password).await.expect("login");
-        client.create_vault(vault_id).await.expect("create vault");
+        client
+            .create_vault(Some(vault_id))
+            .await
+            .expect("create vault");
         client.token().expect("session token").to_string()
     };
 
@@ -165,7 +169,10 @@ async fn server_transport_lists_all_batches_across_pages() {
         let mut client = ServerSyncClient::new(sender);
         client.register(username, password).await.expect("register");
         client.login(username, password).await.expect("login");
-        client.create_vault(vault_id).await.expect("create vault");
+        client
+            .create_vault(Some(vault_id))
+            .await
+            .expect("create vault");
         client.token().expect("session token").to_string()
     };
 

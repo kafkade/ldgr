@@ -71,7 +71,8 @@ described by `manifest.json` in that directory.
 | `transaction_payload_v1.json` | `sync::payload::TransactionPayload` | `payload::to_bytes` | Transaction + ordered postings carried in a transaction event. |
 | `event_batch_v1.json` | `sync::events::EventBatch` | `serialize_batch` | The full pre-encryption batch envelope (device id, ordered events, vector clock). |
 | `register_request_1secret_v1.json` | `sync::server::protocol::RegisterRequest` | `serde_json::to_vec` | Legacy single-secret SRP registration body (`auth_scheme` omitted). |
-| `register_request_2skd_v1.json` | `sync::server::protocol::RegisterRequest` | `serde_json::to_vec` | Two-secret (2SKD, ADR-008) registration body (`auth_scheme: "srp-2skd-v1"`). |
+| `register_request_2skd_v1.json` | `sync::server::protocol::RegisterRequest` | `serde_json::to_vec` | Two-secret (2SKD, ADR-008 + #296) registration body (`auth_scheme: "srp-2skd-v1"`, client `account_id`, account-scoped `account_kdf`). |
+| `account_verifier_2skd_v1.json` | SRP verifier (hex) | `register_2skd_with_salt` | Cross-client account verifier derived from account secrets **alone** (password + Secret Key + `account_id` + account `AccountKdf` + `srp_salt`) with **no vault header** — proves new-device reproduction (#296). |
 
 ### Canonical inputs
 
@@ -102,8 +103,20 @@ original (pre-2SKD) protocol.
 ### `register_request_2skd_v1.json`
 
 ```json
-{"username":"carol","salt":"ffeeddccbbaa99887766554433221100","verifier":"fedcba9876543210","auth_scheme":"srp-2skd-v1"}
+{"username":"carol","salt":"ffeeddccbbaa99887766554433221100","verifier":"fedcba9876543210","auth_scheme":"srp-2skd-v1","account_id":"018f5a3c-0000-7000-8000-000000000001","account_kdf":{"salt":"11111111111111111111111111111111","memory_cost_kib":65536,"iterations":3,"parallelism":1}}
 ```
+
+### `account_verifier_2skd_v1.json`
+
+A cross-client known-answer for account authentication (#296). It fixes the
+account secrets — master password `correct horse battery staple`, Secret Key
+`A1-067NMF-J9C1-593R-HE5P-15B3-64C1-Q5ZT-D4`, `account_id`
+`018f5a3c-0000-7000-8000-000000000001`, an `AccountKdf` with salt `0x11 × 16`
+and the `Argon2Params::test()` params, and `srp_salt` `0x22 × 16` — and derives
+`MK_auth` **without any vault**, then the SRP verifier `v = g^x mod N`. iOS
+(`UniFFI`) and web (WASM) clients feeding the same inputs must produce the same
+`verifier` hex, proving a fresh device reproduces the verifier from the account
+secrets alone.
 
 (`transaction_payload_v1.json` and `event_batch_v1.json` are larger; read them
 directly from the fixtures directory.)

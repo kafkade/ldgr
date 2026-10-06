@@ -8,6 +8,7 @@ struct UnlockView: View {
 
     @State private var password = ""
     @State private var isUnlocking = false
+    @State private var isMigrating = false
     @State private var showBiometricError = false
     @State private var biometricErrorMessage = ""
 
@@ -54,7 +55,7 @@ struct UnlockView: View {
                             if isUnlocking && !appState.isBiometricEnabled {
                                 ProgressView()
                                     .padding(.trailing, 4)
-                                Text("Unlocking…")
+                                Text(isMigrating ? "Encrypting…" : "Unlocking…")
                             } else {
                                 Text("Unlock")
                             }
@@ -111,10 +112,20 @@ struct UnlockView: View {
         appState.transitionToUnlocking()
         defer {
             isUnlocking = false
+            isMigrating = false
             password = ""
         }
 
         do {
+            // Upgrade a legacy plaintext working store to the encrypted format
+            // before opening it (issue #315). Explicit, verified, reversible —
+            // mirrors the CLI's `ldgr migrate`.
+            if (try? client.needsMigration()) == true {
+                isMigrating = true
+                try await client.migrate(password: password)
+                isMigrating = false
+            }
+
             try await client.open(password: password)
 
             // Store session key for biometric unlock if biometrics are available
@@ -135,11 +146,24 @@ struct UnlockView: View {
     private func unlockWithBiometrics() async {
         isUnlocking = true
         appState.transitionToUnlocking()
-        defer { isUnlocking = false }
+        defer {
+            isUnlocking = false
+            isMigrating = false
+        }
 
         do {
             // Keychain read triggers biometric prompt
             let keyData = try KeychainManager.retrieveSessionKey()
+
+            // Upgrade a legacy plaintext working store using the cached session
+            // key, so a biometric user is not forced to re-enter their password
+            // just to migrate (issue #315).
+            if (try? client.needsMigration()) == true {
+                isMigrating = true
+                try await client.migrateWithSessionKey(keyData)
+                isMigrating = false
+            }
+
             try await client.openWithSessionKey(keyData)
             appState.transitionToUnlocked()
         } catch let error as KeychainError {

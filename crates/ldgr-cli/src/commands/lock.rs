@@ -11,7 +11,9 @@ pub fn run(vault_path: &Path) -> Result<()> {
     let vault_dir = session::resolve_vault_dir(Some(vault_path));
 
     if session::delete_session(&vault_dir)? {
-        eprintln!("✓ Vault locked. Session cleared.");
+        eprintln!(
+            "✓ Vault locked. Session key cleared; the working store stays encrypted at rest."
+        );
     } else {
         eprintln!("Vault is already locked (no active session).");
     }

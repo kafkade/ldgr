@@ -9,15 +9,20 @@ use std::time::Duration;
 
 use num_bigint::BigUint;
 
-use ldgr_core::crypto::{Argon2Params, SecretKey, derive_auth_key, derive_master_key};
+use ldgr_core::crypto::{AccountKdf, Argon2Params, SecretKey, derive_account_auth_key};
 use ldgr_core::sync::server::{ClientLogin, register_2skd_with_salt};
 use ldgr_server::auth::srp::SrpHandshakeStore;
 
-/// Derive the existing `MK_auth` (`AuthKey`) from a password, as the client does.
+/// Fixed account KDF (salt + params) shared by registration and login so both
+/// derive the same `MK_auth` deterministically (#296).
+fn test_account_kdf() -> AccountKdf {
+    AccountKdf::from_parts(b"argon-salt-16byte".to_vec(), Argon2Params::test())
+}
+
+/// Derive the existing `MK_auth` (`AuthKey`) from a password, as the client does
+/// at registration.
 fn auth_key(password: &[u8]) -> ldgr_core::crypto::AuthKey {
-    let mk = derive_master_key(password, b"argon-salt-16byte", &Argon2Params::test())
-        .expect("derive master key");
-    derive_auth_key(&mk).expect("derive auth key")
+    derive_account_auth_key(password, &test_account_kdf()).expect("derive auth key")
 }
 
 /// Run a full 2SKD handshake of the core client against the real server store.
@@ -26,20 +31,21 @@ fn auth_key(password: &[u8]) -> ldgr_core::crypto::AuthKey {
 fn handshake(
     username: &str,
     account_id: uuid::Uuid,
-    reg_auth: &ldgr_core::crypto::AuthKey,
+    reg_password: &[u8],
     reg_secret: &SecretKey,
-    login_auth: &ldgr_core::crypto::AuthKey,
+    login_password: &[u8],
     login_secret: &SecretKey,
 ) -> bool {
     // Client registration → (salt, verifier). Fixed salt for determinism.
     let salt = vec![0x5Au8; 16];
-    let reg = register_2skd_with_salt(&account_id, reg_auth, reg_secret, salt);
+    let reg = register_2skd_with_salt(&account_id, &auth_key(reg_password), reg_secret, salt);
 
-    // Client login init.
+    // Client login init. `MK_auth` is derived at finish() from the account KDF.
     let (mut login, a_pub) =
-        ClientLogin::start_2skd(username, login_auth.clone(), login_secret.clone());
-    // Server echoes the stored account_id at `login/init`; inject it here.
+        ClientLogin::start_2skd(username, login_password, login_secret.clone());
+    // Server echoes the stored account_id + account KDF at `login/init`.
     login.set_account_id(account_id);
+    login.set_account_kdf(test_account_kdf());
 
     // Real server store performs initiate / verify.
     let store = SrpHandshakeStore::new(Duration::from_mins(1));
@@ -66,16 +72,16 @@ fn handshake(
 #[test]
 fn two_skd_verifier_is_accepted_by_server() {
     let account_id = uuid::Uuid::from_bytes([0x11; 16]);
-    let mk_auth = auth_key(b"correct horse battery staple");
+    let password = b"correct horse battery staple";
     let secret_key = SecretKey::generate(account_id);
 
     assert!(
         handshake(
             "alice",
             account_id,
-            &mk_auth,
+            password,
             &secret_key,
-            &mk_auth,
+            password,
             &secret_key,
         ),
         "server must accept a 2SKD verifier when password + Secret Key match"
@@ -85,7 +91,7 @@ fn two_skd_verifier_is_accepted_by_server() {
 #[test]
 fn wrong_secret_key_is_rejected_by_server() {
     let account_id = uuid::Uuid::from_bytes([0x22; 16]);
-    let mk_auth = auth_key(b"correct horse battery staple");
+    let password = b"correct horse battery staple";
     let registered = SecretKey::generate(account_id);
     let attacker = SecretKey::generate(account_id); // correct password, wrong Secret Key
 
@@ -93,9 +99,9 @@ fn wrong_secret_key_is_rejected_by_server() {
         !handshake(
             "bob",
             account_id,
-            &mk_auth,
+            password,
             &registered,
-            &mk_auth,
+            password,
             &attacker,
         ),
         "server must reject login when the Secret Key is wrong, even with the correct password"
@@ -111,9 +117,9 @@ fn wrong_password_is_rejected_by_server() {
         !handshake(
             "carol",
             account_id,
-            &auth_key(b"right-password"),
+            b"right-password",
             &secret_key,
-            &auth_key(b"wrong-password"),
+            b"wrong-password",
             &secret_key,
         ),
         "server must reject login when the password is wrong, even with the correct Secret Key"

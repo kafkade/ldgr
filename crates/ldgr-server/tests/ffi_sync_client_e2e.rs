@@ -38,6 +38,7 @@ fn open_config() -> Config {
         srp_handshake_ttl_secs: 120,
         registration_policy: RegistrationPolicy::Open,
         admin_email: None,
+        allowed_origins: Vec::new(),
         default_user_quota_bytes: 1_073_741_824,
         server_name: "ffi-e2e-server".into(),
     }
@@ -223,7 +224,9 @@ async fn ffi_single_secret_full_round_trip() {
     let token = c.token().await.expect("token present after login");
 
     let vault = "vault-1".to_string();
-    c.create_vault(vault.clone()).await.expect("create vault");
+    c.create_vault(Some(vault.clone()))
+        .await
+        .expect("create vault");
 
     // Device A: a real on-disk vault. Compose its pending events into a REAL
     // encrypted batch blob via the #201 pipeline (through the FFI `LdgrVault`
@@ -334,13 +337,16 @@ async fn ffi_two_secret_full_round_trip() {
     .await
     .expect("register 2skd");
 
-    c.login_2skd(username, password, secret_key, SALT.to_vec(), test_argon2())
+    // Log in with no local KDF — the server returns it at `login/init` (#296).
+    c.login_2skd(username, password, secret_key, None, None)
         .await
         .expect("login 2skd");
     assert!(c.is_authenticated().await);
 
     let vault = "vault-2skd".to_string();
-    c.create_vault(vault.clone()).await.expect("create vault");
+    c.create_vault(Some(vault.clone()))
+        .await
+        .expect("create vault");
 
     // Push a REAL encrypted batch (composed from an on-disk vault) so the 2SKD
     // auth path is exercised against genuine ciphertext, not synthetic bytes.
@@ -394,9 +400,7 @@ async fn ffi_login_2skd_with_wrong_secret_key_is_rejected() {
     .await
     .expect("register 2skd");
 
-    let result = c
-        .login_2skd(username, password, attacker, SALT.to_vec(), test_argon2())
-        .await;
+    let result = c.login_2skd(username, password, attacker, None, None).await;
     assert!(
         result.is_err(),
         "login with the wrong Secret Key must fail, got {result:?}"
@@ -424,7 +428,9 @@ async fn ffi_real_batch_conflict_surfaces_through_transport() {
     let token = c.token().await.expect("token present after login");
 
     let vault = "vault-conflict".to_string();
-    c.create_vault(vault.clone()).await.expect("create vault");
+    c.create_vault(Some(vault.clone()))
+        .await
+        .expect("create vault");
 
     // Device A: a real vault with a transaction; capture its id + session key.
     let dir_a = tempfile::tempdir().unwrap();
@@ -507,7 +513,7 @@ async fn ffi_real_batch_conflict_surfaces_through_transport() {
 async fn ffi_unauthenticated_call_is_rejected() {
     let (c, _s) = client_with_sender();
     // No register/login: the core client guards locally before sending.
-    let result = c.create_vault("nope".into()).await;
+    let result = c.create_vault(Some("nope".into())).await;
     assert!(
         matches!(result, Err(FfiSyncError::NotAuthenticated)),
         "expected NotAuthenticated, got {result:?}"

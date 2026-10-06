@@ -12,6 +12,7 @@ pub mod import;
 pub mod incomestatement;
 pub mod init;
 pub mod lock;
+pub mod migrate;
 pub mod portfolio;
 pub mod reconcile;
 pub mod register;

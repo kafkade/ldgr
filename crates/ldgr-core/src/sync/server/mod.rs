@@ -14,6 +14,7 @@ pub use client::{
     HttpMethod, RawHttpSender, RawRequest, RawResponse, RemoteBatchPage, RemoteSnapshotPage,
     ServerSyncClient, ServerSyncError,
 };
+pub use protocol::AccountKdfWire;
 pub use protocol::{
     BlobEntry, CreateOfferRequest, CreateOfferResponse, CreateVaultRequest, DeviceResponse,
     ErrorResponse, GetResponseResponse, HexError, ListBatchesQuery, ListBlobsResponse,

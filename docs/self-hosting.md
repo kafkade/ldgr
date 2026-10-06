@@ -70,6 +70,9 @@ Your server is now listening on `http://<host>:8080`. Point your ldgr clients at
 that URL (see the [sync setup guide](sync-setup.md) to create an account and
 register devices).
 
+The **admin panel** is served for you at `http://<host>:8081/admin` (the bundled
+`web` container) — see [First-run admin onboarding](#first-run-admin-onboarding).
+
 > **Personal instance tip:** the default `LDGR_REGISTRATION=invite-only` is the
 > most secure choice but requires an admin-issued invite. For a single-user or
 > family instance it's usually easiest to set `LDGR_ADMIN_EMAIL=you@example.com`
@@ -87,7 +90,8 @@ itself.
 | Variable | Default | Description |
 | --- | --- | --- |
 | `LDGR_VERSION` | `latest` | GHCR image tag to pull (e.g. `v1.2.3`, `1.2`, `1`, `latest`). Pin an explicit version in production. |
-| `LDGR_HOST_PORT` | `8080` | Host port to expose (container always listens on `8080`). |
+| `LDGR_HOST_PORT` | `8080` | Host port for the server API (container always listens on `8080`). |
+| `LDGR_WEB_PORT` | `8081` | Host port for the web app + admin panel served by the `web` (Caddy) container. |
 | `LDGR_DOMAIN` | (unset) | Public domain for the optional Caddy TLS profile. |
 | `LDGR_ACME_EMAIL` | (unset) | Email for ACME/Let's Encrypt notices (Caddy TLS profile). |
 
@@ -108,9 +112,9 @@ itself.
 
 ## Building locally instead of pulling
 
-By default compose pulls the published multi-arch image from GHCR. To build from
-source instead, edit `docker-compose.yml`: comment out the `image:` line under
-the `server` service and uncomment the `build:` block, then:
+By default compose pulls the published multi-arch images from GHCR. To build from
+source instead, edit `docker-compose.yml`: comment out the `image:` line and
+uncomment the `build:` block under the `server` and/or `web` service, then:
 
 ```sh
 docker compose up -d --build
@@ -162,6 +166,27 @@ Compose recreates the `server` container with the new image; the `ldgr-data`
 volume (your database) is preserved. Back up before upgrading (below), and pin
 `LDGR_VERSION` so upgrades are deliberate rather than implicit.
 
+### Upgrading past v1.2.0: vault identifiers
+
+Schema migrations run automatically when the server starts, and this one is purely
+additive — a unique index on `vaults(user_id, id)`. No table is rebuilt and no blob is
+rewritten, so the upgrade is fast regardless of how much data you host, and rolling
+back to the previous image works too (older builds simply ignore the extra index).
+
+What changes operationally: vault identifiers are now random, unguessable, and issued
+by the server rather than derived by the client
+(see [ADR-011](adr/011-tenant-scoped-vault-identifiers.md)). Before this release nearly
+every client derived the *same* identifier from its default vault path, so on a shared
+server the first account to register it locked every other account out of that
+identifier permanently — `sync setup` appeared to succeed and every later push or pull
+then failed with a 404. That failure mode is gone: a request for an identifier another
+account already owns is now answered with a freshly minted one instead of a conflict.
+
+Existing vaults keep their identifiers, so your users need to do nothing. Users still
+stuck behind a squatted identifier are unblocked as soon as they update their client —
+it will be issued a working identifier on the next `sync setup`. Because they were
+never able to sync under the squatted identifier, there is no data to migrate.
+
 ## Backup and restore
 
 All server state lives in the named volume `ldgr-data` (the SQLite database at
@@ -201,10 +226,11 @@ docker compose up -d
 
 ## First-run admin onboarding
 
-The server is headless — it exposes only a JSON API. The **admin experience lives
-in the web app** at `/admin` (Apache-2.0), which talks to the server's
+The server is headless — it exposes only a JSON API. The **admin panel lives in
+the ldgr web app** at `/admin` (Apache-2.0), which talks to the server's
 `/api/v1/admin/*` API over HTTP (see [ADR-008 §7](adr/008-self-hosting-and-account-auth.md)).
-The server itself serves no admin HTML.
+The compose bundle serves that web app for you from the `web` (Caddy) container;
+the AGPL server itself serves no web assets.
 
 ### 1. Create the bootstrap admin
 
@@ -223,10 +249,20 @@ at your server URL — see [Point a client at your server](#point-a-client-at-yo
 
 ### 2. Open the admin panel
 
-The admin panel ships with the ldgr **web app**. Run the web app (or use your
-hosted deployment of it), then browse to `/admin`:
+`docker compose up` serves the panel for you: the `web` container (Caddy) hosts
+the ldgr web app as a static export and reverse-proxies the API, so the panel is
+reachable out of the box at
 
-- Enter your **Server URL**, **admin username**, and **password**.
+```
+http://<host>:8081/admin
+```
+
+(or `https://<domain>/admin` when the [TLS profile](#tls-with-caddy) is enabled).
+To sign in:
+
+- The **Server URL** is pre-filled with the panel's own origin — the same Caddy
+  serves the panel and proxies the API, so you only need your **admin username**
+  and **password**.
 - Sign-in runs the same **SRP handshake** as any client via the in-browser WASM
   client: your password is processed locally and only a zero-knowledge proof is
   sent. After the handshake the panel checks that your account is an admin;
@@ -243,8 +279,33 @@ The panel has five screens:
 | **Server** | Server name, version, and protocol info. |
 
 > The admin session token is held in memory / `sessionStorage` only (never in a
-> vault or `localStorage`) and is cleared on sign-out. Building the web app's WASM
-> bundle (`npm run build:wasm`) is required because sign-in uses the SRP client.
+> vault or `localStorage`) and is cleared on sign-out.
+>
+> **Hosting the panel elsewhere (advanced).** The panel is a static site, so you
+> can serve it from any static host or CDN instead of the bundled `web` container
+> — build it with `npm run build` in `apps/web/` and serve the resulting `out/`
+> directory. Hosted that way it runs on a **different origin** than the API, so
+> allow that origin via [CORS](#3-allow-the-panels-origin-cors) and type the API's
+> URL into the Server URL field.
+
+### 3. Allow the panel's origin (CORS)
+
+The admin panel makes browser `fetch` calls to the server API. When the web app
+is served from a **different origin** than the server — a separate admin host, or
+local development — the browser blocks those calls unless the server explicitly
+allows the web app's origin. Set `LDGR_ALLOWED_ORIGINS` to a comma-separated
+allowlist:
+
+```
+LDGR_ALLOWED_ORIGINS=https://admin.example.com
+```
+
+It is **empty by default**, which denies all cross-origin requests — the secure
+posture for a zero-knowledge server. The **bundled compose deploy is same-origin**
+(Caddy serves the panel and proxies the API under one origin), so it needs **no
+allowlist** — only set `LDGR_ALLOWED_ORIGINS` when you host the panel on a separate
+origin. Only the methods and headers the API needs are permitted, and credentials
+are never enabled (the admin session uses a `Bearer` token, not cookies).
 
 ## Registration policy
 
@@ -344,11 +405,15 @@ Key** and shows it **once** inside a printable/QR **Emergency Kit** containing:
 | Sign-in address | Your server URL (e.g. `https://ledger.example.org`) |
 | Account identity | Email / username |
 | Account Secret Key | `A1-…` |
-| QR payload | The three items above, for fast new-device sign-in |
+| Account key-derivation salt/params | Account-scoped Argon2 salt + parameters (not secret) so a new device can reproduce `MK_auth` without your original vault |
+| QR payload | The items above, for fast new-device sign-in |
 
 **Save it before continuing** (password manager, print, or download). The
 Emergency Kit deliberately does **not** include your vault recovery key — that
-stays a separate artifact for the reasons above.
+stays a separate artifact for the reasons above. The account key-derivation
+salt/params are also returned by the server at sign-in, so signing in with only
+your typed Secret Key still works; the kit copy is a portability and
+tamper-resistance backup.
 
 ### The Secret Key format
 
@@ -406,6 +471,13 @@ For the full rationale see
 | Encrypted vault blobs | No — AES-256-GCM ciphertext, size-bucket padded |
 | `(salt, verifier)` per account | No — the verifier is `g^x mod N`, not your password |
 | Email / username | Identity only |
+| Vault identifiers | Random 128-bit values; they reveal nothing about the vault or where it lives |
+
+**Tenant isolation.** Every vault-scoped endpoint checks that the authenticated
+account owns the vault, and answers `404 Not Found` rather than `403 Forbidden` so the
+identifier namespace cannot be probed for existence. Identifiers carry 128 bits of
+entropy, so one account can neither guess another's nor claim it
+([ADR-011](adr/011-tenant-scoped-vault-identifiers.md)).
 
 **What the server never sees:** your password, your Account Secret Key, your
 encryption keys, or any plaintext financial data. With SRP-6a your password is
