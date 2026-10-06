@@ -7,17 +7,20 @@
 > [How is my data protected?](./vault-overview.md). For the full system design, see the
 > [ldgr Architecture](../ldgr-architecture.md) (§4 Encryption Architecture, §10 Sync
 > Server). This document is the authoritative, expanded version of the threat-model
-> summary in architecture §4.5.
+> summary in architecture §4.5. For the server's stored metadata, observable activity,
+> logging and retention, see [Metadata and privacy inventory](./metadata-and-privacy.md).
 
 ldgr is a **zero-knowledge, local-first** personal finance app. Financial data is
-encrypted on your device before it is ever written to disk or sent over the network. The
-server — including ldgr's own — only ever sees opaque ciphertext. This document states the
-guarantees that claim rests on, and is deliberate about its limits: **honest disclosure of
-what we do not protect against builds more trust than overclaiming.**
+client-encrypted in the vault container and canonical sync batches; native working
+databases are also encrypted at rest. This does **not** mean all local files, derived
+financial caches, server records or logs are encrypted. The server can read account
+identities and sync metadata, and some device information is currently observable.
+This document describes the vault's cryptographic guarantees and the boundaries of
+the local-at-rest model, not anonymity or protection of every copy of the data.
 
-All facts below are grounded in the implementation under
-[`crates/ldgr-core/src/crypto/`](../../crates/ldgr-core/src/crypto/). No custom
-cryptography is used; primitives come from the audited
+Vault cryptography is implemented under
+[`crates/ldgr-core/src/crypto/`](../../crates/ldgr-core/src/crypto/); working-store and
+session handling also depend on platform code. Cryptographic primitives come from
 [RustCrypto](https://github.com/RustCrypto) crates.
 
 ---
@@ -26,7 +29,10 @@ cryptography is used; primitives come from the audited
 
 **In scope:** the confidentiality, integrity, and authenticity of vault data at rest (on
 disk), in transit (during sync), and — on a best-effort basis — in memory while the vault
-is unlocked.
+is unlocked. The local working-store boundary is described in §4.3 and
+[ADR-010](../adr/010-local-working-store-at-rest-encryption.md). Server metadata,
+authentication records and operational logs are inventoried separately in
+[Metadata and privacy inventory](./metadata-and-privacy.md).
 
 **Out of scope:** the security of the device's operating system, the integrity of the app
 binary itself, and any attack that observes the user directly (their screen, keyboard, or
@@ -39,19 +45,23 @@ rather than silently assumed away.
 
 | Asset | Where it lives | How it is protected |
 |-------|----------------|---------------------|
-| **Financial transaction data** (accounts, postings, balances, budgets) | Encrypted items inside the vault file; synced as encrypted blobs | Per-item AES-256-GCM under a random item key (`envelope.rs`) |
-| **Master password** | User's memory only | Never stored, never transmitted; only an Argon2id-derived key leaves the KDF (`kdf.rs`) |
-| **Master Key (MK)** | Memory only, during an unlocked session | Derived on unlock, never persisted; `Zeroize`/`ZeroizeOnDrop` (`keys.rs`) |
-| **Master Encryption Key (MEK)** | Memory only (optionally cached in OS keychain for biometric unlock) | HKDF-derived from MK; zeroized on drop |
-| **Vault Key (VK)** | Stored **wrapped** in the header; unwrapped into memory on unlock | AES-256-GCM-wrapped by MEK *and* by the recovery key (`wrap.rs`) |
+| **Financial transaction data** (accounts, postings, balances, budgets) | Vault items and canonical sync batches; platform working database | AES-256-GCM envelopes; SQLCipher on native working stores or a sealed container for web persistence |
+| **Master password** | User input and temporary client memory | Not persisted as a credential or sent to the sync server; Argon2id derives key material (`kdf.rs`) |
+| **Master Key (MK)** | Temporary memory during password derivation | Derived on unlock, never persisted; `Zeroize`/`ZeroizeOnDrop` (`keys.rs`) |
+| **Master Encryption Key (MEK)** | Temporary memory during derivation and key wrapping | HKDF-derived from MK; zeroized on drop |
+| **Vault Key (VK)** | Stored **wrapped** in the header; unwrapped into memory; optionally cached as the session key in the OS keystore/Keychain | AES-256-GCM-wrapped by MEK *and* by the recovery key; cached-key protection depends on the platform |
+| **Database Key** | Memory during native working-store use | HKDF-SHA256 subkey of VK with info `ldgr-sqlcipher-key-v1`; used as the SQLCipher raw key; key type zeroized on drop |
 | **Per-item keys (IK)** | Stored **wrapped** alongside each item | AES-256-GCM-wrapped by VK; one random key per item |
-| **Recovery key** | Displayed once to the user as an emergency kit; not stored by ldgr | 256-bit random; user stores it offline. Wraps the VK independently of the password |
+| **Vault recovery key** | Client memory during creation/recovery and the user's retained copy; distinct from the account-authentication Emergency Kit | 256-bit random; wraps VK independently of the password |
 | **Vault metadata** (vault name, `created_at`) | Encrypted blob in the header (`encrypted_metadata`) | AES-256-GCM under VK — **not** readable without unlocking |
 | **Header KDF parameters** (`salt`, `argon2_params`, `format_version`, `kdf_version`) | **Plaintext** in the header (`VaultHeader`) | Parseable without the password; only *indirectly* authenticated (see [§9](#9-future-improvements)) |
+| **Legacy working-store backup** | `vault.db.plaintext.bak` after migration | **Not encrypted by migration**; retained for backout |
+| **Local labels and derived caches** | Filesystem names/session metadata, web vault-name keys, native widget/intent data and watch summaries | Outside the vault-envelope guarantee; see §4.3 and the privacy inventory |
 
 A useful consequence: an attacker holding the raw vault file can read the Argon2id
 parameters and salt (needed to attempt unlock) but **cannot** read the vault's name,
-creation time, or any financial data.
+creation time, or financial item payloads from that file alone. Names and activity may
+still be exposed by its filename, filesystem timestamps or separate local records.
 
 ---
 
@@ -61,8 +71,9 @@ The vault provides three properties, each backed by a specific mechanism:
 
 - **Confidentiality.** Every item payload is encrypted with AES-256-GCM under a unique,
   random per-item key (`encrypt_item` in `envelope.rs`). Item keys are wrapped by the
-  Vault Key; the Vault Key is wrapped by the password-derived MEK. Without the password
-  (or recovery key), nothing in the item layer is recoverable.
+  Vault Key; the Vault Key is wrapped by the password-derived MEK. Confidentiality
+  requires those decryption keys to remain unavailable to an attacker; access to an
+  unlocked/cached VK bypasses password wrapping.
 
 - **Integrity.** AES-256-GCM is an AEAD: every ciphertext carries a 128-bit authentication
   tag. Any modification to a wrapped key or item ciphertext causes decryption to fail
@@ -81,11 +92,14 @@ The vault provides three properties, each backed by a specific mechanism:
   | Seal item payload | `ldgr-item-seal-v1` |
   | Derive Auth Key (HKDF) | `ldgr-auth-v1` |
   | Derive MEK (HKDF) | `ldgr-enc-v1` |
+  | Derive native working-store key from VK (HKDF) | `ldgr-sqlcipher-key-v1` |
 
 - **Length hiding (partial).** Item payloads are padded to size buckets
   (512 B / 2 KB / 8 KB / 32 KB, then 32 KB multiples) before encryption (`envelope.rs`),
-  so an observer cannot infer the exact size — and therefore the complexity — of a
-  transaction from its ciphertext. This does **not** hide item *count* or *timing*.
+  hiding the exact plaintext length but revealing its bucket. Canonical sync batches
+  use this envelope too; they contain multiple events, not necessarily one transaction.
+  Padding does **not** hide envelope/blob counts or timing, and is not a promise about
+  every body accepted by a sync transport.
 
 ---
 
@@ -100,53 +114,92 @@ Each actor below is given an explicit **in-scope** (the design defends against i
 and SRP-6a authentication records. This includes ldgr's own hosted server and any
 self-hosted or third-party blob store.
 
-*Analysis:* the server is an encrypted blob store that never holds a decryption key. It
-authenticates clients via **SRP-6a** (RFC 5054), so the password is never sent — the
-server stores only a salt and verifier, never anything that can derive the MEK
-(architecture §10). All item data, item keys, the Vault Key, and even the vault name are
-encrypted client-side before upload. A malicious operator sees ciphertext, blob sizes
-(bucketed), blob counts, and sync timing — and nothing else. **The operator cannot read
-financial data.** Residual exposure: traffic-analysis metadata (how many items exist, when
-you sync). See ADR-003 and ADR-006.
+*Analysis:* the honest client encrypts financial payloads before uploading them; the
+sync server does not receive the vault decryption key. **SRP-6a** authentication does
+not send the password. The two-secret scheme uses separate account-scoped KDF
+material and the client-held Account Secret Key; password-only/legacy records may
+lack that account KDF. Authentication records are not server-held vault decryption keys.
+
+The server is **not** a metadata-free store. Its ordinary SQLite database contains
+account identities, authentication records, invites, sessions, account-to-vault
+relationships, device identifiers, blob paths, sizes, hashes and insertion times.
+Current CLI device descriptors expose machine name, platform and last-sync time.
+Authentication/admin logs also contain personal data. Canonical batch padding limits
+length disclosure, but does not hide blob counts or activity; counts are not exact
+transaction counts. See the [privacy inventory](./metadata-and-privacy.md) for the
+complete boundary, including relay payloads and retention.
 
 ### 4.2 Network attacker (MITM on the sync transport) — **in scope**
 
 *Capabilities:* intercept, replay, or modify traffic between the client and sync server.
 
-*Analysis:* data is already AES-256-GCM-encrypted **before** it reaches the transport, so
-interception yields only ciphertext — TLS is defense-in-depth, not the sole protection.
-Tampering is caught two ways: TLS at the transport layer, and the per-blob GCM auth tag at
-the application layer (a flipped bit in any blob fails authentication on decrypt). A MITM
-cannot read or silently alter financial data. Residual exposure: the same traffic-analysis
-metadata as the server actor; an active attacker can also drop/delay traffic (denial of
-service), which is an availability concern, not a confidentiality one.
+*Analysis:* financial payloads in canonical batches are AES-256-GCM-encrypted
+**before** transport; a modified envelope fails authentication on decrypt.
+TLS remains necessary for server authentication and protection of session credentials,
+account/device information and request metadata that are not vault-encrypted.
+End-to-end encryption is not a replacement for HTTPS.
+
+Residual exposure includes traffic timing/size analysis and drop/delay attacks.
+AEAD authentication alone does not establish freshness or prevent replay of an
+unchanged valid ciphertext.
 
 ### 4.3 Device thief with a locked device or disk image — **in scope (at rest)**
 
 *Capabilities:* physical possession of a powered-off/locked device, or a forensic copy of
 its disk, including the raw vault file.
 
-*Analysis:* at rest the vault is only as strong as the password feeding Argon2id. The thief
-can parse the plaintext header (salt + params) and mount an **offline** guessing attack,
-but each guess costs a full Argon2id evaluation (hundreds of MB of memory, multiple
-iterations — see [§7](#7-argon2id-parameter-rationale)), making large-scale brute force
-expensive. With a strong, high-entropy password the data is effectively unreadable. This
-actor moves **out of scope** if the device was captured *unlocked* with the vault already
-open (see §4.4 and §6).
+*Analysis:* protection covers the encrypted vault container and the platform's
+encrypted working store, provided keys and plaintext copies are unavailable:
+
+| Platform | Working-store persistence | Boundary |
+|----------|---------------------------|----------|
+| CLI | `vault.db` is SQLCipher-encrypted with an HKDF subkey of VK | Session key cached in the OS keystore; `session.json` holds plaintext vault path and timestamps, not the key |
+| iOS/iPadOS/macOS | Shared FFI opens `vault.db` with the same SQLCipher key derivation | Biometric/user-presence unlock can cache the vault session key in the device-only Keychain; sync configuration and widget/intent caches are separate |
+| Web | sql.js runs in memory; database exports are encrypted as a vault item before the sealed container is saved to IndexedDB | The vault name used as the IndexedDB key is plaintext; admin session storage is separate from the sealed ledger |
+| watchOS | No vault database | Derived financial summaries are cached as JSON in shared `UserDefaults`, outside vault encryption |
+
+The native raw-key derivation is
+`HKDF-SHA256(VK, info = "ldgr-sqlcipher-key-v1")`; the database key is not an
+independently stored password. See [ADR-010](../adr/010-local-working-store-at-rest-encryption.md).
+
+An attacker with the container can parse its salt and KDF parameters and attempt
+offline password guesses. Cost depends on the profile in [§7](#7-argon2id-parameter-rationale);
+encryption does not rescue a weak password or an accessible cached key.
+A locked OS screen does not itself prove that the application session or cached key
+has been cleared.
+
+**Migration does not eliminate every plaintext copy.** CLI and FFI migrations verify
+the encrypted replacement but deliberately retain the original as
+`vault.db.plaintext.bak`. It is not automatically removed and may also be present in
+older backups or snapshots. Until those copies are dealt with, readable financial
+data remains outside the encrypted working-store boundary. Removing a file is not
+a secure-erasure guarantee.
+
+Capture of an unlocked vault, accessible OS-keystore session key or decrypted memory
+is outside the locked-file guarantee (see §4.4 and §6).
 
 ### 4.4 Forensic examiner with a memory dump or swap file — **partial / best-effort**
 
 *Capabilities:* a RAM image or swap/hibernation file captured while the vault was unlocked,
 or shortly after.
 
-*Analysis:* while unlocked, the MK, MEK, VK, and any in-use item keys necessarily exist in
-plaintext in memory — this is unavoidable for any app that decrypts data. ldgr reduces the
-window and residue: every key type implements `Zeroize`/`ZeroizeOnDrop` so material is
-wiped when dropped (`keys.rs`), the session locks and evicts keys after an idle timeout
-(architecture §4.4), and `Debug` formatting redacts all key bytes to `[REDACTED]` so
-secrets cannot leak into logs or crash dumps. These are **best-effort** mitigations: they
-cannot defeat a dump taken at the exact moment keys are live, and the OS may page memory to
-swap outside ldgr's control. Classified partial, honestly.
+*Analysis:* derivation and decryption require plaintext key material in process
+memory. MK/MEK may be temporary; VK, in-use item/database keys and decrypted working
+pages can be live while data is being used. Core key types implement
+`Zeroize`/`ZeroizeOnDrop`, and their `Debug` implementations redact key bytes.
+These protect those values on drop or formatting; they do not redact a raw memory
+dump or guarantee erasure of every exported key copy or plaintext buffer.
+
+CLI session expiry is checked when a session is loaded; it is not a background
+deadline that guarantees immediate keystore erasure while the app is idle.
+Application locking and key eviction do not undo plaintext already captured.
+
+Native working stores deliberately do **not** enable SQLCipher's
+`cipher_memory_security` allocator-locking pragma, because of its Windows
+working-set failure and platform costs. At-rest file encryption does not imply
+locked in-memory pages. SQLCipher pages, Rust buffers and the web/WASM heap can
+therefore remain exposed to process-memory capture or OS-managed swap/hibernation.
+These are best-effort mitigations, not a memory-confidentiality guarantee.
 
 ### 4.5 Another tenant on a shared sync server — **in scope**
 
@@ -157,14 +210,15 @@ server, able to make any authenticated API call and to guess or enumerate identi
 authenticated account owns the vault before doing anything, and answers `404 Not Found`
 rather than `403 Forbidden`, so a tenant cannot even confirm whether another tenant's
 vault exists. Relay offers used for device pairing are likewise bound to the account that
-created them. Vault identifiers carry 128 bits of CSPRNG entropy and are issued by the
-server, so they cannot be guessed, enumerated, or claimed — and a request for an
+created them. Newly server-minted vault identifiers carry 128 bits of CSPRNG entropy;
+existing identifiers are retained for compatibility and need not be random. A request for an
 identifier another account already holds is answered with a freshly minted one instead of
 a conflict, so a hostile tenant cannot deny service by squatting on it. Even a tenant who
 learns another's identifier reads nothing, because the ownership check is independent of
-how the identifier was obtained. **A co-tenant cannot read, write, or block another
-tenant's data.** Residual exposure: a co-tenant on a shared instance can still consume
-shared resources (disk, bandwidth) up to their quota. See
+how the identifier was obtained. **A co-tenant cannot read or write another tenant's
+data through these handlers, or block a vault claim by identifier squatting.**
+Shared-resource contention remains an availability risk; authorization does not promise
+isolation of disk, bandwidth or CPU capacity. See
 [ADR-011](../adr/011-tenant-scoped-vault-identifiers.md).
 
 ### 4.6 Malicious app co-resident on the same device — **out of scope**
@@ -184,40 +238,51 @@ Out of scope; see [§6](#6-what-the-vault-does-not-protect-against).
 
 | Surface | Threat | Mechanism |
 |---------|--------|-----------|
-| In transit / server | **Server compromise** | Server only ever stores ciphertext; SRP-6a means it never receives the password; no server-side key exists to decrypt with |
-| In transit | **Network interception** | Client-side AES-256-GCM applied before the transport; TLS as a second layer; GCM tags detect tampering |
-| At rest | **At-rest exposure** (stolen disk/file) | Argon2id-derived MEK wraps the Vault Key; all items AES-256-GCM-encrypted; metadata encrypted too |
+| In transit / server | **Disclosure of encrypted financial payloads** | Client-side AES-256-GCM; sync server is not given the vault decryption key. Account records, device information and logs are not covered |
+| In transit | **Network interception** | Client-side AES-256-GCM for financial payloads; TLS for transport credentials/metadata and server authentication |
+| At rest | **Encrypted container / working-store exposure** | Argon2id-derived MEK wraps VK; encrypted vault items; keyed SQLCipher native working stores or sealed web database exports |
 | At rest | **Offline brute force** | Argon2id memory-hard KDF makes each password guess costly; per-platform parameters tuned for resistance (§7) |
-| Shared server | **Cross-tenant access & identifier squatting** | Every vault-scoped lookup is scoped to the authenticated account and answers `404` for anything else; vault identifiers are 128-bit random and server-issued, so they cannot be guessed or claimed (ADR-011) |
+| Shared server | **Cross-tenant access & identifier squatting** | Account-scoped ownership checks answer `404` for unowned vaults; newly minted identifiers are random and a taken requested identifier is replaced (ADR-011) |
 
-In all five cases the attacker is left with authenticated ciphertext and, at most,
-coarse-grained metadata (bucketed sizes, item counts, sync timing).
+These mechanisms protect their stated surfaces, not every local/server record.
+Plaintext backups, local caches, identities and operational metadata remain
+separate exposures.
 
 ---
 
 ## 6. What the vault does NOT protect against
 
-These limitations are inherent, not oversights. Stating them plainly is part of the
-security model.
+These include inherent limits and current implementation boundaries. They must not
+be mistaken for guarantees provided by the vault format.
 
 - **Keyloggers or screen capture on your device.** If malware records your keystrokes or
   screen, it can capture your master password or read decrypted data straight from the UI.
   Cryptography cannot help once the endpoint is watching you.
 - **A compromised app binary (supply-chain attack).** If the ldgr binary you run has been
-  tampered with — malicious build, poisoned dependency, backdoored update — it can exfiltrate
-  keys or plaintext directly. The vault format assumes the code decrypting it is honest.
+  tampered with — malicious build, poisoned dependency, backdoored update or modified
+  web-delivered code — it can exfiltrate keys or plaintext directly. The vault format
+  assumes the code decrypting it is honest.
 - **A compromised or rooted operating system.** Root-level access can read process memory,
-  intercept syscalls, or harvest cached keys (including a biometric-unlock MEK in the OS
+  intercept syscalls, or harvest cached keys (including a biometric-unlock vault session key in the OS
   keychain). Application-level encryption cannot defeat a hostile OS (see §4.6).
+- **Plaintext copies and derived caches.** Migration retains a plaintext backup.
+  Local labels, native widget/intent data and watch summaries are not vault-encrypted.
+  Native database encryption and sealed web ledger persistence do not automatically
+  protect those copies or separately stored sync credentials.
+- **Memory, swap and hibernation capture.** Key-type zeroization and formatted
+  redaction cannot protect live decryption keys/pages or erase all copied buffers;
+  SQLCipher memory locking is not enabled.
 - **Rubber-hose cryptanalysis.** Coercion, legal compulsion, or extortion to reveal your
   password or recovery key is outside any cryptographic defense.
 - **Lost password *and* lost recovery key — unrecoverable by design.** There is no master
   key, no back door, and no reset path on ldgr's side. If both secrets are lost, the data
   is permanently unreadable. This is the deliberate cost of nobody else being able to read
   it: a back door for you would be a back door for everyone.
-- **Metadata leakage.** Padding hides exact payload sizes, but an observer of the sync
-  store still learns approximate item counts, bucket sizes, and *when* you sync — which can
-  hint at activity patterns. This is acknowledged as a partial gap, not a full mitigation.
+- **Metadata leakage and operational logs.** Canonical batch padding hides exact
+  plaintext lengths, not account identities, device descriptors, upload counts,
+  hashes or activity timing. Session records reveal login/session activity, not a
+  reliable physical-device count. See the [privacy inventory](./metadata-and-privacy.md)
+  for readable server fields, logging limits and retention.
 
 ---
 
@@ -251,26 +316,28 @@ minimum floor (≥ 8 KiB memory, ≥ 1 iteration, ≥ 1 lane) to reject obviousl
 
 ## 8. Side-channel considerations
 
-- **Memory hygiene.** All six key types (`MasterKey`, `AuthKey`, `MasterEncryptionKey`,
-  `VaultKey`, `ItemKey`, `RecoveryKey`) derive `Zeroize` and `ZeroizeOnDrop` (`keys.rs`),
+- **Memory hygiene.** Core key types (`MasterKey`, `AuthKey`, `MasterEncryptionKey`,
+  `VaultKey`, `ItemKey`, `RecoveryKey`, `DatabaseKey`) derive `Zeroize` and `ZeroizeOnDrop` (`keys.rs`),
   so their bytes are overwritten when they leave scope rather than lingering in freed
-  memory.
+  memory. This does not extend automatically to exported copies, every plaintext buffer
+  or SQLCipher's page cache.
 - **Debug redaction.** Each key type has a hand-written `Debug` impl that prints
   `[REDACTED]`, with tests asserting no byte or hex value leaks. This prevents accidental
-  exposure through logs, panics, or error formatting.
-- **No secret-dependent branching in ldgr.** ldgr writes no cryptographic primitives of its
-  own. Constant-time behavior of AES-256-GCM, Argon2id, HKDF-SHA256, and X25519 is
-  delegated to the audited RustCrypto crates (`aes-gcm`, `argon2`, `hkdf`,
-  `x25519-dalek`). `unsafe` code is forbidden in the crate.
+  exposure through those types' formatted output, not through raw memory/crash images
+  or every log-producing surface.
+- **Primitive implementations.** Envelope encryption and key derivation use
+  RustCrypto implementations (`aes-gcm`, `argon2`, `hkdf`). That choice alone is
+  not a guarantee that all session, database and platform handling is constant-time
+  or free of other side channels.
 - **Authentication failures are uniform.** Wrap/unwrap and seal/open paths return a generic
   `CryptoError` on any GCM tag mismatch and never include key material in the message, so an
   attacker learns only "decryption failed," not *why*.
 - **Session-key caching caveat.** To support biometric unlock, an unlocked session key can
   be exported and later restored (`export_session_key` / `restore_vault_from_session`).
-  When used, the key's security becomes bounded by the OS keychain/Secure Enclave holding
-  it — a deliberate convenience-vs-exposure tradeoff, surfaced here for transparency.
+  When used, protection depends on the OS keystore/Keychain and its access controls.
+  The cached material is the vault session key, not the password-derived MEK.
 - **Padding is coarse, not perfect.** Size-bucket padding hides exact lengths but not bucket
-  boundaries, item counts, or timing (restated from §3/§6 because it is a genuine residual
+  boundaries, envelope/blob counts, or timing (restated from §3/§6 because it is a genuine residual
   channel).
 
 ---
@@ -290,6 +357,9 @@ Stated openly so reviewers know the current boundaries:
   fields directly and enable clearer error reporting and downgrade detection.
 - **Stronger metadata-leakage defenses.** Optional cover traffic or fixed-cadence sync could
   reduce the timing/count signal noted in §6, at a bandwidth cost.
+- **Data minimization beyond the format.** Local caches, retained copies, device
+  descriptors and operational logs need their own protection and retention decisions;
+  envelope encryption alone does not provide them.
 
 ---
 
@@ -297,17 +367,18 @@ Stated openly so reviewers know the current boundaries:
 
 | Threat actor / surface | In scope? | Mitigation | Residual risk |
 |------------------------|-----------|-----------|----------------|
-| Curious server / sync operator | ✅ Yes | Client-side AES-256-GCM; SRP-6a (no password to server); zero-knowledge blob store | Coarse metadata: item count, bucketed sizes, sync timing |
-| Network attacker (MITM) | ✅ Yes | Data encrypted before transport + TLS; per-blob GCM auth tags detect tampering | Traffic analysis; availability (drop/delay) |
-| Device thief — locked device / disk image | ✅ Yes (at rest) | Argon2id-wrapped Vault Key; all items + metadata encrypted | Offline guessing of weak passwords; out of scope if captured unlocked |
-| Forensic examiner — memory / swap dump | ⚠️ Partial | `Zeroize`/`ZeroizeOnDrop`, idle auto-lock, `Debug` redaction | Keys live in RAM while unlocked; OS may page to swap |
-| Another tenant on a shared sync server | ✅ Yes | Every vault lookup scoped to the authenticated account (404, never 403); 128-bit server-issued vault identifiers; a taken identifier is re-minted, never a conflict (ADR-011) | Shared-resource consumption up to quota |
+| Curious server / sync operator | ✅ Yes (financial ciphertext) | Client-side AES-256-GCM; SRP-6a does not send the password | Plaintext identities/auth records, device descriptors, blob paths/counts/size ranges/hashes/timing and personal data in logs |
+| Network attacker (MITM) | ✅ Yes (encrypted payloads) | Financial payloads encrypted before transport; TLS protects credentials/metadata; GCM tags detect ciphertext modification | Traffic analysis; drop/delay; AEAD alone does not prove freshness |
+| Device thief — locked device / disk image | ✅ Yes (encrypted stores) | Argon2id-wrapped VK; encrypted vault container; native SQLCipher store; sealed web exports | Weak passwords, accessible cached keys, retained plaintext backup, local labels and derived caches |
+| Forensic examiner — memory / swap dump | ⚠️ Partial | Core key-type zeroization and formatted redaction; application lock/expiry handling | Live keys/pages and copied buffers; no SQLCipher memory locking; swap/hibernation; no universal immediate-erasure deadline |
+| Another tenant on a shared sync server | ✅ Yes | Account-scoped vault lookups (404 for unowned vaults); random newly minted identifiers; taken requested identifiers replaced (ADR-011) | Legacy identifiers need not be random; shared-resource consumption |
 | Malicious co-resident / rooted OS | ❌ No | Relies on OS process/sandbox boundary | Full compromise if the OS is hostile |
 | Keylogger / screen capture | ❌ No | None (endpoint trust assumed) | Password and plaintext fully exposed |
 | Compromised app binary (supply chain) | ❌ No | Reproducible builds / signing are process controls, not format guarantees | Malicious binary can exfiltrate keys/plaintext |
 | Rubber-hose / coercion | ❌ No | None | User compelled to reveal secrets |
 | Lost password + lost recovery key | ❌ No (by design) | No back door, no master key, no reset | Data permanently unrecoverable |
-| Metadata analysis (sizes/counts/timing) | ⚠️ Partial | Size-bucket padding | Item count, bucket size, and timing still observable |
+| Metadata analysis (identity/sizes/counts/timing) | ⚠️ Partial | Size-bucket padding of canonical envelopes; TLS hides request content from passive network observers | Server retains readable identity/activity relationships; padding does not hide blob count or timing |
+| Logs, retention and historical copies | ❌ No (format does not govern them) | Operator-defined access controls, collection and retention policy | Personal data and potentially sensitive request metadata; expiry is not deletion; logs/backups may outlive current rows |
 
 ---
 
@@ -318,8 +389,11 @@ Stated openly so reviewers know the current boundaries:
 - **ADR-004** — Data model: [`docs/adr/004-data-model.md`](../adr/004-data-model.md)
 - **ADR-005** — Platform boundaries: [`docs/adr/005-platform-boundaries.md`](../adr/005-platform-boundaries.md)
 - **ADR-006** — Licensing (server/AGPL boundary): [`docs/adr/006-licensing.md`](../adr/006-licensing.md)
+- **ADR-010** — Per-platform working-store encryption: [`docs/adr/010-local-working-store-at-rest-encryption.md`](../adr/010-local-working-store-at-rest-encryption.md)
+- **ADR-011** — Tenant-scoped vault identifiers: [`docs/adr/011-tenant-scoped-vault-identifiers.md`](../adr/011-tenant-scoped-vault-identifiers.md)
 - **Architecture** — §4 Encryption Architecture, §10 Sync Server: [`docs/ldgr-architecture.md`](../ldgr-architecture.md)
 - **Plain-English overview**: [`docs/security/vault-overview.md`](./vault-overview.md)
+- **Metadata and privacy inventory**: [`docs/security/metadata-and-privacy.md`](./metadata-and-privacy.md)
 - **Security policy & disclosure**: [`SECURITY.md`](../../SECURITY.md)
 - **Implementation:**
   - Key derivation & Argon2 params: [`crates/ldgr-core/src/crypto/kdf.rs`](../../crates/ldgr-core/src/crypto/kdf.rs)
